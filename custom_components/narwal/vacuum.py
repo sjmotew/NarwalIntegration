@@ -69,14 +69,6 @@ class NarwalVacuum(NarwalEntity, StateVacuumEntity):
         )
 
     @property
-    def battery_level(self) -> int | None:
-        """Return the battery level."""
-        state = self.coordinator.data
-        if state is None:
-            return None
-        return state.battery_level or None
-
-    @property
     def fan_speed(self) -> str | None:
         """Return the current fan speed."""
         # Fan speed is set via commands; we don't currently track it in state
