@@ -9,7 +9,7 @@ import voluptuous as vol
 
 from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
 
-from .narwal_client import NarwalClient, NarwalConnectionError
+from .narwal_client import NarwalClient, NarwalCommandError, NarwalConnectionError
 
 from .const import DEFAULT_PORT, DOMAIN
 
@@ -41,8 +41,10 @@ class NarwalConfigFlow(ConfigFlow, domain=DOMAIN):
             client = NarwalClient(host=host, port=port)
             try:
                 await client.connect()
+                # Discover device_id from broadcast, then query info
+                await client.discover_device_id(timeout=15.0)
                 device_info = await client.get_device_info()
-            except (NarwalConnectionError, Exception):
+            except (NarwalConnectionError, NarwalCommandError, Exception):
                 errors["base"] = "cannot_connect"
             else:
                 device_id = device_info.device_id

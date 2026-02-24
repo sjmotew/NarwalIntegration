@@ -121,6 +121,58 @@ class NarwalClient:
                 f"Failed to connect to {self.url}: {e}"
             ) from e
 
+    async def discover_device_id(self, timeout: float = 10.0) -> str:
+        """Discover the device_id by listening for a broadcast message.
+
+        The robot broadcasts status messages with topics containing the
+        device_id. This method waits for the first broadcast and extracts it.
+
+        Args:
+            timeout: Seconds to wait for a broadcast.
+
+        Returns:
+            The device_id string.
+
+        Raises:
+            NarwalConnectionError: If not connected.
+            NarwalCommandError: If no broadcast received within timeout.
+        """
+        if not self.connected:
+            raise NarwalConnectionError("Not connected to vacuum")
+
+        deadline = asyncio.get_event_loop().time() + timeout
+        while asyncio.get_event_loop().time() < deadline:
+            remaining = deadline - asyncio.get_event_loop().time()
+            if remaining <= 0:
+                break
+            try:
+                data = await asyncio.wait_for(
+                    self._ws.recv(), timeout=min(remaining, 2.0)
+                )
+            except asyncio.TimeoutError:
+                continue
+
+            if not isinstance(data, bytes) or len(data) < 4:
+                continue
+
+            try:
+                msg = parse_frame(data)
+            except ProtocolError:
+                continue
+
+            # Broadcast messages (field4/0x22) have full topic with device_id
+            if msg.field_tag != PROTOBUF_FIELD5_TAG and msg.topic:
+                parts = msg.topic.split("/")
+                # Topic format: /{product_key}/{device_id}/{category}/{type}
+                if len(parts) >= 4 and parts[2]:
+                    self.device_id = parts[2]
+                    _LOGGER.info("Discovered device_id: %s", self.device_id)
+                    return self.device_id
+
+        raise NarwalCommandError(
+            f"No broadcast received within {timeout}s — is the vacuum awake?"
+        )
+
     async def disconnect(self) -> None:
         """Disconnect from the vacuum and stop all tasks."""
         self._should_reconnect = False
