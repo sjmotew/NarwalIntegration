@@ -92,6 +92,7 @@ class NarwalClient:
         self._heartbeat_task: asyncio.Task[None] | None = None
         self._connected = asyncio.Event()
         self._should_reconnect = True
+        self._listener_active = False  # True when start_listening() is running recv loop
         # Queue for field5 command responses
         self._response_queue: asyncio.Queue[NarwalMessage] = asyncio.Queue()
 
@@ -213,6 +214,7 @@ class NarwalClient:
     async def disconnect(self) -> None:
         """Disconnect from the vacuum and stop all tasks."""
         self._should_reconnect = False
+        self._listener_active = False
         self._connected.clear()
 
         if self._heartbeat_task and not self._heartbeat_task.done():
@@ -250,6 +252,7 @@ class NarwalClient:
 
                 retry_delay = RECONNECT_INITIAL_DELAY  # reset on success
                 self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
+                self._listener_active = True
 
                 async for raw_message in self._ws:
                     if isinstance(raw_message, bytes):
@@ -265,6 +268,7 @@ class NarwalClient:
             except Exception:
                 _LOGGER.exception("Unexpected error in listener")
             finally:
+                self._listener_active = False
                 self._connected.clear()
                 if self._heartbeat_task and not self._heartbeat_task.done():
                     self._heartbeat_task.cancel()
@@ -381,8 +385,8 @@ class NarwalClient:
         await self._ws.send(frame)
         _LOGGER.debug("Sent command: %s (%d bytes)", short_topic, len(frame))
 
-        # If listener is running, wait on the queue
-        if self._listen_task and not self._listen_task.done():
+        # If listener is running, wait on the queue (avoid concurrent recv)
+        if self._listener_active:
             try:
                 msg = await asyncio.wait_for(
                     self._response_queue.get(), timeout=timeout
