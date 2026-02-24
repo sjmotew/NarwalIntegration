@@ -22,9 +22,10 @@ from .entity import NarwalEntity
 _LOGGER = logging.getLogger(__name__)
 
 WORKING_STATUS_TO_ACTIVITY: dict[WorkingStatus, VacuumActivity] = {
-    WorkingStatus.IDLE_DOCKED: VacuumActivity.DOCKED,
+    WorkingStatus.DOCKED: VacuumActivity.DOCKED,
+    WorkingStatus.STANDBY: VacuumActivity.IDLE,
     WorkingStatus.CLEANING: VacuumActivity.CLEANING,
-    WorkingStatus.RETURNING: VacuumActivity.RETURNING,
+    # TODO: add RETURNING and PAUSED once values are confirmed
 }
 
 

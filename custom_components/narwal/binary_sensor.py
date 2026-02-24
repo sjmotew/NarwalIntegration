@@ -44,4 +44,4 @@ class NarwalDockedSensor(NarwalEntity, BinarySensorEntity):
         state = self.coordinator.data
         if state is None:
             return None
-        return state.working_status == WorkingStatus.IDLE_DOCKED
+        return state.working_status == WorkingStatus.DOCKED

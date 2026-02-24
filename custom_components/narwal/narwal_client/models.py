@@ -151,28 +151,41 @@ class NarwalState:
 
     @property
     def is_docked(self) -> bool:
-        return self.working_status == WorkingStatus.IDLE_DOCKED
+        return self.working_status == WorkingStatus.DOCKED
 
     @property
     def is_returning(self) -> bool:
         return self.working_status == WorkingStatus.RETURNING
 
     def update_from_working_status(self, decoded: dict[str, Any]) -> None:
-        """Update state from a decoded working_status message."""
+        """Update state from a decoded working_status message.
+
+        Field 3 = current session elapsed time (seconds), NOT state enum.
+        Field 13 = cleaning area (cm²) — may be cumulative.
+        Field 15 = cleaning time (seconds) — may be cumulative.
+        """
         self.raw_working_status = decoded
         if "3" in decoded:
             try:
-                self.working_status = WorkingStatus(int(decoded["3"]))
-            except ValueError:
-                self.working_status = WorkingStatus.UNKNOWN
+                self.cleaning_time = int(decoded["3"])
+            except (ValueError, TypeError):
+                pass
         if "13" in decoded:
             self.cleaning_area = int(decoded["13"])
         if "15" in decoded:
-            self.cleaning_time = int(decoded["15"])
+            # Field 15 may be cumulative time; prefer field 3 for current session
+            pass
 
     def update_from_base_status(self, decoded: dict[str, Any]) -> None:
         """Update state from a decoded robot_base_status message."""
         self.raw_base_status = decoded
+        # Field 3 is a nested message: {1: state_int, ...}
+        field3 = decoded.get("3")
+        if isinstance(field3, dict) and "1" in field3:
+            try:
+                self.working_status = WorkingStatus(int(field3["1"]))
+            except (ValueError, TypeError):
+                self.working_status = WorkingStatus.UNKNOWN
         if "38" in decoded:
             self.battery_level = int(decoded["38"])
         if "36" in decoded:

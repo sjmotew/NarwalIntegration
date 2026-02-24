@@ -80,13 +80,21 @@ class CommandResult(IntEnum):
 
 
 class WorkingStatus(IntEnum):
-    """Robot working state from working_status field 3."""
+    """Robot working state from robot_base_status field 3 → sub-field 1.
+
+    Values confirmed via live WebSocket monitoring:
+      1  = STANDBY (idle, off dock)
+      5  = CLEANING (active cleaning session)
+      10 = DOCKED (on dock, charged/charging)
+    Values not yet confirmed (need more captures):
+      returning, paused, error states
+    """
 
     UNKNOWN = 0
-    IDLE_DOCKED = 1
-    CLEANING = 3
-    RETURNING = 5
-    # Additional values to be mapped as discovered
+    STANDBY = 1       # idle, off dock
+    CLEANING = 5      # active cleaning
+    DOCKED = 10       # on dock, charged/charging
+    # TODO: discover values for RETURNING, PAUSED, ERROR
 
 
 class FanLevel(IntEnum):
@@ -131,6 +139,6 @@ class UpgradeStatusField(IntEnum):
 class WorkingStatusField(IntEnum):
     """Field numbers in the working_status protobuf message."""
 
-    STATE = 3
-    AREA = 13  # cm²
-    TIME = 15  # seconds
+    ELAPSED_TIME = 3  # current session elapsed seconds (NOT state!)
+    AREA = 13  # cm² (may be cumulative)
+    CUMULATIVE_TIME = 15  # seconds (may be cumulative)
