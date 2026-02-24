@@ -144,6 +144,9 @@ class NarwalState:
     # Pause overlay (field 3 sub-field 2 = 1 means paused)
     is_paused: bool = False
 
+    # Dock sub-state (field 3 sub-field 10: 1=docked, 2=docking in progress)
+    dock_sub_state: int = 0
+
     # Raw data for fields we haven't fully decoded yet
     raw_base_status: dict[str, Any] = field(default_factory=dict)
     raw_working_status: dict[str, Any] = field(default_factory=dict)
@@ -154,7 +157,8 @@ class NarwalState:
 
     @property
     def is_docked(self) -> bool:
-        return self.working_status == WorkingStatus.DOCKED
+        """True when on dock: either state DOCKED(10) or dock sub-state=1 (fully docked)."""
+        return self.working_status == WorkingStatus.DOCKED or self.dock_sub_state == 1
 
     @property
     def is_returning(self) -> bool:
@@ -191,6 +195,11 @@ class NarwalState:
                 self.working_status = WorkingStatus.UNKNOWN
             # Sub-field 2 = 1 means paused (overlay on cleaning state)
             self.is_paused = bool(field3.get("2"))
+            # Sub-field 10 = dock sub-state (1=docked, 2=docking in progress)
+            try:
+                self.dock_sub_state = int(field3.get("10", 0))
+            except (ValueError, TypeError):
+                self.dock_sub_state = 0
         if "38" in decoded:
             self.battery_level = int(decoded["38"])
         if "36" in decoded:

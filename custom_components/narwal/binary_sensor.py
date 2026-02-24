@@ -9,8 +9,6 @@ from homeassistant.components.binary_sensor import (
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
-from .narwal_client import WorkingStatus
-
 from . import NarwalConfigEntry
 from .coordinator import NarwalCoordinator
 from .entity import NarwalEntity
@@ -44,4 +42,4 @@ class NarwalDockedSensor(NarwalEntity, BinarySensorEntity):
         state = self.coordinator.data
         if state is None:
             return None
-        return state.working_status == WorkingStatus.DOCKED
+        return state.is_docked

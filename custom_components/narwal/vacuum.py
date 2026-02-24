@@ -67,6 +67,9 @@ class NarwalVacuum(NarwalEntity, StateVacuumEntity):
             return VacuumActivity.IDLE
         if state.is_paused:
             return VacuumActivity.PAUSED
+        # STANDBY(1) on dock at 100% should show DOCKED, not IDLE
+        if state.is_docked:
+            return VacuumActivity.DOCKED
         return WORKING_STATUS_TO_ACTIVITY.get(
             state.working_status, VacuumActivity.IDLE
         )
