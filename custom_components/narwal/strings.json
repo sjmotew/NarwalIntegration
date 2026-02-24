@@ -1,0 +1,44 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect to Narwal Vacuum",
+        "description": "Enter the IP address of your Narwal robot vacuum.",
+        "data": {
+          "host": "IP Address",
+          "port": "Port"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Unable to connect to the vacuum. Check the IP address and ensure the vacuum is powered on.",
+      "unknown": "An unexpected error occurred."
+    },
+    "abort": {
+      "already_configured": "This vacuum is already configured."
+    }
+  },
+  "entity": {
+    "vacuum": {
+      "vacuum": {
+        "name": "Vacuum"
+      }
+    },
+    "sensor": {
+      "cleaning_area": {
+        "name": "Cleaning area"
+      },
+      "cleaning_time": {
+        "name": "Cleaning time"
+      },
+      "firmware_version": {
+        "name": "Firmware version"
+      }
+    },
+    "binary_sensor": {
+      "docked": {
+        "name": "Docked"
+      }
+    }
+  }
+}

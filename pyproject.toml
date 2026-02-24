@@ -1,0 +1,42 @@
+[project]
+name = "narwal-integration"
+version = "0.1.0"
+description = "Home Assistant custom integration for Narwal robot vacuums via local WebSocket API"
+requires-python = ">=3.12"
+license = "MIT"
+dependencies = [
+    "websockets>=12.0,<14.0",
+    "protobuf>=4.25.0,<6.0",
+    "bbpb>=1.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "black>=24.0",
+    "ruff>=0.3",
+    "mypy>=1.8",
+    "Pillow>=10.0",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "A", "SIM"]
+
+[tool.mypy]
+python_version = "3.12"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+
+[tool.black]
+line-length = 100
+target-version = ["py312"]

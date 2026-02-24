@@ -1,0 +1,54 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+*.egg
+dist/
+build/
+.eggs/
+
+# Virtual environment
+.venv/
+venv/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+
+# Environment
+.env
+.env.local
+
+# --- Reverse engineering artifacts (kept locally, not in repo) ---
+tools/
+captures/
+proto/
+apk/
+
+# Internal planning and RE documentation
+GSD_PROJECT_PLAN.md
+Project.md
+REVERSE_ENGINEERING_RESEARCH.md
+
+# Analysis output files
+dex_analysis_results.txt
+i18n_robot_keys.txt
+robot_commands_i18n.txt
+nul
+run_analysis*.py
