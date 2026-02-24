@@ -121,24 +121,39 @@ class NarwalClient:
                 f"Failed to connect to {self.url}: {e}"
             ) from e
 
-    async def discover_device_id(self, timeout: float = 10.0) -> str:
-        """Discover the device_id by listening for a broadcast message.
+    async def discover_device_id(self, timeout: float = 15.0) -> str:
+        """Discover the device_id by waking the robot and reading its response.
 
-        The robot broadcasts status messages with topics containing the
-        device_id. This method waits for the first broadcast and extracts it.
+        The robot sleeps when idle and won't broadcast until woken. This method
+        sends a get_device_info command (with empty device_id) as a wake signal.
+        The robot's local WebSocket server processes commands regardless of the
+        device_id in the topic. The response contains the real device_id.
+
+        Falls back to extracting device_id from broadcast topics if the
+        command response doesn't contain it.
 
         Args:
-            timeout: Seconds to wait for a broadcast.
+            timeout: Seconds to wait for discovery.
 
         Returns:
             The device_id string.
 
         Raises:
             NarwalConnectionError: If not connected.
-            NarwalCommandError: If no broadcast received within timeout.
+            NarwalCommandError: If discovery fails within timeout.
         """
         if not self.connected:
             raise NarwalConnectionError("Not connected to vacuum")
+
+        # Send get_device_info with empty device_id as wake-up signal.
+        # Topic: /QoEsI5qYXO//common/get_device_info — robot may still process it.
+        wake_topic = self._full_topic(TOPIC_CMD_GET_DEVICE_INFO)
+        wake_frame = build_frame(wake_topic, b"")
+        try:
+            await self._ws.send(wake_frame)
+            _LOGGER.debug("Sent wake-up get_device_info (device_id='%s')", self.device_id)
+        except Exception as e:
+            _LOGGER.warning("Failed to send wake command: %s", e)
 
         deadline = asyncio.get_event_loop().time() + timeout
         while asyncio.get_event_loop().time() < deadline:
@@ -150,6 +165,12 @@ class NarwalClient:
                     self._ws.recv(), timeout=min(remaining, 2.0)
                 )
             except asyncio.TimeoutError:
+                # Re-send wake command periodically in case robot needs a nudge
+                try:
+                    await self._ws.send(wake_frame)
+                    _LOGGER.debug("Re-sent wake-up command")
+                except Exception:
+                    pass
                 continue
 
             if not isinstance(data, bytes) or len(data) < 4:
@@ -160,17 +181,33 @@ class NarwalClient:
             except ProtocolError:
                 continue
 
-            # Broadcast messages (field4/0x22) have full topic with device_id
+            # Check field5 response — get_device_info returns device_id in field 2
+            if msg.field_tag == PROTOBUF_FIELD5_TAG and msg.payload:
+                try:
+                    decoded = self._decode_protobuf(msg.payload)
+                    raw_id = decoded.get("2", b"")
+                    if isinstance(raw_id, bytes):
+                        raw_id = raw_id.decode("utf-8", errors="replace").strip()
+                    else:
+                        raw_id = str(raw_id).strip()
+                    if raw_id:
+                        self.device_id = raw_id
+                        _LOGGER.info("Discovered device_id from response: %s", self.device_id)
+                        return self.device_id
+                except Exception:
+                    _LOGGER.debug("Failed to decode response payload")
+
+            # Fallback: broadcast messages (field4/0x22) have device_id in topic
             if msg.field_tag != PROTOBUF_FIELD5_TAG and msg.topic:
                 parts = msg.topic.split("/")
                 # Topic format: /{product_key}/{device_id}/{category}/{type}
                 if len(parts) >= 4 and parts[2]:
                     self.device_id = parts[2]
-                    _LOGGER.info("Discovered device_id: %s", self.device_id)
+                    _LOGGER.info("Discovered device_id from broadcast: %s", self.device_id)
                     return self.device_id
 
         raise NarwalCommandError(
-            f"No broadcast received within {timeout}s — is the vacuum awake?"
+            f"No response or broadcast within {timeout}s — check vacuum IP and power"
         )
 
     async def disconnect(self) -> None:
