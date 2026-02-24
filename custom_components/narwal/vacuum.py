@@ -25,7 +25,7 @@ WORKING_STATUS_TO_ACTIVITY: dict[WorkingStatus, VacuumActivity] = {
     WorkingStatus.DOCKED: VacuumActivity.DOCKED,
     WorkingStatus.STANDBY: VacuumActivity.IDLE,
     WorkingStatus.CLEANING: VacuumActivity.CLEANING,
-    # TODO: add RETURNING and PAUSED once values are confirmed
+    WorkingStatus.CLEANING_ALT: VacuumActivity.CLEANING,
 }
 
 
@@ -65,6 +65,8 @@ class NarwalVacuum(NarwalEntity, StateVacuumEntity):
         state = self.coordinator.data
         if state is None:
             return VacuumActivity.IDLE
+        if state.is_paused:
+            return VacuumActivity.PAUSED
         return WORKING_STATUS_TO_ACTIVITY.get(
             state.working_status, VacuumActivity.IDLE
         )

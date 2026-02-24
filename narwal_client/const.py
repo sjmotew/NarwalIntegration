@@ -45,7 +45,8 @@ TOPIC_CMD_DRY_MOP = "supply/dry_mop"
 TOPIC_CMD_DUST_GATHERING = "supply/dust_gathering"
 
 # Cleaning (Pita protocol — correct for AX12)
-TOPIC_CMD_START_CLEAN = "clean/start_clean"
+TOPIC_CMD_START_CLEAN = "clean/plan/start"  # whole-house clean (empty payload)
+TOPIC_CMD_START_CLEAN_LEGACY = "clean/start_clean"  # does NOT work from STANDBY
 TOPIC_CMD_EASY_CLEAN = "clean/easy_clean/start"
 TOPIC_CMD_SET_FAN_LEVEL = "clean/set_fan_level"
 TOPIC_CMD_SET_MOP_HUMIDITY = "clean/set_mop_humidity"
@@ -91,10 +92,12 @@ class WorkingStatus(IntEnum):
     """
 
     UNKNOWN = 0
-    STANDBY = 1       # idle, off dock
-    CLEANING = 5      # active cleaning
-    DOCKED = 10       # on dock, charged/charging
-    # TODO: discover values for RETURNING, PAUSED, ERROR
+    STANDBY = 1       # idle, off dock (also on dock at 100% battery)
+    CLEANING = 4      # active cleaning (plan-based start)
+    CLEANING_ALT = 5  # active cleaning (seen in some modes)
+    DOCKED = 10       # on dock, actively charging or returning
+    # Field 3 sub-field 2 = 1 means PAUSED (overlay on CLEANING state)
+    # Field 3 sub-field 10 = dock sub-state (1=docked, 2=docking)
 
 
 class FanLevel(IntEnum):

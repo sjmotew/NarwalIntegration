@@ -141,13 +141,16 @@ class NarwalState:
     download_status: int = 0
     upgrade_status_code: int = 0
 
+    # Pause overlay (field 3 sub-field 2 = 1 means paused)
+    is_paused: bool = False
+
     # Raw data for fields we haven't fully decoded yet
     raw_base_status: dict[str, Any] = field(default_factory=dict)
     raw_working_status: dict[str, Any] = field(default_factory=dict)
 
     @property
     def is_cleaning(self) -> bool:
-        return self.working_status == WorkingStatus.CLEANING
+        return self.working_status in (WorkingStatus.CLEANING, WorkingStatus.CLEANING_ALT) and not self.is_paused
 
     @property
     def is_docked(self) -> bool:
@@ -186,6 +189,8 @@ class NarwalState:
                 self.working_status = WorkingStatus(int(field3["1"]))
             except (ValueError, TypeError):
                 self.working_status = WorkingStatus.UNKNOWN
+            # Sub-field 2 = 1 means paused (overlay on cleaning state)
+            self.is_paused = bool(field3.get("2"))
         if "38" in decoded:
             self.battery_level = int(decoded["38"])
         if "36" in decoded:
