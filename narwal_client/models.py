@@ -82,6 +82,84 @@ class MapData:
 
 
 @dataclass
+class MapDisplayData:
+    """Real-time map display data from map/display_map broadcasts.
+
+    Sent during cleaning sessions with updated map grid and robot position.
+    """
+
+    width: int = 0
+    height: int = 0
+    compressed_grid: bytes = b""
+    robot_x: float = 0.0
+    robot_y: float = 0.0
+    robot_heading: float = 0.0
+    timestamp: int = 0
+
+    @classmethod
+    def from_broadcast(cls, decoded: dict[str, Any]) -> MapDisplayData:
+        """Parse display_map broadcast payload.
+
+        Expected structure (protobuf fields — needs confirmation):
+          field 7: map data submessage
+            7.1: width
+            7.2: height
+            7.3: compressed grid bytes
+          field 1: robot position submessage
+            1.1: x coordinate
+            1.2: y coordinate
+            1.3: heading
+        """
+        result = cls()
+
+        # Map grid — try field 7 (nested) or fall back to searching bytes fields
+        field7 = decoded.get("7", {})
+        if isinstance(field7, dict):
+            result.width = int(field7.get("1", 0))
+            result.height = int(field7.get("2", 0))
+            compressed = field7.get("3", b"")
+            if isinstance(compressed, str):
+                compressed = compressed.encode("latin-1")
+            result.compressed_grid = compressed if isinstance(compressed, bytes) else b""
+        elif isinstance(field7, bytes) and len(field7) > 100:
+            # Field 7 might be raw compressed bytes
+            result.compressed_grid = field7
+
+        # Robot position — try field 1
+        field1 = decoded.get("1", {})
+        if isinstance(field1, dict):
+            try:
+                result.robot_x = float(field1.get("1", 0))
+                result.robot_y = float(field1.get("2", 0))
+                result.robot_heading = float(field1.get("3", 0))
+            except (ValueError, TypeError):
+                pass
+
+        # Fallback: if width/height are 0, try other known structures
+        if result.width == 0 and result.height == 0:
+            # Some firmwares put width/height at the top level
+            if "4" in decoded:
+                try:
+                    result.width = int(decoded["4"])
+                except (ValueError, TypeError):
+                    pass
+            if "5" in decoded:
+                try:
+                    result.height = int(decoded["5"])
+                except (ValueError, TypeError):
+                    pass
+
+        # Look for large bytes fields as potential compressed grid
+        if not result.compressed_grid:
+            for key, val in decoded.items():
+                if isinstance(val, bytes) and len(val) > 100:
+                    result.compressed_grid = val
+                    break
+
+        return result
+
+
+@dataclass
 class Position:
     """Robot position from map/display_map."""
 
@@ -136,6 +214,7 @@ class NarwalState:
 
     # Map
     map_data: MapData | None = None
+    map_display_data: MapDisplayData | None = None
 
     # Download/upgrade status
     download_status: int = 0

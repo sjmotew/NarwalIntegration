@@ -47,32 +47,57 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
         """Connect to the vacuum and start the WebSocket listener."""
         await self.client.connect()
 
-        # Fetch initial state
-        await self.client.get_device_info()
-        await self.client.get_status()
-        self.async_set_updated_data(self.client.state)
-
-        # Set up push callback — broadcasts trigger HA data updates
+        # Set up push callback before starting listener
         self.client.on_state_update = self._on_state_update
 
-        # Start persistent WebSocket listener as a background task
+        # Start persistent WebSocket listener as a background task.
+        # This also starts the keepalive loop which sends wake commands.
         self._listen_task = self.config_entry.async_create_background_task(
             self.hass,
             self.client.start_listening(),
             f"{DOMAIN}_ws_listener",
         )
 
+        # Attempt to wake the robot (sends burst of wake commands)
+        await self.client.wake(timeout=20.0)
+
+        # Fetch initial state (best-effort — may fail if robot didn't wake)
+        try:
+            await self.client.get_device_info()
+        except Exception:
+            _LOGGER.debug("Could not fetch device info (robot may be asleep)")
+
+        try:
+            await self.client.get_status()
+        except Exception:
+            _LOGGER.debug("Could not fetch status (robot may be asleep)")
+
+        # Fetch initial map (best-effort)
+        try:
+            await self.client.get_map()
+        except Exception:
+            _LOGGER.debug("Could not fetch initial map")
+
+        self.async_set_updated_data(self.client.state)
+
     def _on_state_update(self, state: NarwalState) -> None:
         """Handle a push state update from the WebSocket listener."""
         self.async_set_updated_data(state)
 
     async def _async_update_data(self) -> NarwalState:
-        """Polling fallback — fetch status if no push updates arrived."""
+        """Polling fallback — fetch status if no push updates arrived.
+
+        Also attempts to wake the robot if it appears to be sleeping.
+        """
         if not self.client.connected:
             try:
                 await self.client.connect()
             except NarwalConnectionError as err:
                 raise UpdateFailed(f"Cannot connect to vacuum: {err}") from err
+
+        # If robot isn't broadcasting, try to wake it
+        if not self.client.robot_awake:
+            await self.client.wake(timeout=10.0)
 
         try:
             await self.client.get_status()

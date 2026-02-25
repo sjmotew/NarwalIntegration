@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
+import time
 from collections.abc import Callable
 from typing import Any
 
@@ -12,12 +13,16 @@ import websockets
 import websockets.exceptions
 
 from .const import (
+    BROADCAST_STALE_TIMEOUT,
     COMMAND_RESPONSE_TIMEOUT,
     DEFAULT_PORT,
     HEARTBEAT_INTERVAL,
+    KEEPALIVE_INTERVAL,
     RECONNECT_BACKOFF_FACTOR,
     RECONNECT_INITIAL_DELAY,
     RECONNECT_MAX_DELAY,
+    TOPIC_CMD_ACTIVE_ROBOT,
+    TOPIC_CMD_APP_HEARTBEAT,
     TOPIC_CMD_CANCEL,
     TOPIC_CMD_DRY_MOP,
     TOPIC_CMD_DUST_GATHERING,
@@ -29,7 +34,9 @@ from .const import (
     TOPIC_CMD_GET_DEVICE_INFO,
     TOPIC_CMD_GET_FEATURE_LIST,
     TOPIC_CMD_GET_MAP,
+    TOPIC_CMD_NOTIFY_APP_EVENT,
     TOPIC_CMD_PAUSE,
+    TOPIC_CMD_PING,
     TOPIC_CMD_RECALL,
     TOPIC_CMD_RESUME,
     TOPIC_CMD_SET_FAN_LEVEL,
@@ -38,10 +45,11 @@ from .const import (
     TOPIC_CMD_WASH_MOP,
     TOPIC_CMD_YELL,
     TOPIC_PREFIX,
+    WAKE_TIMEOUT,
     FanLevel,
     MopHumidity,
 )
-from .models import CommandResponse, DeviceInfo, MapData, NarwalState
+from .models import CommandResponse, DeviceInfo, MapData, MapDisplayData, NarwalState
 from .protocol import (
     PROTOBUF_FIELD5_TAG,
     NarwalMessage,
@@ -90,9 +98,12 @@ class NarwalClient:
         self._ws: Any = None
         self._listen_task: asyncio.Task[None] | None = None
         self._heartbeat_task: asyncio.Task[None] | None = None
+        self._keepalive_task: asyncio.Task[None] | None = None
         self._connected = asyncio.Event()
         self._should_reconnect = True
         self._listener_active = False  # True when start_listening() is running recv loop
+        self._robot_awake = False  # True once we receive a broadcast
+        self._last_broadcast_time: float = 0.0  # monotonic time of last broadcast
         # Queue for field5 command responses
         self._response_queue: asyncio.Queue[NarwalMessage] = asyncio.Queue()
 
@@ -104,6 +115,11 @@ class NarwalClient:
     def connected(self) -> bool:
         """Return True if the WebSocket is currently connected."""
         return self._ws is not None and self._connected.is_set()
+
+    @property
+    def robot_awake(self) -> bool:
+        """Return True if the robot is actively broadcasting."""
+        return self._robot_awake
 
     async def connect(self) -> None:
         """Establish WebSocket connection to the vacuum.
@@ -215,21 +231,16 @@ class NarwalClient:
         """Disconnect from the vacuum and stop all tasks."""
         self._should_reconnect = False
         self._listener_active = False
+        self._robot_awake = False
         self._connected.clear()
 
-        if self._heartbeat_task and not self._heartbeat_task.done():
-            self._heartbeat_task.cancel()
-            try:
-                await self._heartbeat_task
-            except asyncio.CancelledError:
-                pass
-
-        if self._listen_task and not self._listen_task.done():
-            self._listen_task.cancel()
-            try:
-                await self._listen_task
-            except asyncio.CancelledError:
-                pass
+        for task in (self._heartbeat_task, self._keepalive_task, self._listen_task):
+            if task and not task.done():
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
 
         if self._ws:
             await self._ws.close()
@@ -252,6 +263,7 @@ class NarwalClient:
 
                 retry_delay = RECONNECT_INITIAL_DELAY  # reset on success
                 self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
+                self._keepalive_task = asyncio.create_task(self._keepalive_loop())
                 self._listener_active = True
 
                 async for raw_message in self._ws:
@@ -269,9 +281,11 @@ class NarwalClient:
                 _LOGGER.exception("Unexpected error in listener")
             finally:
                 self._listener_active = False
+                self._robot_awake = False
                 self._connected.clear()
-                if self._heartbeat_task and not self._heartbeat_task.done():
-                    self._heartbeat_task.cancel()
+                for task in (self._heartbeat_task, self._keepalive_task):
+                    if task and not task.done():
+                        task.cancel()
 
             if not self._should_reconnect:
                 break
@@ -301,6 +315,12 @@ class NarwalClient:
             await self._response_queue.put(msg)
             return
 
+        # Any broadcast means the robot is awake
+        self._last_broadcast_time = time.monotonic()
+        if not self._robot_awake:
+            self._robot_awake = True
+            _LOGGER.info("Robot is awake (received broadcast)")
+
         if self.on_message:
             self.on_message(msg)
 
@@ -320,6 +340,8 @@ class NarwalClient:
             self.state.update_from_upgrade_status(decoded)
         elif short_topic == "status/download_status":
             self.state.update_from_download_status(decoded)
+        elif short_topic == "map/display_map":
+            self.state.map_display_data = MapDisplayData.from_broadcast(decoded)
 
         if self.on_state_update:
             self.on_state_update(self.state)
@@ -343,6 +365,192 @@ class NarwalClient:
             return
         except Exception:
             _LOGGER.debug("Heartbeat failed, connection may be lost")
+
+    # --- Wake / Keep-alive ---
+
+    @staticmethod
+    def _encode_varint(value: int) -> bytes:
+        """Encode an integer as a protobuf varint."""
+        result = []
+        while value > 0x7F:
+            result.append((value & 0x7F) | 0x80)
+            value >>= 7
+        result.append(value & 0x7F)
+        return bytes(result)
+
+    @classmethod
+    def _encode_varint_field(cls, field_num: int, value: int) -> bytes:
+        """Encode a protobuf varint field (tag + value)."""
+        tag = (field_num << 3) | 0  # wire type 0 = varint
+        return cls._encode_varint(tag) + cls._encode_varint(value)
+
+    @classmethod
+    def _encode_bytes_field(cls, field_num: int, data: bytes) -> bytes:
+        """Encode a protobuf length-delimited field."""
+        tag = (field_num << 3) | 2  # wire type 2 = length-delimited
+        return cls._encode_varint(tag) + cls._encode_varint(len(data)) + data
+
+    @classmethod
+    def _encode_string_field(cls, field_num: int, text: str) -> bytes:
+        """Encode a protobuf string field."""
+        return cls._encode_bytes_field(field_num, text.encode("utf-8"))
+
+    def _build_wake_commands(self) -> list[tuple[str, bytes]]:
+        """Build the sequence of wake commands to try.
+
+        Returns list of (short_topic, payload) tuples ordered by likelihood
+        of waking the robot. Derived from APK analysis of:
+          - ActiveRobotPublish (with TopicDuration sub-messages)
+          - AppStatusHeartbeat
+          - NotifyAppEvent
+          - GetDeviceInfo (baseline)
+          - Developer ping
+        """
+        cmds: list[tuple[str, bytes]] = []
+
+        # 1. active_robot_publish — empty (simplest, most commands work empty)
+        cmds.append((TOPIC_CMD_ACTIVE_ROBOT, b""))
+
+        # 2. active_robot_publish — field 1 = 300 (duration 5 min?)
+        cmds.append((TOPIC_CMD_ACTIVE_ROBOT, self._encode_varint_field(1, 300)))
+
+        # 3. active_robot_publish — nested TopicDuration:
+        #    field 1 = sub { field 1 = "status/robot_base_status", field 2 = 300 }
+        inner = (
+            self._encode_string_field(1, "status/robot_base_status")
+            + self._encode_varint_field(2, 300)
+        )
+        cmds.append((TOPIC_CMD_ACTIVE_ROBOT, self._encode_bytes_field(1, inner)))
+
+        # 4. app heartbeat — field 1 = 1
+        cmds.append((TOPIC_CMD_APP_HEARTBEAT, self._encode_varint_field(1, 1)))
+
+        # 5. app heartbeat — empty
+        cmds.append((TOPIC_CMD_APP_HEARTBEAT, b""))
+
+        # 6. notify_app_event — field 1 = 1 (app opened?)
+        cmds.append((TOPIC_CMD_NOTIFY_APP_EVENT, self._encode_varint_field(1, 1)))
+
+        # 7. get_device_info — the original fallback
+        cmds.append((TOPIC_CMD_GET_DEVICE_INFO, b""))
+
+        # 8. developer ping — empty
+        cmds.append((TOPIC_CMD_PING, b""))
+
+        return cmds
+
+    async def _send_wake_burst(self) -> None:
+        """Send all wake candidate commands in quick succession.
+
+        Fire-and-forget: sends each command with a short delay between them.
+        Does not wait for responses (the listener loop handles those).
+        """
+        if not self.connected or not self._ws:
+            return
+
+        commands = self._build_wake_commands()
+        for short_topic, payload in commands:
+            try:
+                full_topic = self._full_topic(short_topic)
+                frame = build_frame(full_topic, payload)
+                await self._ws.send(frame)
+                _LOGGER.debug("Wake burst: sent %s (%d bytes)", short_topic, len(payload))
+            except Exception:
+                _LOGGER.debug("Wake burst: failed to send %s", short_topic)
+                return  # connection probably lost
+            await asyncio.sleep(0.2)
+
+    async def wake(self, timeout: float = WAKE_TIMEOUT) -> bool:
+        """Attempt to wake the robot from sleep.
+
+        Sends a burst of wake commands and waits for the robot to start
+        broadcasting status messages. Returns True if robot woke up.
+
+        Args:
+            timeout: Maximum seconds to wait for the robot to respond.
+
+        Returns:
+            True if the robot is awake (received broadcasts), False otherwise.
+        """
+        if self._robot_awake:
+            return True
+
+        if not self.connected:
+            raise NarwalConnectionError("Not connected to vacuum")
+
+        _LOGGER.info("Attempting to wake robot...")
+
+        deadline = asyncio.get_event_loop().time() + timeout
+        attempt = 0
+
+        while asyncio.get_event_loop().time() < deadline:
+            attempt += 1
+            _LOGGER.debug("Wake attempt %d", attempt)
+
+            await self._send_wake_burst()
+
+            # Wait up to 5 seconds for a broadcast to arrive
+            wait_end = min(
+                asyncio.get_event_loop().time() + 5.0,
+                deadline,
+            )
+            while asyncio.get_event_loop().time() < wait_end:
+                if self._robot_awake:
+                    _LOGGER.info("Robot woke up after %d attempt(s)", attempt)
+                    return True
+                await asyncio.sleep(0.3)
+
+        _LOGGER.warning("Robot did not wake up within %.0fs (%d attempts)", timeout, attempt)
+        return False
+
+    async def _keepalive_loop(self) -> None:
+        """Periodically send wake/heartbeat commands to prevent robot from sleeping.
+
+        Runs alongside the listener loop. Sends a lightweight heartbeat
+        command every KEEPALIVE_INTERVAL seconds. If the robot stops
+        broadcasting for BROADCAST_STALE_TIMEOUT seconds (goes back to
+        sleep), resets _robot_awake and escalates to a full wake burst.
+        """
+        try:
+            while self.connected:
+                await asyncio.sleep(KEEPALIVE_INTERVAL)
+                if not self.connected or not self._ws:
+                    break
+
+                # Check if broadcasts have gone stale (robot fell back asleep)
+                if (
+                    self._robot_awake
+                    and self._last_broadcast_time > 0
+                    and time.monotonic() - self._last_broadcast_time
+                    > BROADCAST_STALE_TIMEOUT
+                ):
+                    _LOGGER.info(
+                        "No broadcast for %.0fs — robot may have gone to sleep",
+                        time.monotonic() - self._last_broadcast_time,
+                    )
+                    self._robot_awake = False
+
+                if self._robot_awake:
+                    # Robot is awake — send lightweight heartbeat
+                    try:
+                        payload = self._encode_varint_field(1, 1)
+                        frame = build_frame(
+                            self._full_topic(TOPIC_CMD_APP_HEARTBEAT), payload
+                        )
+                        await self._ws.send(frame)
+                        _LOGGER.debug("Keepalive heartbeat sent")
+                    except Exception:
+                        _LOGGER.debug("Keepalive send failed")
+                        break
+                else:
+                    # Robot appears asleep — send full wake burst
+                    _LOGGER.debug("Robot not awake, sending wake burst")
+                    await self._send_wake_burst()
+
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            _LOGGER.debug("Keepalive loop error, will restart with listener")
 
     # --- Command infrastructure ---
 
@@ -463,6 +671,8 @@ class NarwalClient:
                 self.state.update_from_upgrade_status(decoded)
             elif short_topic == "status/download_status":
                 self.state.update_from_download_status(decoded)
+            elif short_topic == "map/display_map":
+                self.state.map_display_data = MapDisplayData.from_broadcast(decoded)
 
         raise NarwalCommandError(
             f"No field5 response within {timeout}s"

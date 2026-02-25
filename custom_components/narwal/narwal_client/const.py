@@ -56,6 +56,12 @@ TOPIC_CMD_GET_CURRENT_TASK = "clean/current_clean_task/get"
 TOPIC_CMD_GET_MAP = "map/get_map"
 TOPIC_CMD_GET_ALL_MAPS = "map/get_all_reduced_maps"
 
+# Wake / Keep-alive (from APK analysis — candidates for waking sleeping robot)
+TOPIC_CMD_ACTIVE_ROBOT = "common/active_robot_publish"  # TopicDuration keepalive
+TOPIC_CMD_APP_HEARTBEAT = "status/app_status_heartbeat"  # periodic app heartbeat
+TOPIC_CMD_NOTIFY_APP_EVENT = "common/notify_app_event"  # "app opened" event
+TOPIC_CMD_PING = "developer/ping"  # dev ping/pong
+
 # Reconnection parameters
 RECONNECT_INITIAL_DELAY = 1.0  # seconds
 RECONNECT_MAX_DELAY = 300.0  # 5 minutes
@@ -64,6 +70,15 @@ RECONNECT_COOLDOWN = 10.0  # wait after robot disconnects on invalid message
 
 # Heartbeat
 HEARTBEAT_INTERVAL = 30.0  # seconds
+
+# Keep-alive interval — sends wake commands to prevent robot from sleeping
+KEEPALIVE_INTERVAL = 15.0  # seconds
+
+# How long without a broadcast before we consider the robot asleep again
+BROADCAST_STALE_TIMEOUT = 45.0  # seconds (~30x the 1.5s broadcast interval)
+
+# Wake sequence timeout — how long to wait for robot to respond after wake burst
+WAKE_TIMEOUT = 20.0  # seconds
 
 # Command response timeout
 COMMAND_RESPONSE_TIMEOUT = 5.0  # seconds

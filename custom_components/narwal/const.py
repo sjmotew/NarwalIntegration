@@ -14,6 +14,7 @@ PLATFORMS: list[Platform] = [
     Platform.VACUUM,
     Platform.SENSOR,
     Platform.BINARY_SENSOR,
+    Platform.IMAGE,
 ]
 
 FAN_SPEED_MAP: dict[str, FanLevel] = {

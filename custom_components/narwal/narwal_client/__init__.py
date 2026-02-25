@@ -2,7 +2,7 @@
 
 from .client import NarwalClient, NarwalCommandError, NarwalConnectionError
 from .const import CommandResult, FanLevel, MopHumidity, WorkingStatus
-from .models import CommandResponse, DeviceInfo, MapData, NarwalState, RoomInfo
+from .models import CommandResponse, DeviceInfo, MapData, MapDisplayData, NarwalState, RoomInfo
 from .protocol import build_frame, parse_frame
 
 __all__ = [
@@ -15,6 +15,7 @@ __all__ = [
     "DeviceInfo",
     "FanLevel",
     "MapData",
+    "MapDisplayData",
     "MopHumidity",
     "RoomInfo",
     "WorkingStatus",
