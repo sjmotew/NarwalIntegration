@@ -27,6 +27,24 @@ class RoomInfo:
     room_type: int = 0
 
 
+def _to_float32(val: Any) -> float | None:
+    """Convert a protobuf value to float32.
+
+    blackboxprotobuf may return fixed32 fields as either:
+      - Python float (if it detects wire type 5 as float)
+      - Python int (raw uint32 bit pattern)
+    Handle both cases.
+    """
+    if isinstance(val, float):
+        return val
+    if isinstance(val, int):
+        try:
+            return struct.unpack("f", struct.pack("I", val & 0xFFFFFFFF))[0]
+        except struct.error:
+            return None
+    return None
+
+
 @dataclass
 class MapData:
     """Map data from get_map response."""
@@ -74,7 +92,7 @@ class MapData:
 
         resolution = int(payload.get("3", 0))
 
-        # Parse dock position from field 8 (float32 meters)
+        # Parse dock position from field 8 (meters, either float32 or uint32 bit pattern)
         # Coordinate transform from field 6: px = (meters * 1000 / res) - field6.3
         #                                    py = (meters * 1000 / res) - field6.1
         dock_x = None
@@ -89,14 +107,13 @@ class MapData:
             try:
                 pos = field8.get("1", {})
                 if isinstance(pos, dict) and "1" in pos and "2" in pos:
-                    raw_x = int(pos["1"]) & 0xFFFFFFFF
-                    raw_y = int(pos["2"]) & 0xFFFFFFFF
-                    meters_x = struct.unpack("f", struct.pack("I", raw_x))[0]
-                    meters_y = struct.unpack("f", struct.pack("I", raw_y))[0]
-                    origin_x = int(field6.get("3", 0))  # x offset
-                    origin_y = int(field6.get("1", 0))  # y offset
-                    dock_x = (meters_x * 1000.0 / resolution) - origin_x
-                    dock_y = (meters_y * 1000.0 / resolution) - origin_y
+                    meters_x = _to_float32(pos["1"])
+                    meters_y = _to_float32(pos["2"])
+                    if meters_x is not None and meters_y is not None:
+                        origin_x = int(field6.get("3", 0))  # x offset
+                        origin_y = int(field6.get("1", 0))  # y offset
+                        dock_x = (meters_x * 1000.0 / resolution) - origin_x
+                        dock_y = (meters_y * 1000.0 / resolution) - origin_y
             except (struct.error, OverflowError, ValueError, TypeError):
                 pass
 

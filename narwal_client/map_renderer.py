@@ -169,6 +169,7 @@ def render_map_png(
     robot_heading: float | None = None,
     dock_x: float | None = None,
     dock_y: float | None = None,
+    room_names: dict[int, str] | None = None,
 ) -> bytes:
     """Render decompressed map data as a PNG image.
 
@@ -187,6 +188,9 @@ def render_map_png(
         robot_x: Robot X position in grid coordinates (optional).
         robot_y: Robot Y position in grid coordinates (optional).
         robot_heading: Robot heading in degrees (optional).
+        dock_x: Dock X position in grid coordinates (optional).
+        dock_y: Dock Y position in grid coordinates (optional).
+        room_names: Mapping of room_id to display name (optional).
 
     Returns:
         PNG image as bytes, or empty bytes on failure.
@@ -195,7 +199,7 @@ def render_map_png(
         return b""
 
     try:
-        from PIL import Image, ImageDraw
+        from PIL import Image, ImageDraw, ImageFont
     except ImportError:
         _LOGGER.error("Pillow is required for map rendering")
         return b""
@@ -214,6 +218,11 @@ def render_map_png(
 
     img = Image.new("RGB", (width, height), COLOR_UNKNOWN)
     px = img.load()
+
+    # Track room pixel sums for centroid computation
+    room_sum_x: dict[int, int] = {}
+    room_sum_y: dict[int, int] = {}
+    room_count: dict[int, int] = {}
 
     for i, val in enumerate(pixels):
         x = i % width
@@ -239,15 +248,42 @@ def render_map_png(
             else:
                 px[x, y] = base
 
+            # Accumulate for centroid (floor pixels only, not walls)
+            if room_names and room_id in room_names and not (ptype & 0x10):
+                room_sum_x[room_id] = room_sum_x.get(room_id, 0) + x
+                room_sum_y[room_id] = room_sum_y.get(room_id, 0) + y
+                room_count[room_id] = room_count.get(room_id, 0) + 1
+
+    draw = ImageDraw.Draw(img)
+
+    # Draw room labels at centroids
+    if room_names:
+        try:
+            font = ImageFont.truetype("arial.ttf", 10)
+        except (IOError, OSError):
+            font = ImageFont.load_default()
+        for rid, name in room_names.items():
+            if not name or rid not in room_count:
+                continue
+            cx = room_sum_x[rid] // room_count[rid]
+            cy = room_sum_y[rid] // room_count[rid]
+            bbox = font.getbbox(name)
+            tw = bbox[2] - bbox[0]
+            th = bbox[3] - bbox[1]
+            tx = cx - tw // 2
+            ty = cy - th // 2
+            # Dark outline for readability
+            for ox, oy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                draw.text((tx + ox, ty + oy), name, fill=(0, 0, 0), font=font)
+            draw.text((tx, ty), name, fill=(255, 255, 255), font=font)
+
     # Draw dock position (before robot so robot draws on top)
     if dock_x is not None and dock_y is not None:
-        draw = ImageDraw.Draw(img)
         dock_size = max(4, min(width, height) // 60)
         _draw_dock(draw, int(dock_x), int(dock_y), dock_size)
 
     # Draw robot position
     if robot_x is not None and robot_y is not None:
-        draw = ImageDraw.Draw(img)
         rx, ry = int(robot_x), int(robot_y)
         radius = max(3, min(width, height) // 80)
         draw.ellipse(
@@ -270,6 +306,7 @@ def render_map_from_compressed(
     robot_heading: float | None = None,
     dock_x: float | None = None,
     dock_y: float | None = None,
+    room_names: dict[int, str] | None = None,
 ) -> bytes:
     """Decompress and render map data in one step.
 
@@ -282,11 +319,13 @@ def render_map_from_compressed(
         robot_heading: Robot heading in degrees (optional).
         dock_x: Dock X position (optional).
         dock_y: Dock Y position (optional).
+        room_names: Mapping of room_id to display name (optional).
 
     Returns:
         PNG image as bytes, or empty bytes on failure.
     """
     decompressed = decompress_map(compressed)
     return render_map_png(
-        decompressed, width, height, robot_x, robot_y, robot_heading, dock_x, dock_y
+        decompressed, width, height, robot_x, robot_y, robot_heading,
+        dock_x, dock_y, room_names,
     )

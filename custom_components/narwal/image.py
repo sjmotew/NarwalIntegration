@@ -93,10 +93,15 @@ class NarwalMapImage(NarwalEntity, ImageEntity):
             height = static_map.height
             current_ts = static_map.created_at or 0
 
-        # Dock position comes from static map (always available)
+        # Dock position and room names come from static map (always available)
+        room_names: dict[int, str] | None = None
         if static_map:
             dock_x = static_map.dock_x
             dock_y = static_map.dock_y
+            if static_map.rooms:
+                room_names = {
+                    r.room_id: r.name for r in static_map.rooms if r.name
+                }
 
         if not compressed or width <= 0 or height <= 0:
             return self._cached_image
@@ -119,6 +124,7 @@ class NarwalMapImage(NarwalEntity, ImageEntity):
                 robot_heading,
                 dock_x,
                 dock_y,
+                room_names,
             )
 
             if png_bytes:

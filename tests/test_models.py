@@ -180,6 +180,25 @@ class TestMapData:
         assert abs(m.dock_x - 146.0) < 1.0
         assert abs(m.dock_y - 344.67) < 1.0
 
+    def test_dock_position_float_input(self) -> None:
+        """bbp may return fixed32 fields as Python floats directly."""
+        decoded = {"2": {
+            "3": 60,
+            "4": 341,
+            "5": 494,
+            "6": {"1": -341, "2": 152, "3": -280, "4": 60},
+            "8": {
+                "1": {"1": -8.04, "2": 0.22},
+                "2": 0.036,
+            },
+            "17": b"",
+        }}
+        m = MapData.from_response(decoded)
+        assert m.dock_x is not None
+        assert m.dock_y is not None
+        assert abs(m.dock_x - 146.0) < 1.0
+        assert abs(m.dock_y - 344.67) < 1.0
+
     def test_dock_position_missing_field8(self) -> None:
         """No dock position when field 8 is missing."""
         decoded = {"2": {
