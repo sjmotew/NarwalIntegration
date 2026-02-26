@@ -100,17 +100,20 @@ class WorkingStatus(IntEnum):
 
     Values confirmed via live WebSocket monitoring:
       1  = STANDBY (idle, off dock)
-      5  = CLEANING (active cleaning session)
-      10 = DOCKED (on dock, charged/charging)
+      4  = CLEANING (plan-based start)
+      5  = CLEANING_ALT (seen in some modes)
+      10 = DOCKED (on dock, charging or returning)
+      14 = CHARGED (on dock, fully charged)
     Values not yet confirmed (need more captures):
       returning, paused, error states
     """
 
     UNKNOWN = 0
-    STANDBY = 1       # idle, off dock (also on dock at 100% battery)
+    STANDBY = 1       # idle, off dock
     CLEANING = 4      # active cleaning (plan-based start)
     CLEANING_ALT = 5  # active cleaning (seen in some modes)
     DOCKED = 10       # on dock, actively charging or returning
+    CHARGED = 14      # on dock, fully charged and idle
     # Field 3 sub-field 2 = 1 means PAUSED (overlay on CLEANING state)
     # Field 3 sub-field 10 = dock sub-state (1=docked, 2=docking)
 

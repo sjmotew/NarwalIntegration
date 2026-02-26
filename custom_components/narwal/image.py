@@ -75,6 +75,8 @@ class NarwalMapImage(NarwalEntity, ImageEntity):
         robot_x = None
         robot_y = None
         robot_heading = None
+        dock_x = None
+        dock_y = None
         current_ts = 0
 
         if display and display.compressed_grid:
@@ -90,6 +92,11 @@ class NarwalMapImage(NarwalEntity, ImageEntity):
             width = static_map.width
             height = static_map.height
             current_ts = static_map.created_at or 0
+
+        # Dock position comes from static map (always available)
+        if static_map:
+            dock_x = static_map.dock_x
+            dock_y = static_map.dock_y
 
         if not compressed or width <= 0 or height <= 0:
             return self._cached_image
@@ -110,6 +117,8 @@ class NarwalMapImage(NarwalEntity, ImageEntity):
                 robot_x,
                 robot_y,
                 robot_heading,
+                dock_x,
+                dock_y,
             )
 
             if png_bytes:

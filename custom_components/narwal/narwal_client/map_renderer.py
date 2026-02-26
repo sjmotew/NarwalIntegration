@@ -142,6 +142,24 @@ def _darken(color: tuple[int, int, int], amount: int = 80) -> tuple[int, int, in
     )
 
 
+def _draw_dock(
+    draw: "ImageDraw.ImageDraw",
+    dock_x: int,
+    dock_y: int,
+    size: int = 6,
+) -> None:
+    """Draw a dock/charging station icon at the given grid coordinates.
+
+    Renders as a small white filled circle (matching the Narwal app style).
+    """
+    radius = size // 2
+    draw.ellipse(
+        [dock_x - radius, dock_y - radius, dock_x + radius, dock_y + radius],
+        fill=(255, 255, 255),
+        outline=(180, 180, 180),
+    )
+
+
 def render_map_png(
     decompressed: bytes,
     width: int,
@@ -149,6 +167,8 @@ def render_map_png(
     robot_x: float | None = None,
     robot_y: float | None = None,
     robot_heading: float | None = None,
+    dock_x: float | None = None,
+    dock_y: float | None = None,
 ) -> bytes:
     """Render decompressed map data as a PNG image.
 
@@ -219,6 +239,12 @@ def render_map_png(
             else:
                 px[x, y] = base
 
+    # Draw dock position (before robot so robot draws on top)
+    if dock_x is not None and dock_y is not None:
+        draw = ImageDraw.Draw(img)
+        dock_size = max(4, min(width, height) // 60)
+        _draw_dock(draw, int(dock_x), int(dock_y), dock_size)
+
     # Draw robot position
     if robot_x is not None and robot_y is not None:
         draw = ImageDraw.Draw(img)
@@ -242,6 +268,8 @@ def render_map_from_compressed(
     robot_x: float | None = None,
     robot_y: float | None = None,
     robot_heading: float | None = None,
+    dock_x: float | None = None,
+    dock_y: float | None = None,
 ) -> bytes:
     """Decompress and render map data in one step.
 
@@ -252,9 +280,13 @@ def render_map_from_compressed(
         robot_x: Robot X position (optional).
         robot_y: Robot Y position (optional).
         robot_heading: Robot heading in degrees (optional).
+        dock_x: Dock X position (optional).
+        dock_y: Dock Y position (optional).
 
     Returns:
         PNG image as bytes, or empty bytes on failure.
     """
     decompressed = decompress_map(compressed)
-    return render_map_png(decompressed, width, height, robot_x, robot_y, robot_heading)
+    return render_map_png(
+        decompressed, width, height, robot_x, robot_y, robot_heading, dock_x, dock_y
+    )

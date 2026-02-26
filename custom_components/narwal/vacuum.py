@@ -23,6 +23,7 @@ _LOGGER = logging.getLogger(__name__)
 
 WORKING_STATUS_TO_ACTIVITY: dict[WorkingStatus, VacuumActivity] = {
     WorkingStatus.DOCKED: VacuumActivity.DOCKED,
+    WorkingStatus.CHARGED: VacuumActivity.DOCKED,
     WorkingStatus.STANDBY: VacuumActivity.IDLE,
     WorkingStatus.CLEANING: VacuumActivity.CLEANING,
     WorkingStatus.CLEANING_ALT: VacuumActivity.CLEANING,
@@ -67,7 +68,9 @@ class NarwalVacuum(NarwalEntity, StateVacuumEntity):
             return VacuumActivity.IDLE
         if state.is_paused:
             return VacuumActivity.PAUSED
-        # STANDBY(1) on dock at 100% should show DOCKED, not IDLE
+        # Check cleaning before docked — dock_sub_state can linger
+        if state.is_cleaning:
+            return VacuumActivity.CLEANING
         if state.is_docked:
             return VacuumActivity.DOCKED
         return WORKING_STATUS_TO_ACTIVITY.get(

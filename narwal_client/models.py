@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import struct
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -37,6 +38,8 @@ class MapData:
     compressed_map: bytes = b""
     area: int = 0
     created_at: int = 0
+    dock_x: float | None = None  # dock position in grid coordinates
+    dock_y: float | None = None
     raw: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
@@ -69,14 +72,44 @@ class MapData:
         if isinstance(compressed, str):
             compressed = compressed.encode("latin-1")
 
+        resolution = int(payload.get("3", 0))
+
+        # Parse dock position from field 8 (float32 meters)
+        # Coordinate transform from field 6: px = (meters * 1000 / res) - field6.3
+        #                                    py = (meters * 1000 / res) - field6.1
+        dock_x = None
+        dock_y = None
+        field8 = payload.get("8")
+        field6 = payload.get("6")
+        if (
+            isinstance(field8, dict)
+            and isinstance(field6, dict)
+            and resolution > 0
+        ):
+            try:
+                pos = field8.get("1", {})
+                if isinstance(pos, dict) and "1" in pos and "2" in pos:
+                    raw_x = int(pos["1"]) & 0xFFFFFFFF
+                    raw_y = int(pos["2"]) & 0xFFFFFFFF
+                    meters_x = struct.unpack("f", struct.pack("I", raw_x))[0]
+                    meters_y = struct.unpack("f", struct.pack("I", raw_y))[0]
+                    origin_x = int(field6.get("3", 0))  # x offset
+                    origin_y = int(field6.get("1", 0))  # y offset
+                    dock_x = (meters_x * 1000.0 / resolution) - origin_x
+                    dock_y = (meters_y * 1000.0 / resolution) - origin_y
+            except (struct.error, OverflowError, ValueError, TypeError):
+                pass
+
         return cls(
             width=int(payload.get("4", 0)),
             height=int(payload.get("5", 0)),
-            resolution=int(payload.get("3", 0)),
+            resolution=resolution,
             rooms=rooms,
             compressed_map=compressed if isinstance(compressed, bytes) else b"",
             area=int(payload.get("33", 0)),
             created_at=int(payload.get("34", 0)),
+            dock_x=dock_x,
+            dock_y=dock_y,
             raw=payload,
         )
 
@@ -236,12 +269,22 @@ class NarwalState:
 
     @property
     def is_docked(self) -> bool:
-        """True when on dock: either state DOCKED(10) or dock sub-state=1 (fully docked)."""
-        return self.working_status == WorkingStatus.DOCKED or self.dock_sub_state == 1
+        """True when on dock: DOCKED(10), CHARGED(14), or STANDBY(1) with dock sub-state=1.
+
+        dock_sub_state can linger at 1 after the robot leaves the dock,
+        so only use it when working_status is STANDBY (the ambiguous case
+        where the robot may be idle on or off the dock).
+        """
+        if self.working_status in (WorkingStatus.DOCKED, WorkingStatus.CHARGED):
+            return True
+        if self.working_status == WorkingStatus.STANDBY and self.dock_sub_state == 1:
+            return True
+        return False
 
     @property
     def is_returning(self) -> bool:
-        return self.working_status == WorkingStatus.RETURNING
+        # RETURNING status value not yet confirmed from live data
+        return False
 
     def update_from_working_status(self, decoded: dict[str, Any]) -> None:
         """Update state from a decoded working_status message.

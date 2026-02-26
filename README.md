@@ -6,11 +6,12 @@ A fully **local, cloud-independent** [Home Assistant](https://www.home-assistant
 
 ## Supported Devices
 
-| Model | Internal Code | Status |
-|-------|---------------|--------|
-| Narwal Flow | AX12 | Working |
+| Model | Internal Code | Status | Notes |
+|-------|---------------|--------|-------|
+| Narwal Flow | AX12 | Working | Local WebSocket on port 9002 |
+| Narwal FREO Z10 | — | Not Compatible | No local WebSocket; uses cloud/P2P protocol ([#1](https://github.com/sjmotew/NarwalIntegration/issues/1)) |
 
-Other Narwal models *may* work but have not been tested. If you have a different model, please open an issue with your model name and any logs.
+Other Narwal models *may* work if they expose a local WebSocket on port 9002 (same protocol as the Flow/AX12). If you have a different model, please open an issue with your model name, an nmap scan of the device, and any logs.
 
 ## Features
 
