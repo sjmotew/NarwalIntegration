@@ -152,7 +152,7 @@ class TestMapData:
         assert m.area == 944
 
     def test_dock_position_from_field48_uint32(self) -> None:
-        """Dock parsed from field 48 (latest timestamp, uint32 grid coords)."""
+        """Dock parsed from field 48 (latest timestamp, cm coords as uint32)."""
         decoded = {"2": {
             "3": 60,
             "4": 341,
@@ -165,11 +165,12 @@ class TestMapData:
             "17": b"",
         }}
         m = MapData.from_response(decoded)
-        # Latest entry (ts=2000): grid (19.88, 36.07) → px = 19.88+280, py = 36.07+341
+        # Latest entry (ts=2000): 19.88cm, 36.07cm
+        # px = 19.88/6 + 280 ≈ 283.31, py = 36.07/6 + 341 ≈ 347.01
         assert m.dock_x is not None
         assert m.dock_y is not None
-        assert abs(m.dock_x - 299.88) < 1.0
-        assert abs(m.dock_y - 377.07) < 1.0
+        assert abs(m.dock_x - 283.31) < 1.0
+        assert abs(m.dock_y - 347.01) < 1.0
 
     def test_dock_position_from_field48_float(self) -> None:
         """bbp may return fixed32 fields as Python floats directly."""
@@ -184,10 +185,11 @@ class TestMapData:
             "17": b"",
         }}
         m = MapData.from_response(decoded)
+        # 19.88cm / 6 + 280 ≈ 283.31, 36.07cm / 6 + 341 ≈ 347.01
         assert m.dock_x is not None
         assert m.dock_y is not None
-        assert abs(m.dock_x - 299.88) < 1.0
-        assert abs(m.dock_y - 377.07) < 1.0
+        assert abs(m.dock_x - 283.31) < 1.0
+        assert abs(m.dock_y - 347.01) < 1.0
 
     def test_dock_position_missing_field48(self) -> None:
         """No dock position when field 48 is missing."""

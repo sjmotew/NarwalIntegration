@@ -92,10 +92,11 @@ class MapData:
 
         resolution = int(payload.get("3", 0))
 
-        # Parse dock position from field 48 (timestamped positions in grid coords).
-        # Field 48 is a list of {1: id, 2: {1: grid_x, 2: grid_y}, 3: timestamp}.
+        # Parse dock position from field 48 (timestamped positions in cm).
+        # Field 48 is a list of {1: id, 2: {1: x_cm, 2: y_cm}, 3: timestamp}.
         # Use the entry with the latest timestamp (most recent dock position).
-        # Coordinate transform from field 6: px = grid_x - field6.3, py = grid_y - field6.1
+        # Coordinates are in centimeters; convert to pixels via resolution (mm/pixel).
+        # Pixel transform: px = (x_cm * 10 / resolution) - field6.3
         dock_x = None
         dock_y = None
         field48 = payload.get("48")
@@ -117,13 +118,14 @@ class MapData:
                     best_pos = pos
             if best_pos is not None:
                 try:
-                    grid_x = _to_float32(best_pos["1"])
-                    grid_y = _to_float32(best_pos["2"])
-                    if grid_x is not None and grid_y is not None:
+                    x_cm = _to_float32(best_pos["1"])
+                    y_cm = _to_float32(best_pos["2"])
+                    if x_cm is not None and y_cm is not None and resolution > 0:
+                        cm_per_pixel = resolution / 10  # 60mm/px = 6cm/px
                         origin_x = int(field6.get("3", 0))  # x pixel offset
                         origin_y = int(field6.get("1", 0))  # y pixel offset
-                        dock_x = grid_x - origin_x
-                        dock_y = grid_y - origin_y
+                        dock_x = x_cm / cm_per_pixel - origin_x
+                        dock_y = y_cm / cm_per_pixel - origin_y
                 except (struct.error, OverflowError, ValueError, TypeError):
                     pass
 
