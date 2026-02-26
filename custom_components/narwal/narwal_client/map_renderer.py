@@ -292,6 +292,10 @@ def render_map_png(
             outline=(255, 255, 255),
         )
 
+    # Flip vertically — pixel data is stored with Y increasing upward
+    # (math coordinates) but images render Y increasing downward.
+    img = img.transpose(Image.FLIP_TOP_BOTTOM)
+
     buf = io.BytesIO()
     img.save(buf, format="PNG")
     return buf.getvalue()
