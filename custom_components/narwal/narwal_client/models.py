@@ -92,30 +92,40 @@ class MapData:
 
         resolution = int(payload.get("3", 0))
 
-        # Parse dock position from field 8 (meters, either float32 or uint32 bit pattern)
-        # Coordinate transform from field 6: px = (meters * 1000 / res) - field6.3
-        #                                    py = (meters * 1000 / res) - field6.1
+        # Parse dock position from field 48 (timestamped positions in grid coords).
+        # Field 48 is a list of {1: id, 2: {1: grid_x, 2: grid_y}, 3: timestamp}.
+        # Use the entry with the latest timestamp (most recent dock position).
+        # Coordinate transform from field 6: px = grid_x - field6.3, py = grid_y - field6.1
         dock_x = None
         dock_y = None
-        field8 = payload.get("8")
+        field48 = payload.get("48")
         field6 = payload.get("6")
-        if (
-            isinstance(field8, dict)
-            and isinstance(field6, dict)
-            and resolution > 0
-        ):
-            try:
-                pos = field8.get("1", {})
-                if isinstance(pos, dict) and "1" in pos and "2" in pos:
-                    meters_x = _to_float32(pos["1"])
-                    meters_y = _to_float32(pos["2"])
-                    if meters_x is not None and meters_y is not None:
-                        origin_x = int(field6.get("3", 0))  # x offset
-                        origin_y = int(field6.get("1", 0))  # y offset
-                        dock_x = (meters_x * 1000.0 / resolution) - origin_x
-                        dock_y = (meters_y * 1000.0 / resolution) - origin_y
-            except (struct.error, OverflowError, ValueError, TypeError):
-                pass
+        if isinstance(field48, list) and isinstance(field6, dict):
+            best_ts = -1
+            best_pos = None
+            for entry in field48:
+                if not isinstance(entry, dict):
+                    continue
+                ts = 0
+                try:
+                    ts = int(entry.get("3", 0))
+                except (ValueError, TypeError):
+                    pass
+                pos = entry.get("2")
+                if isinstance(pos, dict) and "1" in pos and "2" in pos and ts >= best_ts:
+                    best_ts = ts
+                    best_pos = pos
+            if best_pos is not None:
+                try:
+                    grid_x = _to_float32(best_pos["1"])
+                    grid_y = _to_float32(best_pos["2"])
+                    if grid_x is not None and grid_y is not None:
+                        origin_x = int(field6.get("3", 0))  # x pixel offset
+                        origin_y = int(field6.get("1", 0))  # y pixel offset
+                        dock_x = grid_x - origin_x
+                        dock_y = grid_y - origin_y
+                except (struct.error, OverflowError, ValueError, TypeError):
+                    pass
 
         return cls(
             width=int(payload.get("4", 0)),

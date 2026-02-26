@@ -151,56 +151,46 @@ class TestMapData:
         assert m.rooms[0].name == "Kitchen"
         assert m.area == 944
 
-    def test_dock_position_parsing(self) -> None:
-        """Dock position parsed from field 8 float32 values + field 6 transform."""
-        dock_meters_x = -8.04
-        dock_meters_y = 0.22
-        dock_angle = 0.036
-
-        decoded = {"2": {
-            "3": 60,  # resolution
-            "4": 341,
-            "5": 494,
-            "6": {"1": -341, "2": 152, "3": -280, "4": 60},
-            "8": {
-                "1": {
-                    "1": _float_to_uint32(dock_meters_x),
-                    "2": _float_to_uint32(dock_meters_y),
-                },
-                "2": _float_to_uint32(dock_angle),
-            },
-            "17": b"",
-        }}
-        m = MapData.from_response(decoded)
-
-        # Expected: px = (meters * 1000 / 60) - (-280) = (-134) + 280 = 146
-        #           py = (meters * 1000 / 60) - (-341) = (3.67) + 341 = 344.67
-        assert m.dock_x is not None
-        assert m.dock_y is not None
-        assert abs(m.dock_x - 146.0) < 1.0
-        assert abs(m.dock_y - 344.67) < 1.0
-
-    def test_dock_position_float_input(self) -> None:
-        """bbp may return fixed32 fields as Python floats directly."""
+    def test_dock_position_from_field48_uint32(self) -> None:
+        """Dock parsed from field 48 (latest timestamp, uint32 grid coords)."""
         decoded = {"2": {
             "3": 60,
             "4": 341,
             "5": 494,
             "6": {"1": -341, "2": 152, "3": -280, "4": 60},
-            "8": {
-                "1": {"1": -8.04, "2": 0.22},
-                "2": 0.036,
-            },
+            "48": [
+                {"1": 123, "2": {"1": _float_to_uint32(-49.04), "2": _float_to_uint32(35.74)}, "3": 1000},
+                {"1": 123, "2": {"1": _float_to_uint32(19.88), "2": _float_to_uint32(36.07)}, "3": 2000},
+            ],
+            "17": b"",
+        }}
+        m = MapData.from_response(decoded)
+        # Latest entry (ts=2000): grid (19.88, 36.07) → px = 19.88+280, py = 36.07+341
+        assert m.dock_x is not None
+        assert m.dock_y is not None
+        assert abs(m.dock_x - 299.88) < 1.0
+        assert abs(m.dock_y - 377.07) < 1.0
+
+    def test_dock_position_from_field48_float(self) -> None:
+        """bbp may return fixed32 fields as Python floats directly."""
+        decoded = {"2": {
+            "3": 60,
+            "4": 341,
+            "5": 494,
+            "6": {"1": -341, "3": -280},
+            "48": [
+                {"1": 1, "2": {"1": 19.88, "2": 36.07}, "3": 100},
+            ],
             "17": b"",
         }}
         m = MapData.from_response(decoded)
         assert m.dock_x is not None
         assert m.dock_y is not None
-        assert abs(m.dock_x - 146.0) < 1.0
-        assert abs(m.dock_y - 344.67) < 1.0
+        assert abs(m.dock_x - 299.88) < 1.0
+        assert abs(m.dock_y - 377.07) < 1.0
 
-    def test_dock_position_missing_field8(self) -> None:
-        """No dock position when field 8 is missing."""
+    def test_dock_position_missing_field48(self) -> None:
+        """No dock position when field 48 is missing."""
         decoded = {"2": {
             "3": 60,
             "4": 341,
@@ -218,7 +208,7 @@ class TestMapData:
             "3": 60,
             "4": 341,
             "5": 494,
-            "8": {"1": {"1": 123456, "2": 654321}, "2": 100},
+            "48": [{"1": 1, "2": {"1": 10.0, "2": 20.0}, "3": 100}],
             "17": b"",
         }}
         m = MapData.from_response(decoded)
