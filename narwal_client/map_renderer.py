@@ -254,9 +254,14 @@ def render_map_png(
                 room_sum_y[room_id] = room_sum_y.get(room_id, 0) + y
                 room_count[room_id] = room_count.get(room_id, 0) + 1
 
+    # Flip vertically BEFORE drawing overlays — pixel data is stored with
+    # Y increasing upward (math coordinates) but images render Y downward.
+    # Overlays (labels, dock, robot) use flipped coordinates so text is right-side up.
+    img = img.transpose(Image.FLIP_TOP_BOTTOM)
+
     draw = ImageDraw.Draw(img)
 
-    # Draw room labels at centroids
+    # Draw room labels at flipped centroids
     if room_names:
         try:
             font = ImageFont.truetype("arial.ttf", 10)
@@ -266,7 +271,7 @@ def render_map_png(
             if not name or rid not in room_count:
                 continue
             cx = room_sum_x[rid] // room_count[rid]
-            cy = room_sum_y[rid] // room_count[rid]
+            cy = height - 1 - (room_sum_y[rid] // room_count[rid])
             bbox = font.getbbox(name)
             tw = bbox[2] - bbox[0]
             th = bbox[3] - bbox[1]
@@ -278,23 +283,21 @@ def render_map_png(
             draw.text((tx, ty), name, fill=(255, 255, 255), font=font)
 
     # Draw dock position (before robot so robot draws on top)
+    # Flip dock Y to match the flipped image
     if dock_x is not None and dock_y is not None:
         dock_size = max(4, min(width, height) // 60)
-        _draw_dock(draw, int(dock_x), int(dock_y), dock_size)
+        _draw_dock(draw, int(dock_x), height - 1 - int(dock_y), dock_size)
 
-    # Draw robot position
+    # Draw robot position (flip Y)
     if robot_x is not None and robot_y is not None:
-        rx, ry = int(robot_x), int(robot_y)
+        rx = int(robot_x)
+        ry = height - 1 - int(robot_y)
         radius = max(3, min(width, height) // 80)
         draw.ellipse(
             [rx - radius, ry - radius, rx + radius, ry + radius],
             fill=(0, 120, 255),
             outline=(255, 255, 255),
         )
-
-    # Flip vertically — pixel data is stored with Y increasing upward
-    # (math coordinates) but images render Y increasing downward.
-    img = img.transpose(Image.FLIP_TOP_BOTTOM)
 
     buf = io.BytesIO()
     img.save(buf, format="PNG")
