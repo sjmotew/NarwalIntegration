@@ -63,11 +63,25 @@ class TestNarwalState:
         assert state.is_docked
 
     def test_update_from_base_status_standby_off_dock(self) -> None:
-        """STANDBY(1) without dock sub-state=1 means idle, not docked."""
+        """STANDBY(1) without dock signals and battery <100 means off dock."""
         state = NarwalState()
-        state.update_from_base_status({"3": {"1": 1}})
+        state.update_from_base_status({"3": {"1": 1}, "2": _float_to_uint32(85.0)})
         assert state.working_status == WorkingStatus.STANDBY
         assert not state.is_docked
+
+    def test_update_from_base_status_standby_battery_full(self) -> None:
+        """STANDBY(1) with battery=100 means docked (charged idle on dock)."""
+        state = NarwalState()
+        state.update_from_base_status({"3": {"1": 1}, "2": _float_to_uint32(100.0)})
+        assert state.working_status == WorkingStatus.STANDBY
+        assert state.is_docked
+
+    def test_update_from_base_status_standby_dock_activity(self) -> None:
+        """STANDBY(1) with dock_activity > 0 means docked."""
+        state = NarwalState()
+        state.update_from_base_status({"3": {"1": 1, "12": 2}})
+        assert state.working_status == WorkingStatus.STANDBY
+        assert state.is_docked
 
     def test_update_from_base_status_paused(self) -> None:
         """Paused overlay: field 3 sub-field 2 = 1."""

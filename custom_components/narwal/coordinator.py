@@ -96,8 +96,11 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
 
         state = self.client.state
         _LOGGER.warning(
-            "Narwal startup: status=%s, battery=%d, docked=%s",
+            "Narwal startup: status=%s, battery=%d, docked=%s, "
+            "dock_sub=%d, dock_act=%d, field3=%r",
             state.working_status.name, state.battery_level, state.is_docked,
+            state.dock_sub_state, state.dock_activity,
+            state.raw_base_status.get("3"),
         )
 
         self.async_set_updated_data(state)

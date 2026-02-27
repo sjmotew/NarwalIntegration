@@ -314,16 +314,27 @@ class NarwalState:
 
     @property
     def is_docked(self) -> bool:
-        """True when on dock: DOCKED(10), CHARGED(14), or STANDBY(1) with dock sub-state=1.
+        """True when on dock: DOCKED(10), CHARGED(14), or STANDBY(1) with dock signals.
 
-        dock_sub_state can linger at 1 after the robot leaves the dock,
-        so only use it when working_status is STANDBY (the ambiguous case
-        where the robot may be idle on or off the dock).
+        STANDBY(1) is ambiguous — robot can be idle on or off the dock.
+        Dock signals for STANDBY:
+          - dock_sub_state == 1 (field 3.10, confirmed live)
+          - dock_activity > 0 (field 3.12, values 2/6 when docked)
+          - battery_level == 100 (only reachable by charging on dock)
+
+        When fully charged, the robot transitions CHARGED(14) → STANDBY(1)
+        and may stop reporting dock_sub_state. Battery at 100% is the
+        fallback signal for this case.
         """
         if self.working_status in (WorkingStatus.DOCKED, WorkingStatus.CHARGED):
             return True
-        if self.working_status == WorkingStatus.STANDBY and self.dock_sub_state == 1:
-            return True
+        if self.working_status == WorkingStatus.STANDBY:
+            if self.dock_sub_state == 1:
+                return True
+            if self.dock_activity > 0:
+                return True
+            if self.battery_level == 100:
+                return True
         return False
 
     @property
