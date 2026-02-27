@@ -69,12 +69,16 @@ class TestNarwalState:
         assert state.working_status == WorkingStatus.STANDBY
         assert not state.is_docked
 
-    def test_update_from_base_status_standby_battery_full(self) -> None:
-        """STANDBY(1) with battery=100 means docked (charged idle on dock)."""
+    def test_update_from_base_status_standby_battery_full_no_dock_signal(self) -> None:
+        """STANDBY(1) with battery=100 but no dock signals — NOT docked.
+
+        Live-validated: robot keeps STANDBY(1) + battery=100 even after
+        being physically removed from dock. Battery alone is not reliable.
+        """
         state = NarwalState()
         state.update_from_base_status({"3": {"1": 1}, "2": _float_to_uint32(100.0)})
         assert state.working_status == WorkingStatus.STANDBY
-        assert state.is_docked
+        assert not state.is_docked
 
     def test_update_from_base_status_standby_dock_activity(self) -> None:
         """STANDBY(1) with dock_activity > 0 means docked."""

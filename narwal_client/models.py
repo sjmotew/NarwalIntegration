@@ -320,11 +320,10 @@ class NarwalState:
         Dock signals for STANDBY:
           - dock_sub_state == 1 (field 3.10, confirmed live)
           - dock_activity > 0 (field 3.12, values 2/6 when docked)
-          - battery_level == 100 (only reachable by charging on dock)
 
-        When fully charged, the robot transitions CHARGED(14) → STANDBY(1)
-        and may stop reporting dock_sub_state. Battery at 100% is the
-        fallback signal for this case.
+        Note: battery=100 is NOT a reliable dock signal. The robot keeps
+        STANDBY(1) + battery=100 even after being physically removed from
+        the dock, since it doesn't broadcast a state change on removal.
         """
         if self.working_status in (WorkingStatus.DOCKED, WorkingStatus.CHARGED):
             return True
@@ -332,8 +331,6 @@ class NarwalState:
             if self.dock_sub_state == 1:
                 return True
             if self.dock_activity > 0:
-                return True
-            if self.battery_level == 100:
                 return True
         return False
 
