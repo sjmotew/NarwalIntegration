@@ -1,4 +1,4 @@
-"""Narwal Robot Vacuum integration for Home Assistant."""
+"""Narwal Flow Robot Vacuum integration for Home Assistant."""
 
 from __future__ import annotations
 

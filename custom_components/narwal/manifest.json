@@ -1,6 +1,6 @@
 {
   "domain": "narwal",
-  "name": "Narwal Robot Vacuum",
+  "name": "Narwal Flow Robot Vacuum",
   "codeowners": ["@sjmotew"],
   "config_flow": true,
   "dependencies": [],

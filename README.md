@@ -1,4 +1,4 @@
-# Narwal Robot Vacuum — Home Assistant Integration
+# Narwal Flow Robot Vacuum — Home Assistant Integration
 
 A fully **local, cloud-independent** [Home Assistant](https://www.home-assistant.io/) custom integration for Narwal robot vacuums. Communicates directly with your vacuum over your local network via WebSocket — no cloud account or internet connection required.
 
@@ -53,7 +53,7 @@ Other Narwal models *may* work if they expose a local WebSocket on port 9002 (sa
    https://github.com/sjmotew/NarwalIntegration
    ```
 4. Set the category to **Integration** and click **Add**.
-5. Find **Narwal Robot Vacuum** in the HACS store and click **Download**.
+5. Find **Narwal Flow Robot Vacuum** in the HACS store and click **Download**.
 6. **Restart Home Assistant**.
 
 ### Manual Installation
@@ -65,7 +65,7 @@ Other Narwal models *may* work if they expose a local WebSocket on port 9002 (sa
 ### Setup
 
 1. Go to **Settings > Devices & Services > Add Integration**.
-2. Search for **Narwal Robot Vacuum**.
+2. Search for **Narwal Flow Robot Vacuum**.
 3. Enter your vacuum's **IP address** (find it in your router's DHCP table or the Narwal app).
 4. The integration will connect, discover the device, and create all entities automatically.
 
