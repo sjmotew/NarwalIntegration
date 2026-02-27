@@ -299,6 +299,13 @@ class NarwalState:
     # Dock activity (field 3 sub-field 12: 2/6 observed when docked)
     dock_activity: int = 0
 
+    # Dock presence (field 3 sub-field 3: live-validated via CLI wake_diag)
+    #   2 = off dock (confirmed: robot off dock, asleep and awake)
+    #   1 = on dock (confirmed: robot on dock, asleep and awake)
+    #   6 = on dock (observed at HA startup, robot docked+charged)
+    # Only meaningful during STANDBY(1) when no other dock signals present.
+    dock_presence: int = 0
+
     # Raw data for fields we haven't fully decoded yet
     raw_base_status: dict[str, Any] = field(default_factory=dict)
     raw_working_status: dict[str, Any] = field(default_factory=dict)
@@ -321,9 +328,9 @@ class NarwalState:
           - dock_sub_state == 1 (field 3.10, confirmed live)
           - dock_activity > 0 (field 3.12, values 2/6 when docked)
 
-        Note: battery=100 is NOT a reliable dock signal. The robot keeps
-        STANDBY(1) + battery=100 even after being physically removed from
-        the dock, since it doesn't broadcast a state change on removal.
+        Field 3.3 (dock_presence) is the fallback signal for STANDBY:
+          - 2 = off dock (confirmed via CLI wake_diag, asleep + awake)
+          - 1, 6 = on dock (confirmed via CLI wake_diag)
         """
         if self.working_status in (WorkingStatus.DOCKED, WorkingStatus.CHARGED):
             return True
@@ -331,6 +338,8 @@ class NarwalState:
             if self.dock_sub_state == 1:
                 return True
             if self.dock_activity > 0:
+                return True
+            if self.dock_presence != 0 and self.dock_presence != 2:
                 return True
         return False
 
@@ -413,6 +422,11 @@ class NarwalState:
                 self.dock_activity = int(field3.get("12", 0))
             except (ValueError, TypeError):
                 self.dock_activity = 0
+            # Sub-field 3 = dock presence (1/6=on dock, 2=off dock)
+            try:
+                self.dock_presence = int(field3.get("3", 0))
+            except (ValueError, TypeError):
+                self.dock_presence = 0
         if "2" in decoded:
             # Field 2 = real-time battery SOC as float32
             # (e.g. 1118175232 → 83.0%; bbp may return int or float)
