@@ -11,6 +11,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .narwal_client import NarwalClient, NarwalConnectionError, NarwalState
+from .narwal_client.const import WorkingStatus
 
 from .const import DOMAIN
 
@@ -77,6 +78,16 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
             await self.client.get_map()
         except Exception:
             _LOGGER.debug("Could not fetch initial map")
+
+        # If working_status is still unknown, wait for broadcasts to arrive.
+        # The listener is running and will update state via push callbacks.
+        # Broadcasts arrive every ~1.5s when awake, so 5s is plenty.
+        if self.client.state.working_status == WorkingStatus.UNKNOWN:
+            _LOGGER.debug("Waiting for first broadcast to determine robot state")
+            for _ in range(10):
+                await asyncio.sleep(0.5)
+                if self.client.state.working_status != WorkingStatus.UNKNOWN:
+                    break
 
         self.async_set_updated_data(self.client.state)
 
