@@ -29,10 +29,9 @@ async def async_setup_entry(
 
 
 class NarwalDockedSensor(NarwalEntity, BinarySensorEntity):
-    """Binary sensor that reports whether the vacuum is docked."""
+    """Binary sensor that reports whether the vacuum is on the dock."""
 
     _attr_translation_key = "docked"
-    _attr_device_class = BinarySensorDeviceClass.PLUG
 
     def __init__(self, coordinator: NarwalCoordinator) -> None:
         """Initialize the docked sensor."""
@@ -42,7 +41,7 @@ class NarwalDockedSensor(NarwalEntity, BinarySensorEntity):
 
     @property
     def is_on(self) -> bool | None:
-        """Return True if the vacuum is docked (Plugged In / Unplugged)."""
+        """Return True if the vacuum is on the dock."""
         state = self.coordinator.data
         if state is None:
             return None
@@ -50,7 +49,7 @@ class NarwalDockedSensor(NarwalEntity, BinarySensorEntity):
 
 
 class NarwalChargingSensor(NarwalEntity, BinarySensorEntity):
-    """Binary sensor that reports whether the vacuum is actively charging."""
+    """Binary sensor: Charging / Not charging, only when docked."""
 
     _attr_translation_key = "charging"
     _attr_device_class = BinarySensorDeviceClass.BATTERY_CHARGING
@@ -63,8 +62,13 @@ class NarwalChargingSensor(NarwalEntity, BinarySensorEntity):
 
     @property
     def is_on(self) -> bool | None:
-        """Return True if actively charging (DOCKED=10), False if charged (CHARGED=14)."""
+        """Return True if charging (DOCKED=10), False if charged (CHARGED=14).
+
+        Returns None (unavailable) when not docked.
+        """
         state = self.coordinator.data
         if state is None:
+            return None
+        if not state.is_docked:
             return None
         return state.working_status == WorkingStatus.DOCKED
