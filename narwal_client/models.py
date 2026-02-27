@@ -259,7 +259,8 @@ class NarwalState:
 
     # Core status
     working_status: WorkingStatus = WorkingStatus.UNKNOWN
-    battery_level: int = 0
+    battery_level: int = 0  # real-time SOC from field 2 (float32)
+    battery_health: int = 0  # static design capacity from field 38 (always 100)
     firmware_version: str = ""
     firmware_target: str = ""
 
@@ -347,8 +348,9 @@ class NarwalState:
     def update_from_working_status(self, decoded: dict[str, Any]) -> None:
         """Update state from a decoded working_status message.
 
-        Confirmed via live test (2026-02-27):
-          Field 3  = current session elapsed time (seconds) — CONFIRMED
+        Confirmed via 35-min monitor capture (2026-02-27):
+          Field 3  = current session elapsed time (seconds)
+                     (confirmed: 2136→2159 over 35-min clean)
           Field 13 = cleaning area (cm²) — CONFIRMED (18000 = 1.8m²)
           Field 15 = 600 during cleaning (purpose uncertain)
         """
@@ -365,7 +367,22 @@ class NarwalState:
             pass
 
     def update_from_base_status(self, decoded: dict[str, Any]) -> None:
-        """Update state from a decoded robot_base_status message."""
+        """Update state from a decoded robot_base_status message.
+
+        Battery (confirmed via 35-min monitor capture):
+          Field 2  = real-time battery as IEEE 754 float32
+                     (1118175232 → 83.0%, matching app ~84%)
+          Field 38 = static battery health (always 100; design capacity)
+
+        Field 3 sub-fields (confirmed via live test):
+          3.1  = WorkingStatus enum
+          3.2  = 1 means PAUSED
+          3.7  = 1 means RETURNING to dock (live-validated)
+          3.10 = dock sub-state (1=docked, 2=docking in progress)
+          3.12 = dock activity (values 2, 6 observed)
+
+        Note: field 32 mirrors field 3 exactly (redundant).
+        """
         self.raw_base_status = decoded
         # Field 3 is a nested message: {1: state_int, ...}
         field3 = decoded.get("3")
@@ -388,11 +405,15 @@ class NarwalState:
                 self.dock_activity = int(field3.get("12", 0))
             except (ValueError, TypeError):
                 self.dock_activity = 0
+        if "2" in decoded:
+            # Field 2 = real-time battery SOC as float32
+            # (e.g. 1118175232 → 83.0%; bbp may return int or float)
+            bat = _to_float32(decoded["2"])
+            if bat is not None:
+                self.battery_level = round(bat)
         if "38" in decoded:
-            # Field 38 is the battery percentage — confirmed correct field.
-            # Updates in real-time during cleaning; triggers auto-return when low.
-            # Not yet observed below 100 (robot always fully charged during dev).
-            self.battery_level = int(decoded["38"])
+            # Field 38 = static battery health (always 100, design capacity)
+            self.battery_health = int(decoded["38"])
         if "36" in decoded:
             self.timestamp = int(decoded["36"])
         if "13" in decoded:

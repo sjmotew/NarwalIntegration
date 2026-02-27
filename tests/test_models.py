@@ -31,7 +31,7 @@ class TestNarwalState:
 
     def test_update_from_base_status_cleaning(self) -> None:
         state = NarwalState()
-        state.update_from_base_status({"3": {"1": 4}, "38": 85})
+        state.update_from_base_status({"3": {"1": 4}, "2": _float_to_uint32(85.0)})
         assert state.working_status == WorkingStatus.CLEANING
         assert state.is_cleaning
         assert state.battery_level == 85
@@ -45,10 +45,15 @@ class TestNarwalState:
     def test_update_from_base_status_charged(self) -> None:
         """Status 14 = fully charged on dock."""
         state = NarwalState()
-        state.update_from_base_status({"3": {"1": 14, "10": 1}, "38": 100})
+        state.update_from_base_status({
+            "3": {"1": 14, "10": 1},
+            "2": _float_to_uint32(100.0),
+            "38": 100,
+        })
         assert state.working_status == WorkingStatus.CHARGED
         assert state.is_docked
         assert state.battery_level == 100
+        assert state.battery_health == 100
 
     def test_update_from_base_status_standby_on_dock(self) -> None:
         """STANDBY(1) with dock sub-state=1 means docked."""
@@ -75,11 +80,13 @@ class TestNarwalState:
     def test_update_from_base_status(self) -> None:
         state = NarwalState()
         state.update_from_base_status({
-            "38": 85,
+            "2": _float_to_uint32(85.0),
+            "38": 100,
             "36": 1757252225,
             "13": "d4bec8c82c484a3ba0428bb0dd4359e2",
         })
         assert state.battery_level == 85
+        assert state.battery_health == 100
         assert state.timestamp == 1757252225
         assert state.session_id == "d4bec8c82c484a3ba0428bb0dd4359e2"
 
@@ -102,7 +109,7 @@ class TestNarwalState:
     def test_incremental_updates(self) -> None:
         """State should accumulate across multiple topic updates."""
         state = NarwalState()
-        state.update_from_base_status({"3": {"1": 4}, "38": 95})
+        state.update_from_base_status({"3": {"1": 4}, "2": _float_to_uint32(95.0)})
         state.update_from_working_status({"3": 120, "13": 18000})
         state.update_from_upgrade_status({"7": "v01.02.19.02"})
 
@@ -114,9 +121,35 @@ class TestNarwalState:
 
     def test_raw_data_preserved(self) -> None:
         state = NarwalState()
-        raw = {"38": 100, "47": 2, "unknown_field": "value"}
+        raw = {"2": _float_to_uint32(100.0), "38": 100, "47": 2, "unknown_field": "value"}
         state.update_from_base_status(raw)
         assert state.raw_base_status == raw
+
+    def test_battery_field2_float32_83(self) -> None:
+        """Field 2 = 1118175232 → 83.0% battery (confirmed from monitor capture)."""
+        state = NarwalState()
+        state.update_from_base_status({"2": 1118175232})
+        assert state.battery_level == 83
+
+    def test_battery_field2_float32_85(self) -> None:
+        """Field 2 = 1118437376 → 85.0% battery."""
+        state = NarwalState()
+        state.update_from_base_status({"2": 1118437376})
+        assert state.battery_level == 85
+
+    def test_battery_field2_as_python_float(self) -> None:
+        """bbp may return field 2 as a Python float directly."""
+        state = NarwalState()
+        state.update_from_base_status({"2": 83.0})
+        assert state.battery_level == 83
+
+    def test_battery_health_field38_static(self) -> None:
+        """Field 38 is static battery health (always 100), not real-time SOC."""
+        state = NarwalState()
+        state.update_from_base_status({"38": 100})
+        assert state.battery_health == 100
+        # battery_level unchanged (no field 2)
+        assert state.battery_level == 0
 
     def test_returning_to_dock_field7(self) -> None:
         """Field 3.7=1 indicates returning to dock (confirmed live)."""

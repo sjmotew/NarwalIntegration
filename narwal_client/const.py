@@ -145,13 +145,20 @@ class MopHumidity(IntEnum):
 
 # robot_base_status field numbers
 class BaseStatusField(IntEnum):
-    """Field numbers in the robot_base_status protobuf message."""
+    """Field numbers in the robot_base_status protobuf message.
 
+    Battery notes (confirmed via 35-min monitor capture, 2026-02-27):
+      Field 2  = real-time battery level as IEEE 754 float32
+                 (e.g. 1118175232 → 83.0%, matching app display ~84%)
+      Field 38 = static battery health (always 100; design capacity, not SOC)
+    """
+
+    BATTERY_LEVEL = 2  # real-time SOC as float32 — CONFIRMED
     MODE_STATE = 3
     SESSION_ID = 13
     SENSOR_DATA = 25
     TIMESTAMP = 36
-    BATTERY_PERCENT = 38
+    BATTERY_HEALTH = 38  # static, always 100 (design capacity)
     BATTERY_CAPACITY = 41
 
 
@@ -169,12 +176,16 @@ class WorkingStatusField(IntEnum):
     """Field numbers in the working_status protobuf message.
 
     Confirmed via live test (2026-02-27):
-      3  = current session elapsed seconds (confirmed: incremented 288→428)
+      3  = current session elapsed seconds (confirmed: 2136→2159 over 35-min clean)
       13 = cleaning area in cm² (confirmed: 18000 = 1.8m²)
       15 = 600 during cleaning (possibly cumulative or constant)
-      6  = 9 during cleaning (unknown purpose, possibly clean mode)
+      6  = 1 during cleaning (observed in plan-based clean; may vary by mode)
       10 = time since docked in seconds (post-dock only, counts up)
       11 = 2700 post-dock (unknown, constant)
+
+    Also broadcast during cleaning:
+      status/time_line_status — timeline/history data
+      developer/planning_debug_info — navigation debug (collision count, stall count)
     """
 
     ELAPSED_TIME = 3  # current session elapsed seconds — CONFIRMED

@@ -35,6 +35,7 @@ SENSOR_DESCRIPTIONS: tuple[NarwalSensorEntityDescription, ...] = (
         device_class=SensorDeviceClass.BATTERY,
         native_unit_of_measurement=PERCENTAGE,
         state_class=SensorStateClass.MEASUREMENT,
+        # battery_level comes from field 2 (real-time SOC as float32)
         value_fn=lambda state: state.battery_level if state.battery_level > 0 else None,
     ),
     NarwalSensorEntityDescription(
