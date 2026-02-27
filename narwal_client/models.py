@@ -328,9 +328,11 @@ class NarwalState:
           - dock_sub_state == 1 (field 3.10, confirmed live)
           - dock_activity > 0 (field 3.12, values 2/6 when docked)
 
-        Field 3.3 (dock_presence) is the fallback signal for STANDBY:
-          - 2 = off dock (confirmed via CLI wake_diag, asleep + awake)
-          - 1, 6 = on dock (confirmed via CLI wake_diag)
+        Field 3.3 (dock_presence) was investigated but is NOT a reliable
+        dock signal — values 1,2,6,7 observed with no clear dock correlation.
+
+        When STANDBY has no dock signals, we cannot determine dock state.
+        This is the safe default (undocked) to avoid false positives.
         """
         if self.working_status in (WorkingStatus.DOCKED, WorkingStatus.CHARGED):
             return True
@@ -338,8 +340,6 @@ class NarwalState:
             if self.dock_sub_state == 1:
                 return True
             if self.dock_activity > 0:
-                return True
-            if self.dock_presence != 0 and self.dock_presence != 2:
                 return True
         return False
 

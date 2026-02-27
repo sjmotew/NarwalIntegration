@@ -63,39 +63,23 @@ class TestNarwalState:
         assert state.is_docked
 
     def test_update_from_base_status_standby_off_dock(self) -> None:
-        """STANDBY(1) with field 3.3=2 means off dock (CLI-validated)."""
+        """STANDBY(1) without dock signals means undocked (safe default)."""
         state = NarwalState()
         state.update_from_base_status({"3": {"1": 1, "3": 2}, "2": _float_to_uint32(85.0)})
         assert state.working_status == WorkingStatus.STANDBY
-        assert state.dock_presence == 2
         assert not state.is_docked
 
-    def test_update_from_base_status_standby_off_dock_battery_full(self) -> None:
-        """STANDBY(1) with field 3.3=2 and battery=100 — NOT docked.
+    def test_update_from_base_status_standby_no_dock_signals(self) -> None:
+        """STANDBY(1) with no dock_sub_state or dock_activity — NOT docked.
 
-        Live-validated: robot keeps STANDBY(1) + battery=100 + field 3.3=2
-        after being physically removed from dock.
+        Field 3.3 is NOT a dock indicator (values 1,2,6,7 observed with
+        no reliable dock correlation). Only dock_sub_state and dock_activity
+        are trusted for STANDBY dock detection.
         """
         state = NarwalState()
-        state.update_from_base_status({"3": {"1": 1, "3": 2}, "2": _float_to_uint32(100.0)})
+        state.update_from_base_status({"3": {"1": 1, "3": 7}, "2": _float_to_uint32(100.0)})
         assert state.working_status == WorkingStatus.STANDBY
         assert not state.is_docked
-
-    def test_update_from_base_status_standby_dock_presence_1(self) -> None:
-        """STANDBY(1) with field 3.3=1 means on dock (CLI-validated)."""
-        state = NarwalState()
-        state.update_from_base_status({"3": {"1": 1, "3": 1}})
-        assert state.working_status == WorkingStatus.STANDBY
-        assert state.dock_presence == 1
-        assert state.is_docked
-
-    def test_update_from_base_status_standby_dock_presence_6(self) -> None:
-        """STANDBY(1) with field 3.3=6 means on dock (observed at HA startup)."""
-        state = NarwalState()
-        state.update_from_base_status({"3": {"1": 1, "3": 6}})
-        assert state.working_status == WorkingStatus.STANDBY
-        assert state.dock_presence == 6
-        assert state.is_docked
 
     def test_update_from_base_status_standby_dock_activity(self) -> None:
         """STANDBY(1) with dock_activity > 0 means docked."""
