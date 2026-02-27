@@ -796,7 +796,15 @@ class NarwalClient:
         # Update state from the response payload
         status_data = resp.data.get("2", {})
         if status_data:
+            _LOGGER.debug(
+                "get_status response field 2 keys: %s, field3=%r, field2=%r",
+                list(status_data.keys()) if isinstance(status_data, dict) else type(status_data).__name__,
+                status_data.get("3") if isinstance(status_data, dict) else None,
+                status_data.get("2") if isinstance(status_data, dict) else None,
+            )
             self.state.update_from_base_status(status_data)
+        else:
+            _LOGGER.debug("get_status response has no field 2; keys: %s", list(resp.data.keys()))
         return resp
 
     async def get_current_task(self) -> CommandResponse:

@@ -79,6 +79,13 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
         except Exception:
             _LOGGER.debug("Could not fetch initial map")
 
+        _LOGGER.debug(
+            "After get_status: working_status=%s, battery=%d, is_docked=%s",
+            self.client.state.working_status,
+            self.client.state.battery_level,
+            self.client.state.is_docked,
+        )
+
         # If working_status is still unknown, wait for broadcasts to arrive.
         # The listener is running and will update state via push callbacks.
         # Broadcasts arrive every ~1.5s when awake, so 5s is plenty.
@@ -89,6 +96,13 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
                 if self.client.state.working_status != WorkingStatus.UNKNOWN:
                     break
 
+        _LOGGER.info(
+            "Startup state: working_status=%s, battery=%d, is_docked=%s, is_returning=%s",
+            self.client.state.working_status,
+            self.client.state.battery_level,
+            self.client.state.is_docked,
+            self.client.state.is_returning,
+        )
         self.async_set_updated_data(self.client.state)
 
     def _on_state_update(self, state: NarwalState) -> None:
