@@ -2,7 +2,7 @@
 
 A fully **local, cloud-independent** [Home Assistant](https://www.home-assistant.io/) custom integration for Narwal robot vacuums. Communicates directly with your vacuum over your local network via WebSocket — no cloud account or internet connection required.
 
-> **Status: v0.2.1 — Early Release** — Core vacuum control, sensors, and map display are working. Some features are still being refined. Use at your own risk.
+> **Status: v0.3.0 — Early Release** — Core vacuum control, sensors, and map display are working. Some features are still being refined. Use at your own risk.
 
 ## Supported Devices
 
