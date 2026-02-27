@@ -12,6 +12,7 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from . import NarwalConfigEntry
 from .coordinator import NarwalCoordinator
 from .entity import NarwalEntity
+from .narwal_client.const import WorkingStatus
 
 
 async def async_setup_entry(
@@ -21,14 +22,17 @@ async def async_setup_entry(
 ) -> None:
     """Set up Narwal binary sensor entities."""
     coordinator = entry.runtime_data
-    async_add_entities([NarwalDockedSensor(coordinator)])
+    async_add_entities([
+        NarwalDockedSensor(coordinator),
+        NarwalChargingSensor(coordinator),
+    ])
 
 
 class NarwalDockedSensor(NarwalEntity, BinarySensorEntity):
-    """Binary sensor that reports whether the vacuum is charging."""
+    """Binary sensor that reports whether the vacuum is docked."""
 
     _attr_translation_key = "docked"
-    _attr_device_class = BinarySensorDeviceClass.BATTERY_CHARGING
+    _attr_device_class = BinarySensorDeviceClass.PLUG
 
     def __init__(self, coordinator: NarwalCoordinator) -> None:
         """Initialize the docked sensor."""
@@ -38,12 +42,29 @@ class NarwalDockedSensor(NarwalEntity, BinarySensorEntity):
 
     @property
     def is_on(self) -> bool | None:
-        """Return True if the vacuum is actively charging (DOCKED=10).
-
-        CHARGED(14) means fully charged on dock → not actively charging.
-        """
+        """Return True if the vacuum is docked (Plugged In / Unplugged)."""
         state = self.coordinator.data
         if state is None:
             return None
-        from .narwal_client.const import WorkingStatus
+        return state.is_docked
+
+
+class NarwalChargingSensor(NarwalEntity, BinarySensorEntity):
+    """Binary sensor that reports whether the vacuum is actively charging."""
+
+    _attr_translation_key = "charging"
+    _attr_device_class = BinarySensorDeviceClass.BATTERY_CHARGING
+
+    def __init__(self, coordinator: NarwalCoordinator) -> None:
+        """Initialize the charging sensor."""
+        super().__init__(coordinator)
+        device_id = coordinator.config_entry.data["device_id"]
+        self._attr_unique_id = f"{device_id}_charging"
+
+    @property
+    def is_on(self) -> bool | None:
+        """Return True if actively charging (DOCKED=10), False if charged (CHARGED=14)."""
+        state = self.coordinator.data
+        if state is None:
+            return None
         return state.working_status == WorkingStatus.DOCKED

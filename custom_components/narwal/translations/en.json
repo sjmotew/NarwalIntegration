@@ -38,6 +38,9 @@
     "binary_sensor": {
       "docked": {
         "name": "Docked"
+      },
+      "charging": {
+        "name": "Charging"
       }
     },
     "select": {
