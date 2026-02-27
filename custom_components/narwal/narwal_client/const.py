@@ -98,28 +98,32 @@ class CommandResult(IntEnum):
 class WorkingStatus(IntEnum):
     """Robot working state from robot_base_status field 3 → sub-field 1.
 
-    Values confirmed via live WebSocket monitoring:
-      1  = STANDBY (idle, off dock)
-      4  = CLEANING (plan-based start)
-      5  = CLEANING_ALT (seen in some modes)
-      10 = DOCKED (on dock, charging or returning)
+    Values confirmed via live WebSocket monitoring (2026-02-27):
+      1  = STANDBY (idle, transition state between cleaning and docked)
+      4  = CLEANING (plan-based start; also stays 4 while returning to dock)
+      5  = CLEANING_ALT (seen in some modes, not yet observed live)
+      10 = DOCKED (on dock, charging)
       14 = CHARGED (on dock, fully charged)
-    Values not yet confirmed (need more captures):
-      returning, paused, error states
+
+    Field 3 sub-fields (confirmed live):
+      3.2  = 1 means PAUSED (overlay on CLEANING state)
+      3.7  = 1 means RETURNING to dock (robot navigating home)
+      3.10 = dock sub-state (1=docked, 2=docking in progress)
+      3.12 = dock activity (values 2, 6 observed when docked)
+
+    Not yet confirmed:
+      error states (WorkingStatus.ERROR placeholder = 99)
     """
 
     UNKNOWN = 0
-    STANDBY = 1       # idle, off dock
-    CLEANING = 4      # active cleaning (plan-based start)
+    STANDBY = 1       # idle / transition state
+    CLEANING = 4      # active cleaning (stays 4 even while returning to dock)
     CLEANING_ALT = 5  # active cleaning (seen in some modes)
-    DOCKED = 10       # on dock, actively charging or returning
+    DOCKED = 10       # on dock, actively charging
     CHARGED = 14      # on dock, fully charged and idle
     # PLACEHOLDER: error state value not yet observed live.
-    # APK suggests errors surface via field 3 sub-field 1 with a distinct int value.
     # Trigger a real error (e.g., pick up robot mid-clean) to discover the value.
     ERROR = 99
-    # Field 3 sub-field 2 = 1 means PAUSED (overlay on CLEANING state)
-    # Field 3 sub-field 10 = dock sub-state (1=docked, 2=docking)
 
 
 class FanLevel(IntEnum):
@@ -162,8 +166,18 @@ class UpgradeStatusField(IntEnum):
 
 # working_status field numbers
 class WorkingStatusField(IntEnum):
-    """Field numbers in the working_status protobuf message."""
+    """Field numbers in the working_status protobuf message.
 
-    ELAPSED_TIME = 3  # current session elapsed seconds (NOT state!)
-    AREA = 13  # cm² (may be cumulative)
-    CUMULATIVE_TIME = 15  # seconds (may be cumulative)
+    Confirmed via live test (2026-02-27):
+      3  = current session elapsed seconds (confirmed: incremented 288→428)
+      13 = cleaning area in cm² (confirmed: 18000 = 1.8m²)
+      15 = 600 during cleaning (possibly cumulative or constant)
+      6  = 9 during cleaning (unknown purpose, possibly clean mode)
+      10 = time since docked in seconds (post-dock only, counts up)
+      11 = 2700 post-dock (unknown, constant)
+    """
+
+    ELAPSED_TIME = 3  # current session elapsed seconds — CONFIRMED
+    AREA = 13  # cm² — CONFIRMED (18000 = 1.8m²)
+    CUMULATIVE_TIME = 15  # 600 during cleaning (purpose uncertain)
+    TIME_SINCE_DOCKED = 10  # seconds since docked (post-dock only)

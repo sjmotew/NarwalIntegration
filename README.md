@@ -100,7 +100,6 @@ If the robot is in deep sleep (e.g., after being idle for a long time), it may t
 
 ### Partial / In Progress
 - **Fan speed read-back** — You can set fan speed, and the integration tracks what you set. However, if you change fan speed via the Narwal app, the integration won't know. The robot protocol does not broadcast the current fan speed setting.
-- **Returning-to-dock state** — Detected via dock sub-state signals, but not yet extensively tested in live use.
 - **Map updates during cleaning** — The robot sends `display_map` broadcasts during cleaning; this is handled but needs more real-world testing.
 
 ### Not Yet Implemented

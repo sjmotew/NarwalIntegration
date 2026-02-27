@@ -118,6 +118,42 @@ class TestNarwalState:
         state.update_from_base_status(raw)
         assert state.raw_base_status == raw
 
+    def test_returning_to_dock_field7(self) -> None:
+        """Field 3.7=1 indicates returning to dock (confirmed live)."""
+        state = NarwalState()
+        # Live data: {1=4, 7=1, 10=2} — CLEANING + returning + docking
+        state.update_from_base_status({"3": {"1": 4, "7": 1, "10": 2}})
+        assert state.working_status == WorkingStatus.CLEANING
+        assert state.is_returning_to_dock
+        assert state.dock_sub_state == 2
+        assert state.is_returning  # should be True via field 3.7
+        assert not state.is_cleaning  # returning takes priority
+
+    def test_returning_clears_when_docked(self) -> None:
+        """Returning flag clears when robot docks."""
+        state = NarwalState()
+        # During return
+        state.update_from_base_status({"3": {"1": 4, "7": 1, "10": 2}})
+        assert state.is_returning
+        # After docking: {1=14, 12=2}
+        state.update_from_base_status({"3": {"1": 14, "12": 2}})
+        assert not state.is_returning
+        assert state.is_docked
+        assert state.dock_activity == 2
+
+    def test_returning_via_dock_sub_state_only(self) -> None:
+        """Fallback: dock_sub_state=2 without field 7 also indicates returning."""
+        state = NarwalState()
+        state.update_from_base_status({"3": {"1": 1, "10": 2}})
+        assert state.is_returning
+
+    def test_not_returning_when_cleaning_without_field7(self) -> None:
+        """Cleaning without field 3.7 is NOT returning (just cleaning)."""
+        state = NarwalState()
+        state.update_from_base_status({"3": {"1": 4}})
+        assert state.is_cleaning
+        assert not state.is_returning
+
     def test_unknown_working_status_value(self) -> None:
         """Unknown status values should fall back to UNKNOWN."""
         state = NarwalState()

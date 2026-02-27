@@ -291,13 +291,25 @@ class NarwalState:
     # Dock sub-state (field 3 sub-field 10: 1=docked, 2=docking in progress)
     dock_sub_state: int = 0
 
+    # Returning flag (field 3 sub-field 7: 1=returning to dock)
+    # Confirmed via live test: appears when robot is navigating back to dock
+    is_returning_to_dock: bool = False
+
+    # Dock activity (field 3 sub-field 12: 2/6 observed when docked)
+    dock_activity: int = 0
+
     # Raw data for fields we haven't fully decoded yet
     raw_base_status: dict[str, Any] = field(default_factory=dict)
     raw_working_status: dict[str, Any] = field(default_factory=dict)
 
     @property
     def is_cleaning(self) -> bool:
-        return self.working_status in (WorkingStatus.CLEANING, WorkingStatus.CLEANING_ALT) and not self.is_paused
+        """True when actively cleaning (not paused, not returning to dock)."""
+        return (
+            self.working_status in (WorkingStatus.CLEANING, WorkingStatus.CLEANING_ALT)
+            and not self.is_paused
+            and not self.is_returning_to_dock
+        )
 
     @property
     def is_docked(self) -> bool:
@@ -317,20 +329,28 @@ class NarwalState:
     def is_returning(self) -> bool:
         """True when the robot is actively returning to the dock.
 
-        dock_sub_state == 2 means 'docking in progress'. We only consider
-        this as RETURNING when the robot is not actively cleaning.
+        Live-validated: during return-to-dock, field 3 shows:
+          {1=4, 7=1, 10=2} — working_status stays CLEANING(4),
+          field 7=1 (returning flag), field 10=2 (docking in progress).
 
-        NEEDS LIVE VALIDATION: inferred from protocol analysis, not yet
-        confirmed during a real recall-to-dock sequence.
+        We use field 3.7 (is_returning_to_dock) as the primary indicator.
+        Fallback: dock_sub_state == 2 when not in a cleaning/charged/docked state.
         """
-        return self.dock_sub_state == 2 and not self.is_cleaning
+        if self.is_returning_to_dock:
+            return True
+        if self.dock_sub_state == 2 and self.working_status not in (
+            WorkingStatus.DOCKED, WorkingStatus.CHARGED,
+        ):
+            return True
+        return False
 
     def update_from_working_status(self, decoded: dict[str, Any]) -> None:
         """Update state from a decoded working_status message.
 
-        Field 3 = current session elapsed time (seconds), NOT state enum.
-        Field 13 = cleaning area (cm²) — may be cumulative.
-        Field 15 = cleaning time (seconds) — may be cumulative.
+        Confirmed via live test (2026-02-27):
+          Field 3  = current session elapsed time (seconds) — CONFIRMED
+          Field 13 = cleaning area (cm²) — CONFIRMED (18000 = 1.8m²)
+          Field 15 = 600 during cleaning (purpose uncertain)
         """
         self.raw_working_status = decoded
         if "3" in decoded:
@@ -356,11 +376,18 @@ class NarwalState:
                 self.working_status = WorkingStatus.UNKNOWN
             # Sub-field 2 = 1 means paused (overlay on cleaning state)
             self.is_paused = bool(field3.get("2"))
+            # Sub-field 7 = 1 means returning to dock (confirmed via live test)
+            self.is_returning_to_dock = bool(field3.get("7"))
             # Sub-field 10 = dock sub-state (1=docked, 2=docking in progress)
             try:
                 self.dock_sub_state = int(field3.get("10", 0))
             except (ValueError, TypeError):
                 self.dock_sub_state = 0
+            # Sub-field 12 = dock activity (values 2, 6 observed when docked)
+            try:
+                self.dock_activity = int(field3.get("12", 0))
+            except (ValueError, TypeError):
+                self.dock_activity = 0
         if "38" in decoded:
             # Field 38 is the battery percentage — confirmed correct field.
             # Updates in real-time during cleaning; triggers auto-return when low.

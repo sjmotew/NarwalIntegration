@@ -70,11 +70,12 @@ class NarwalVacuum(NarwalEntity, StateVacuumEntity):
             return VacuumActivity.IDLE
         if state.is_paused:
             return VacuumActivity.PAUSED
-        # Check cleaning before docked — dock_sub_state can linger
-        if state.is_cleaning:
-            return VacuumActivity.CLEANING
+        # Check returning before cleaning — robot keeps working_status=CLEANING
+        # while navigating back to dock (field 3.7=1 indicates returning)
         if state.is_returning:
             return VacuumActivity.RETURNING
+        if state.is_cleaning:
+            return VacuumActivity.CLEANING
         if state.is_docked:
             return VacuumActivity.DOCKED
         return WORKING_STATUS_TO_ACTIVITY.get(
