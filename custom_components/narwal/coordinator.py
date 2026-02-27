@@ -19,6 +19,10 @@ _LOGGER = logging.getLogger(__name__)
 
 POLL_INTERVAL = timedelta(seconds=60)
 
+# Quick re-poll interval when initial state is incomplete
+STARTUP_RETRY_INTERVAL = timedelta(seconds=10)
+STARTUP_RETRY_COUNT = 3
+
 
 class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
     """Push-mode coordinator for Narwal vacuum.
@@ -43,6 +47,7 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
             device_id=entry.data.get("device_id", ""),
         )
         self._listen_task: asyncio.Task[None] | None = None
+        self._startup_retries_remaining = STARTUP_RETRY_COUNT
 
     async def async_setup(self) -> None:
         """Connect to the vacuum and start the WebSocket listener."""
@@ -62,16 +67,8 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
         # Attempt to wake the robot (sends burst of wake commands)
         await self.client.wake(timeout=20.0)
 
-        # Fetch initial state (best-effort — may fail if robot didn't wake)
-        try:
-            await self.client.get_device_info()
-        except Exception:
-            _LOGGER.debug("Could not fetch device info (robot may be asleep)")
-
-        try:
-            await self.client.get_status()
-        except Exception:
-            _LOGGER.debug("Could not fetch status (robot may be asleep)")
+        # Fetch initial state — retry up to 3 times with wake bursts between
+        await self._fetch_initial_state()
 
         # Fetch initial map (best-effort)
         try:
@@ -79,40 +76,82 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
         except Exception:
             _LOGGER.debug("Could not fetch initial map")
 
-        _LOGGER.debug(
-            "After get_status: working_status=%s, battery=%d, is_docked=%s",
-            self.client.state.working_status,
-            self.client.state.battery_level,
-            self.client.state.is_docked,
-        )
-
-        # If working_status is still unknown, wait for broadcasts to arrive.
+        # If working_status is still unknown after commands, wait for broadcasts.
         # The listener is running and will update state via push callbacks.
-        # Broadcasts arrive every ~1.5s when awake, so 5s is plenty.
         if self.client.state.working_status == WorkingStatus.UNKNOWN:
-            _LOGGER.debug("Waiting for first broadcast to determine robot state")
+            _LOGGER.warning(
+                "Robot state unknown after get_status — waiting for broadcasts"
+            )
             for _ in range(10):
                 await asyncio.sleep(0.5)
                 if self.client.state.working_status != WorkingStatus.UNKNOWN:
                     break
 
-        _LOGGER.info(
-            "Startup state: working_status=%s, battery=%d, is_docked=%s, is_returning=%s",
+        _LOGGER.warning(
+            "Startup state: working_status=%s, battery=%d, is_docked=%s",
             self.client.state.working_status,
             self.client.state.battery_level,
             self.client.state.is_docked,
-            self.client.state.is_returning,
         )
         self.async_set_updated_data(self.client.state)
+
+        # If state is still incomplete, use a faster poll interval initially
+        if self.client.state.working_status == WorkingStatus.UNKNOWN:
+            _LOGGER.warning(
+                "Robot did not respond — will retry every %ds",
+                STARTUP_RETRY_INTERVAL.total_seconds(),
+            )
+            self.update_interval = STARTUP_RETRY_INTERVAL
+
+    async def _fetch_initial_state(self) -> None:
+        """Fetch device info and status, retrying with wake bursts."""
+        # Try device info first (usually responds even when drowsy)
+        try:
+            await self.client.get_device_info()
+        except Exception:
+            _LOGGER.debug("Could not fetch device info (robot may be asleep)")
+
+        # Try get_status up to 3 times, with wake bursts between attempts
+        for attempt in range(1, 4):
+            try:
+                await self.client.get_status()
+                if self.client.state.working_status != WorkingStatus.UNKNOWN:
+                    _LOGGER.debug(
+                        "get_status succeeded on attempt %d: status=%s",
+                        attempt, self.client.state.working_status,
+                    )
+                    return
+                _LOGGER.debug("get_status returned but working_status still UNKNOWN")
+            except Exception:
+                _LOGGER.debug(
+                    "get_status attempt %d failed (robot may be asleep)", attempt
+                )
+
+            if attempt < 3:
+                # Send another wake burst and wait before retrying
+                await self.client.wake(timeout=5.0)
 
     def _on_state_update(self, state: NarwalState) -> None:
         """Handle a push state update from the WebSocket listener."""
         self.async_set_updated_data(state)
 
+        # Once we get a valid status via broadcast, restore normal poll interval
+        if (
+            self._startup_retries_remaining > 0
+            and state.working_status != WorkingStatus.UNKNOWN
+        ):
+            self._startup_retries_remaining = 0
+            self.update_interval = POLL_INTERVAL
+            _LOGGER.info(
+                "Got live status via broadcast: %s — switching to normal poll",
+                state.working_status,
+            )
+
     async def _async_update_data(self) -> NarwalState:
         """Polling fallback — fetch status if no push updates arrived.
 
         Also attempts to wake the robot if it appears to be sleeping.
+        Uses a faster poll interval during startup retries.
         """
         if not self.client.connected:
             try:
@@ -128,6 +167,20 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
             await self.client.get_status()
         except Exception as err:
             raise UpdateFailed(f"Failed to get status: {err}") from err
+
+        # If startup retries are active and we got status, restore normal interval
+        if (
+            self._startup_retries_remaining > 0
+            and self.client.state.working_status != WorkingStatus.UNKNOWN
+        ):
+            self._startup_retries_remaining = 0
+            self.update_interval = POLL_INTERVAL
+            _LOGGER.info("Got status via poll — switching to normal 60s interval")
+        elif self._startup_retries_remaining > 0:
+            self._startup_retries_remaining -= 1
+            if self._startup_retries_remaining == 0:
+                self.update_interval = POLL_INTERVAL
+                _LOGGER.warning("Startup retries exhausted — switching to normal poll")
 
         return self.client.state
 
