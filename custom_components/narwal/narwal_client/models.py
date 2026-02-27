@@ -162,6 +162,9 @@ class MapDisplayData:
     def from_broadcast(cls, decoded: dict[str, Any]) -> MapDisplayData:
         """Parse display_map broadcast payload.
 
+        NEEDS LIVE VALIDATION: field layout inferred from protocol analysis.
+        Must capture display_map during an active cleaning session to confirm.
+
         Expected structure (protobuf fields — needs confirmation):
           field 7: map data submessage
             7.1: width
@@ -316,6 +319,9 @@ class NarwalState:
 
         dock_sub_state == 2 means 'docking in progress'. We only consider
         this as RETURNING when the robot is not actively cleaning.
+
+        NEEDS LIVE VALIDATION: inferred from protocol analysis, not yet
+        confirmed during a real recall-to-dock sequence.
         """
         return self.dock_sub_state == 2 and not self.is_cleaning
 
@@ -356,6 +362,9 @@ class NarwalState:
             except (ValueError, TypeError):
                 self.dock_sub_state = 0
         if "38" in decoded:
+            # Field 38 is the battery percentage — confirmed correct field.
+            # Updates in real-time during cleaning; triggers auto-return when low.
+            # Not yet observed below 100 (robot always fully charged during dev).
             self.battery_level = int(decoded["38"])
         if "36" in decoded:
             self.timestamp = int(decoded["36"])

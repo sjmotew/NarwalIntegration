@@ -114,6 +114,10 @@ class WorkingStatus(IntEnum):
     CLEANING_ALT = 5  # active cleaning (seen in some modes)
     DOCKED = 10       # on dock, actively charging or returning
     CHARGED = 14      # on dock, fully charged and idle
+    # PLACEHOLDER: error state value not yet observed live.
+    # APK suggests errors surface via field 3 sub-field 1 with a distinct int value.
+    # Trigger a real error (e.g., pick up robot mid-clean) to discover the value.
+    ERROR = 99
     # Field 3 sub-field 2 = 1 means PAUSED (overlay on CLEANING state)
     # Field 3 sub-field 10 = dock sub-state (1=docked, 2=docking)
 

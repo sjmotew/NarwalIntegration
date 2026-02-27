@@ -39,6 +39,16 @@
       "docked": {
         "name": "Docked"
       }
+    },
+    "select": {
+      "mop_humidity": {
+        "name": "Mop humidity",
+        "state": {
+          "dry": "Dry",
+          "normal": "Normal",
+          "wet": "Wet"
+        }
+      }
     }
   }
 }

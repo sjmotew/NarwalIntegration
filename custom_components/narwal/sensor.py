@@ -42,6 +42,8 @@ SENSOR_DESCRIPTIONS: tuple[NarwalSensorEntityDescription, ...] = (
         translation_key="cleaning_area",
         native_unit_of_measurement=UnitOfArea.SQUARE_METERS,
         state_class=SensorStateClass.MEASUREMENT,
+        # working_status field 13 is cm²; divide by 10000 for m².
+        # NEEDS LIVE VALIDATION: only populated during active cleaning.
         value_fn=lambda state: round(state.cleaning_area / 10000, 2)
         if state.cleaning_area > 0
         else None,
@@ -52,6 +54,8 @@ SENSOR_DESCRIPTIONS: tuple[NarwalSensorEntityDescription, ...] = (
         device_class=SensorDeviceClass.DURATION,
         native_unit_of_measurement=UnitOfTime.SECONDS,
         state_class=SensorStateClass.MEASUREMENT,
+        # working_status field 3 is session elapsed seconds.
+        # NEEDS LIVE VALIDATION: only populated during active cleaning.
         value_fn=lambda state: state.cleaning_time
         if state.cleaning_time > 0
         else None,

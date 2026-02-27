@@ -27,6 +27,7 @@ WORKING_STATUS_TO_ACTIVITY: dict[WorkingStatus, VacuumActivity] = {
     WorkingStatus.STANDBY: VacuumActivity.IDLE,
     WorkingStatus.CLEANING: VacuumActivity.CLEANING,
     WorkingStatus.CLEANING_ALT: VacuumActivity.CLEANING,
+    WorkingStatus.ERROR: VacuumActivity.ERROR,
 }
 
 

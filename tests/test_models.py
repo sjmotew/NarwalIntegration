@@ -121,7 +121,7 @@ class TestNarwalState:
     def test_unknown_working_status_value(self) -> None:
         """Unknown status values should fall back to UNKNOWN."""
         state = NarwalState()
-        state.update_from_base_status({"3": {"1": 99}})
+        state.update_from_base_status({"3": {"1": 255}})
         assert state.working_status == WorkingStatus.UNKNOWN
 
 

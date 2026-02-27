@@ -20,6 +20,7 @@ Other Narwal models *may* work if they expose a local WebSocket on port 9002 (sa
 - **Return to dock**
 - **Locate** — robot announces "Robot is here"
 - **Fan speed control** — Quiet, Normal, Strong, Max
+- **Mop humidity control** — Dry, Normal, Wet (select entity)
 
 ### Sensors
 - **Battery level** — real-time percentage from robot broadcasts
@@ -105,8 +106,6 @@ If the robot is in deep sleep (e.g., after being idle for a long time), it may t
 ### Not Yet Implemented
 - **Camera / video streaming** — The robot's camera can be triggered locally (`developer/take_picture`), but images are AES-encrypted and the decryption key is stored on the phone app. Video streaming uses Agora (cloud-only) and cannot work locally.
 - **Room-specific cleaning** — The protocol supports it, but the room selection payload format needs further decoding.
-- **Mop humidity control** — Command exists but is not exposed in the HA UI yet.
-- **Error state reporting** — The integration does not yet detect or display robot error conditions.
 - **Cleaning history / statistics** — Not implemented.
 
 ### Known Issues
