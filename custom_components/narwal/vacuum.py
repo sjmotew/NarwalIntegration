@@ -59,6 +59,7 @@ class NarwalVacuum(NarwalEntity, StateVacuumEntity):
         """Initialize the vacuum entity."""
         super().__init__(coordinator)
         self._attr_unique_id = coordinator.config_entry.data["device_id"]
+        self._last_fan_speed: str | None = None
 
     @property
     def activity(self) -> VacuumActivity:
@@ -71,6 +72,8 @@ class NarwalVacuum(NarwalEntity, StateVacuumEntity):
         # Check cleaning before docked — dock_sub_state can linger
         if state.is_cleaning:
             return VacuumActivity.CLEANING
+        if state.is_returning:
+            return VacuumActivity.RETURNING
         if state.is_docked:
             return VacuumActivity.DOCKED
         return WORKING_STATUS_TO_ACTIVITY.get(
@@ -79,10 +82,13 @@ class NarwalVacuum(NarwalEntity, StateVacuumEntity):
 
     @property
     def fan_speed(self) -> str | None:
-        """Return the current fan speed."""
-        # Fan speed is set via commands; we don't currently track it in state
-        # Return None until we add fan_speed tracking to NarwalState
-        return None
+        """Return the current fan speed.
+
+        The robot protocol does not broadcast the active fan speed setting,
+        so we track the last value set via the integration. Returns None
+        until the user sets a fan speed for the first time.
+        """
+        return self._last_fan_speed
 
     async def async_start(self) -> None:
         """Start cleaning."""
@@ -109,3 +115,5 @@ class NarwalVacuum(NarwalEntity, StateVacuumEntity):
         level = FAN_SPEED_MAP.get(fan_speed)
         if level is not None:
             await self.coordinator.client.set_fan_speed(level)
+            self._last_fan_speed = fan_speed
+            self.async_write_ha_state()

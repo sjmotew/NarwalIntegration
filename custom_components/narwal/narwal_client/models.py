@@ -312,8 +312,12 @@ class NarwalState:
 
     @property
     def is_returning(self) -> bool:
-        # RETURNING status value not yet confirmed from live data
-        return False
+        """True when the robot is actively returning to the dock.
+
+        dock_sub_state == 2 means 'docking in progress'. We only consider
+        this as RETURNING when the robot is not actively cleaning.
+        """
+        return self.dock_sub_state == 2 and not self.is_cleaning
 
     def update_from_working_status(self, decoded: dict[str, Any]) -> None:
         """Update state from a decoded working_status message.

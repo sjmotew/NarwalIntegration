@@ -52,3 +52,4 @@ i18n_robot_keys.txt
 robot_commands_i18n.txt
 nul
 run_analysis*.py
+prompt.md
