@@ -37,7 +37,11 @@
     },
     "binary_sensor": {
       "docked": {
-        "name": "Docked"
+        "name": "Docked",
+        "state": {
+          "on": "Docked",
+          "off": "Undocked"
+        }
       },
       "charging": {
         "name": "Charging"
