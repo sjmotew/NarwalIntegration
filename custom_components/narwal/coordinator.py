@@ -97,9 +97,10 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
         state = self.client.state
         _LOGGER.warning(
             "Narwal startup: status=%s, battery=%d, docked=%s, "
-            "dock_sub=%d, dock_act=%d, dock_pres=%d, field3=%r",
+            "f11=%d, f47=%d, dock_sub=%d, dock_act=%d, field3=%r",
             state.working_status.name, state.battery_level, state.is_docked,
-            state.dock_sub_state, state.dock_activity, state.dock_presence,
+            state.dock_field11, state.dock_field47,
+            state.dock_sub_state, state.dock_activity,
             state.raw_base_status.get("3"),
         )
 
@@ -117,10 +118,11 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
     def _on_state_update(self, state: NarwalState) -> None:
         """Handle a push state update from the WebSocket listener."""
         _LOGGER.debug(
-            "Broadcast update: status=%s, docked=%s, dock_pres=%d, "
+            "Broadcast update: status=%s, docked=%s, f11=%d, f47=%d, "
             "dock_sub=%d, dock_act=%d, field3=%r",
             state.working_status.name, state.is_docked,
-            state.dock_presence, state.dock_sub_state, state.dock_activity,
+            state.dock_field11, state.dock_field47,
+            state.dock_sub_state, state.dock_activity,
             state.raw_base_status.get("3"),
         )
         self.async_set_updated_data(state)
@@ -153,9 +155,10 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
 
         state = self.client.state
         _LOGGER.debug(
-            "Poll update: status=%s, docked=%s, dock_pres=%d, field3=%r",
+            "Poll update: status=%s, docked=%s, f11=%d, f47=%d, field3=%r",
             state.working_status.name, state.is_docked,
-            state.dock_presence, state.raw_base_status.get("3"),
+            state.dock_field11, state.dock_field47,
+            state.raw_base_status.get("3"),
         )
 
         # Manage fast poll countdown

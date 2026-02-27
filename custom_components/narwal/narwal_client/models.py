@@ -299,12 +299,23 @@ class NarwalState:
     # Dock activity (field 3 sub-field 12: 2/6 observed when docked)
     dock_activity: int = 0
 
-    # Dock presence (field 3 sub-field 3: live-validated via CLI wake_diag)
-    #   2 = off dock (confirmed: robot off dock, asleep and awake)
-    #   1 = on dock (confirmed: robot on dock, asleep and awake)
-    #   6 = on dock (observed at HA startup, robot docked+charged)
-    # Only meaningful during STANDBY(1) when no other dock signals present.
+    # Dock presence (field 3 sub-field 3)
+    # Values observed: 1=on dock, 2=off dock, 6=on dock (charged idle)
     dock_presence: int = 0
+
+    # Dock indicator from field 11 (top-level base_status field)
+    # Validated via dock_research.py guided test (5 captures):
+    #   2 = on dock (all 3 on-dock captures)
+    #   1 = off dock (both off-dock captures)
+    # Perfect dock correlation — primary STANDBY dock signal.
+    dock_field11: int = 0
+
+    # Dock indicator from field 47 (top-level base_status field)
+    # Validated via dock_research.py guided test (5 captures):
+    #   3 = on dock (all 3 on-dock captures)
+    #   2 = off dock (both off-dock captures)
+    # Secondary confirmation signal.
+    dock_field47: int = 0
 
     # Raw data for fields we haven't fully decoded yet
     raw_base_status: dict[str, Any] = field(default_factory=dict)
@@ -324,15 +335,14 @@ class NarwalState:
         """True when on dock: DOCKED(10), CHARGED(14), or STANDBY(1) with dock signals.
 
         STANDBY(1) is ambiguous — robot can be idle on or off the dock.
-        Dock signals for STANDBY:
+        Dock signals for STANDBY (checked in priority order):
           - dock_sub_state == 1 (field 3.10, confirmed live)
           - dock_activity > 0 (field 3.12, values 2/6 when docked)
+          - dock_field11 == 2 (field 11: 2=docked, 1=undocked)
+          - dock_field47 == 3 (field 47: 3=docked, 2=undocked)
 
-        Field 3.3 (dock_presence) was investigated but is NOT a reliable
-        dock signal — values 1,2,6,7 observed with no clear dock correlation.
-
-        When STANDBY has no dock signals, we cannot determine dock state.
-        This is the safe default (undocked) to avoid false positives.
+        Fields 11 and 47 validated via dock_research.py guided test with
+        5 captures across on-dock and off-dock states — perfect correlation.
         """
         if self.working_status in (WorkingStatus.DOCKED, WorkingStatus.CHARGED):
             return True
@@ -340,6 +350,10 @@ class NarwalState:
             if self.dock_sub_state == 1:
                 return True
             if self.dock_activity > 0:
+                return True
+            if self.dock_field11 == 2:
+                return True
+            if self.dock_field47 == 3:
                 return True
         return False
 
@@ -398,9 +412,25 @@ class NarwalState:
           3.10 = dock sub-state (1=docked, 2=docking in progress)
           3.12 = dock activity (values 2, 6 observed)
 
+        Dock indicators (validated via dock_research.py, 5 captures):
+          Field 11 = 2 when docked, 1 when undocked
+          Field 47 = 3 when docked, 2 when undocked
+
         Note: field 32 mirrors field 3 exactly (redundant).
         """
         self.raw_base_status = decoded
+        # Field 11 = dock indicator (2=docked, 1=undocked)
+        if "11" in decoded:
+            try:
+                self.dock_field11 = int(decoded["11"])
+            except (ValueError, TypeError):
+                self.dock_field11 = 0
+        # Field 47 = dock indicator (3=docked, 2=undocked)
+        if "47" in decoded:
+            try:
+                self.dock_field47 = int(decoded["47"])
+            except (ValueError, TypeError):
+                self.dock_field47 = 0
         # Field 3 is a nested message: {1: state_int, ...}
         field3 = decoded.get("3")
         if isinstance(field3, dict) and "1" in field3:

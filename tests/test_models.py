@@ -62,22 +62,43 @@ class TestNarwalState:
         assert state.working_status == WorkingStatus.STANDBY
         assert state.is_docked
 
-    def test_update_from_base_status_standby_off_dock(self) -> None:
-        """STANDBY(1) without dock signals means undocked (safe default)."""
+    def test_update_from_base_status_standby_off_dock_field11(self) -> None:
+        """STANDBY(1) with field 11=1 means off dock (validated via dock_research)."""
         state = NarwalState()
-        state.update_from_base_status({"3": {"1": 1, "3": 2}, "2": _float_to_uint32(85.0)})
+        state.update_from_base_status({
+            "3": {"1": 1, "3": 2}, "11": 1, "47": 2,
+            "2": _float_to_uint32(100.0),
+        })
         assert state.working_status == WorkingStatus.STANDBY
+        assert state.dock_field11 == 1
+        assert state.dock_field47 == 2
         assert not state.is_docked
 
-    def test_update_from_base_status_standby_no_dock_signals(self) -> None:
-        """STANDBY(1) with no dock_sub_state or dock_activity — NOT docked.
+    def test_update_from_base_status_standby_on_dock_field11(self) -> None:
+        """STANDBY(1) with field 11=2 means on dock (validated via dock_research).
 
-        Field 3.3 is NOT a dock indicator (values 1,2,6,7 observed with
-        no reliable dock correlation). Only dock_sub_state and dock_activity
-        are trusted for STANDBY dock detection.
+        5 captures: field 11=2 in all 3 on-dock, field 11=1 in both off-dock.
         """
         state = NarwalState()
-        state.update_from_base_status({"3": {"1": 1, "3": 7}, "2": _float_to_uint32(100.0)})
+        state.update_from_base_status({
+            "3": {"1": 1, "3": 6}, "11": 2, "47": 3,
+        })
+        assert state.working_status == WorkingStatus.STANDBY
+        assert state.dock_field11 == 2
+        assert state.dock_field47 == 3
+        assert state.is_docked
+
+    def test_update_from_base_status_standby_on_dock_field47_only(self) -> None:
+        """STANDBY(1) with field 47=3 means on dock (secondary signal)."""
+        state = NarwalState()
+        state.update_from_base_status({"3": {"1": 1}, "47": 3})
+        assert state.working_status == WorkingStatus.STANDBY
+        assert state.is_docked
+
+    def test_update_from_base_status_standby_no_signals(self) -> None:
+        """STANDBY(1) with no dock signals at all — NOT docked (safe default)."""
+        state = NarwalState()
+        state.update_from_base_status({"3": {"1": 1}})
         assert state.working_status == WorkingStatus.STANDBY
         assert not state.is_docked
 
