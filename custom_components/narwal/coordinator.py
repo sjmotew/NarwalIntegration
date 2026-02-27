@@ -95,7 +95,7 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
                     break
 
         state = self.client.state
-        _LOGGER.warning(
+        _LOGGER.debug(
             "Narwal startup: status=%s, battery=%d, docked=%s, "
             "f11=%d, f47=%d, dock_sub=%d, dock_act=%d, field3=%r",
             state.working_status.name, state.battery_level, state.is_docked,
@@ -110,7 +110,7 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
         if state.working_status == WorkingStatus.UNKNOWN:
             self._fast_poll_remaining = FAST_POLL_MAX
             self.update_interval = FAST_POLL_INTERVAL
-            _LOGGER.warning(
+            _LOGGER.info(
                 "Robot asleep — fast polling every %ds until it responds",
                 int(FAST_POLL_INTERVAL.total_seconds()),
             )
@@ -131,7 +131,7 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
         if self._fast_poll_remaining > 0:
             self._fast_poll_remaining = 0
             self.update_interval = POLL_INTERVAL
-            _LOGGER.warning(
+            _LOGGER.info(
                 "Narwal broadcast received: status=%s — normal polling restored",
                 state.working_status.name,
             )
@@ -166,7 +166,7 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
             if self.client.state.working_status != WorkingStatus.UNKNOWN:
                 self._fast_poll_remaining = 0
                 self.update_interval = POLL_INTERVAL
-                _LOGGER.warning(
+                _LOGGER.info(
                     "Narwal poll got status=%s — normal polling restored",
                     self.client.state.working_status.name,
                 )
@@ -174,7 +174,7 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
                 self._fast_poll_remaining -= 1
                 if self._fast_poll_remaining <= 0:
                     self.update_interval = POLL_INTERVAL
-                    _LOGGER.warning("Fast poll exhausted — normal polling restored")
+                    _LOGGER.info("Fast poll exhausted — normal polling restored")
 
         return self.client.state
 
