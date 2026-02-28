@@ -88,18 +88,27 @@ class NarwalMapImage(NarwalEntity, ImageEntity):
         display_ts = display.timestamp if display else 0
         new_key = (static_ts, display_ts)
 
+        now = time.monotonic()
+        since_render = now - self._last_render_time if self._last_render_time else 999
+
         # Skip re-render if nothing changed
         if new_key == self._cache_key and self._cached_image:
             return self._cached_image
 
         # Throttle renders during cleaning (display_map arrives every ~1.5s)
-        now = time.monotonic()
         if (
             display_ts > 0
             and self._cached_image
-            and now - self._last_render_time < _MIN_RENDER_INTERVAL
+            and since_render < _MIN_RENDER_INTERVAL
         ):
             return self._cached_image
+
+        _LOGGER.warning(
+            "MAP RENDER: since_last=%.1fs cache_key_changed=%s display=%s",
+            since_render,
+            new_key != self._cache_key,
+            display is not None,
+        )
 
         # Robot position from display_map (convert cm → grid pixels)
         robot_x = None
