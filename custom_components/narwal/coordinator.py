@@ -137,23 +137,19 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
 
     def _on_state_update(self, state: NarwalState) -> None:
         """Handle a push state update from the WebSocket listener."""
-        # Guard: after force_end verified stale CLEANING, reject CLEANING
-        # broadcasts for a window. A genuine clean (user-initiated) will
-        # produce sustained broadcasts that outlast the guard.
-        if (
-            self._stale_guard_until > 0
-            and time.monotonic() < self._stale_guard_until
-            and state.working_status
-            in (WorkingStatus.CLEANING, WorkingStatus.CLEANING_ALT)
-        ):
-            _LOGGER.debug(
-                "Dropping stale CLEANING broadcast (guard active for %.0fs)",
-                self._stale_guard_until - time.monotonic(),
-            )
-            return
-
-        # Guard expired or state is not CLEANING — clear it
-        if self._stale_guard_until > 0 and time.monotonic() >= self._stale_guard_until:
+        # Guard: after force_end verified stale state, reject ALL broadcasts
+        # for a window. Brief wake-up broadcasts contain stale data (CLEANING,
+        # STANDBY without dock signals, etc). Guard clears when user starts
+        # a clean or after timeout. Battery still updates via get_status().
+        if self._stale_guard_until > 0:
+            if time.monotonic() < self._stale_guard_until:
+                _LOGGER.debug(
+                    "Dropping broadcast during stale guard (%.0fs left, status=%s)",
+                    self._stale_guard_until - time.monotonic(),
+                    state.working_status.name,
+                )
+                return
+            # Guard expired
             self._stale_guard_until = 0.0
 
         _LOGGER.debug(
