@@ -84,9 +84,8 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
         except Exception:
             _LOGGER.debug("Could not fetch device info")
 
-        # Use full_update only if robot is broadcasting (authoritative data)
         try:
-            await self.client.get_status(full_update=self.client.robot_awake)
+            await self.client.get_status(full_update=True)
         except Exception:
             _LOGGER.debug("Could not fetch initial status")
 
@@ -103,6 +102,24 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
                     break
 
         state = self.client.state
+
+        # Verify CLEANING at startup — robot on dock often reports stale
+        # CLEANING from its last session. Ask the robot directly.
+        if state.working_status in (
+            WorkingStatus.CLEANING, WorkingStatus.CLEANING_ALT,
+        ) and not self.client.robot_awake:
+            try:
+                resp = await self.client.stop()
+                if resp.not_applicable:
+                    _LOGGER.info(
+                        "Startup: force_end=NOT_APPLICABLE — "
+                        "CLEANING is stale, setting DOCKED"
+                    )
+                    state.working_status = WorkingStatus.DOCKED
+                    state.is_paused = False
+                    state.is_returning_to_dock = False
+            except Exception:
+                _LOGGER.debug("Startup verification failed")
         _LOGGER.debug(
             "Narwal startup: status=%s, battery=%d, docked=%s, "
             "f11=%d, f47=%d, dock_sub=%d, dock_act=%d, field3=%r, awake=%s",
@@ -148,13 +165,13 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
     async def _async_update_data(self) -> NarwalState:
         """Polling fallback — fetch status if no push updates arrived.
 
-        Trust model:
-          - Robot IS broadcasting (robot_awake=True): full get_status() update,
-            all fields are authoritative.
-          - Robot NOT broadcasting: only update battery/health from get_status().
-            Working_status kept from last authoritative source (broadcast or
-            previous awake get_status). This avoids overwriting correct state
-            with stale firmware cache.
+        State verification:
+          When get_status() reports CLEANING but the robot is not actively
+          broadcasting, the state may be a stale firmware cache from a
+          previous session. We verify by sending task/force_end:
+            - NOT_APPLICABLE (2) → robot confirms it's NOT cleaning → stale
+            - SUCCESS (1) → robot WAS cleaning and we ended it → real
+          This is a deterministic check, not inference.
         """
         if not self.client.connected:
             try:
@@ -166,19 +183,72 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
         if not self.client.robot_awake:
             await self.client.wake(timeout=20.0)
 
-        # Query status — trust working_status ONLY when robot is broadcasting
-        awake = self.client.robot_awake
+        # Query full status
         try:
-            await self.client.get_status(full_update=awake)
+            await self.client.get_status(full_update=True)
         except Exception as err:
             raise UpdateFailed(f"Failed to get status: {err}") from err
 
         state = self.client.state
+
+        # Verify suspicious CLEANING state when robot is not broadcasting.
+        # A truly cleaning robot broadcasts every ~1.5s. If it's not
+        # broadcasting but reports CLEANING, ask the robot directly.
+        if (
+            state.working_status
+            in (WorkingStatus.CLEANING, WorkingStatus.CLEANING_ALT)
+            and not self.client.robot_awake
+        ):
+            _LOGGER.info(
+                "State says CLEANING but no broadcasts — verifying with force_end"
+            )
+            try:
+                resp = await self.client.stop()
+                if resp.not_applicable:
+                    # Robot confirms: "nothing to stop" → CLEANING is stale
+                    _LOGGER.info(
+                        "force_end returned NOT_APPLICABLE — "
+                        "CLEANING is stale, re-querying status"
+                    )
+                    # Re-query: robot just processed a command, state may
+                    # have refreshed
+                    try:
+                        await self.client.get_status(full_update=True)
+                    except Exception:
+                        pass
+                    state = self.client.state
+                    # If STILL stale after re-query, force to DOCKED —
+                    # we verified the robot is not cleaning
+                    if state.working_status in (
+                        WorkingStatus.CLEANING,
+                        WorkingStatus.CLEANING_ALT,
+                    ):
+                        _LOGGER.info(
+                            "Still CLEANING after re-query — "
+                            "robot confirmed idle, setting DOCKED"
+                        )
+                        state.working_status = WorkingStatus.DOCKED
+                        state.is_paused = False
+                        state.is_returning_to_dock = False
+                elif resp.success:
+                    _LOGGER.info(
+                        "force_end returned SUCCESS — "
+                        "robot was in stale active state, now stopped"
+                    )
+                    # Re-query for fresh state after stop
+                    try:
+                        await self.client.get_status(full_update=True)
+                        state = self.client.state
+                    except Exception:
+                        pass
+            except Exception:
+                _LOGGER.debug("force_end verification failed, keeping state as-is")
+
         _LOGGER.debug(
             "Poll update: status=%s, docked=%s, battery=%d, awake=%s, "
             "f11=%d, f47=%d, field3=%r",
             state.working_status.name, state.is_docked,
-            state.battery_level, awake,
+            state.battery_level, self.client.robot_awake,
             state.dock_field11, state.dock_field47,
             state.raw_base_status.get("3"),
         )
