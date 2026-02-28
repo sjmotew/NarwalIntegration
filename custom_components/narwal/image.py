@@ -106,12 +106,21 @@ class NarwalMapImage(NarwalEntity, ImageEntity):
         robot_y = None
         robot_heading = None
         if display:
+            _LOGGER.debug(
+                "display_map: robot_cm=(%.2f, %.2f) heading=%.1f ts=%d "
+                "origin=(%d, %d) res=%d",
+                display.robot_x, display.robot_y, display.robot_heading,
+                display.timestamp, static_map.origin_x, static_map.origin_y,
+                static_map.resolution,
+            )
             grid_pos = display.to_grid_coords(
                 static_map.resolution, static_map.origin_x, static_map.origin_y,
             )
             if grid_pos is not None:
                 robot_x, robot_y = grid_pos
-                robot_heading = display.robot_heading
+                _LOGGER.debug("Robot grid pos: (%.1f, %.1f)", robot_x, robot_y)
+            else:
+                _LOGGER.debug("to_grid_coords returned None")
 
         # Dock position and room names from static map
         dock_x = static_map.dock_x
