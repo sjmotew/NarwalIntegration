@@ -58,6 +58,8 @@ class MapData:
     created_at: int = 0
     dock_x: float | None = None  # dock position in grid coordinates
     dock_y: float | None = None
+    origin_x: int = 0  # x pixel offset from field 2.6.3
+    origin_y: int = 0  # y pixel offset from field 2.6.1
     raw: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
@@ -92,16 +94,33 @@ class MapData:
 
         resolution = int(payload.get("3", 0))
 
+        # Extract origin offsets from field 6 (coordinate transform).
+        # These convert world coordinates (cm) to grid pixel coordinates:
+        #   pixel_x = x_cm / cm_per_pixel - origin_x
+        #   pixel_y = y_cm / cm_per_pixel - origin_y
+        origin_x = 0
+        origin_y = 0
+        field6 = payload.get("6")
+        if isinstance(field6, dict):
+            try:
+                origin_x = int(field6.get("3", 0))
+            except (ValueError, TypeError):
+                pass
+            try:
+                origin_y = int(field6.get("1", 0))
+            except (ValueError, TypeError):
+                pass
+
         # Parse dock position from field 48 (timestamped positions in cm).
         # Field 48 is a list of {1: id, 2: {1: x_cm, 2: y_cm}, 3: timestamp}.
         # Use the entry with the latest timestamp (most recent dock position).
         # Coordinates are in centimeters; convert to pixels via resolution (mm/pixel).
         # Pixel transform: px = (x_cm * 10 / resolution) - field6.3
+        # Requires field 6 for origin offsets — without it, pixel coords are wrong.
         dock_x = None
         dock_y = None
         field48 = payload.get("48")
-        field6 = payload.get("6")
-        if isinstance(field48, list) and isinstance(field6, dict):
+        if isinstance(field48, list) and isinstance(field6, dict) and resolution > 0:
             best_ts = -1
             best_pos = None
             for entry in field48:
@@ -120,10 +139,8 @@ class MapData:
                 try:
                     x_cm = _to_float32(best_pos["1"])
                     y_cm = _to_float32(best_pos["2"])
-                    if x_cm is not None and y_cm is not None and resolution > 0:
+                    if x_cm is not None and y_cm is not None:
                         cm_per_pixel = resolution / 10  # 60mm/px = 6cm/px
-                        origin_x = int(field6.get("3", 0))  # x pixel offset
-                        origin_y = int(field6.get("1", 0))  # y pixel offset
                         dock_x = x_cm / cm_per_pixel - origin_x
                         dock_y = y_cm / cm_per_pixel - origin_y
                 except (struct.error, OverflowError, ValueError, TypeError):
@@ -139,87 +156,90 @@ class MapData:
             created_at=int(payload.get("34", 0)),
             dock_x=dock_x,
             dock_y=dock_y,
+            origin_x=origin_x,
+            origin_y=origin_y,
             raw=payload,
         )
 
 
 @dataclass
 class MapDisplayData:
-    """Real-time map display data from map/display_map broadcasts.
+    """Real-time robot position from map/display_map broadcasts.
 
-    Sent during cleaning sessions with updated map grid and robot position.
+    Sent every ~1.5s during active cleaning. Contains robot position in cm,
+    heading in radians, and a small cleaned-area grid overlay (NOT the full
+    house map — that comes from get_map).
+
+    Validated field layout (live capture 2026-02-28, 13 broadcasts):
+      field 1.1: {1: x_cm, 2: y_cm} — robot position as float32 centimeters
+      field 1.2: heading as float32 radians
+      field 5: dock/reference position (constant, same format)
+      field 7: cleaned-area grid {1: width, 2: height, 3: compressed_bytes}
+      field 10: timestamp in milliseconds since epoch
+      field 12: active room list
     """
 
-    width: int = 0
-    height: int = 0
-    compressed_grid: bytes = b""
-    robot_x: float = 0.0
-    robot_y: float = 0.0
-    robot_heading: float = 0.0
-    timestamp: int = 0
+    robot_x: float = 0.0  # centimeters, world coordinates
+    robot_y: float = 0.0  # centimeters, world coordinates
+    robot_heading: float = 0.0  # degrees (converted from radians for renderer)
+    timestamp: int = 0  # milliseconds since epoch (field 10)
+
+    def to_grid_coords(
+        self, resolution: int, origin_x: int, origin_y: int,
+    ) -> tuple[float, float] | None:
+        """Convert world-coordinate position (cm) to grid pixel coordinates.
+
+        Uses the same transform as dock position in MapData.from_response():
+          pixel = cm / cm_per_pixel - origin_offset
+
+        Args:
+            resolution: Map resolution in mm/pixel (e.g. 60).
+            origin_x: X pixel offset (MapData.origin_x, from field 2.6.3).
+            origin_y: Y pixel offset (MapData.origin_y, from field 2.6.1).
+
+        Returns:
+            (pixel_x, pixel_y) tuple, or None if no valid position.
+        """
+        if self.robot_x == 0.0 and self.robot_y == 0.0:
+            return None
+        if resolution <= 0:
+            return None
+        cm_per_pixel = resolution / 10  # 60mm/px = 6cm/px
+        px = self.robot_x / cm_per_pixel - origin_x
+        py = self.robot_y / cm_per_pixel - origin_y
+        return (px, py)
 
     @classmethod
     def from_broadcast(cls, decoded: dict[str, Any]) -> MapDisplayData:
-        """Parse display_map broadcast payload.
+        """Parse display_map broadcast payload."""
+        import math
 
-        NEEDS LIVE VALIDATION: field layout inferred from protocol analysis.
-        Must capture display_map during an active cleaning session to confirm.
-
-        Expected structure (protobuf fields — needs confirmation):
-          field 7: map data submessage
-            7.1: width
-            7.2: height
-            7.3: compressed grid bytes
-          field 1: robot position submessage
-            1.1: x coordinate
-            1.2: y coordinate
-            1.3: heading
-        """
         result = cls()
 
-        # Map grid — try field 7 (nested) or fall back to searching bytes fields
-        field7 = decoded.get("7", {})
-        if isinstance(field7, dict):
-            result.width = int(field7.get("1", 0))
-            result.height = int(field7.get("2", 0))
-            compressed = field7.get("3", b"")
-            if isinstance(compressed, str):
-                compressed = compressed.encode("latin-1")
-            result.compressed_grid = compressed if isinstance(compressed, bytes) else b""
-        elif isinstance(field7, bytes) and len(field7) > 100:
-            # Field 7 might be raw compressed bytes
-            result.compressed_grid = field7
-
-        # Robot position — try field 1
+        # Robot position — field 1.1 = {1: x_cm, 2: y_cm}, field 1.2 = heading_rad
         field1 = decoded.get("1", {})
         if isinstance(field1, dict):
+            pos = field1.get("1", {})
+            if isinstance(pos, dict):
+                x_f = _to_float32(pos.get("1"))
+                if x_f is not None and math.isfinite(x_f):
+                    result.robot_x = x_f
+                y_f = _to_float32(pos.get("2"))
+                if y_f is not None and math.isfinite(y_f):
+                    result.robot_y = y_f
+
+            heading_raw = field1.get("2")
+            if heading_raw is not None:
+                h_f = _to_float32(heading_raw)
+                if h_f is not None and math.isfinite(h_f):
+                    result.robot_heading = math.degrees(h_f)
+
+        # Timestamp — field 10 (milliseconds since epoch)
+        if "10" in decoded:
             try:
-                result.robot_x = float(field1.get("1", 0))
-                result.robot_y = float(field1.get("2", 0))
-                result.robot_heading = float(field1.get("3", 0))
+                result.timestamp = int(decoded["10"])
             except (ValueError, TypeError):
                 pass
-
-        # Fallback: if width/height are 0, try other known structures
-        if result.width == 0 and result.height == 0:
-            # Some firmwares put width/height at the top level
-            if "4" in decoded:
-                try:
-                    result.width = int(decoded["4"])
-                except (ValueError, TypeError):
-                    pass
-            if "5" in decoded:
-                try:
-                    result.height = int(decoded["5"])
-                except (ValueError, TypeError):
-                    pass
-
-        # Look for large bytes fields as potential compressed grid
-        if not result.compressed_grid:
-            for key, val in decoded.items():
-                if isinstance(val, bytes) and len(val) > 100:
-                    result.compressed_grid = val
-                    break
 
         return result
 

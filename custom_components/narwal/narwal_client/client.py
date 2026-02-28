@@ -335,7 +335,11 @@ class NarwalClient:
         if short_topic == "status/working_status":
             self.state.update_from_working_status(decoded)
         elif short_topic == "status/robot_base_status":
+            was_cleaning = self.state.is_cleaning
             self.state.update_from_base_status(decoded)
+            # Clear stale display_map when robot stops cleaning
+            if was_cleaning and not self.state.is_cleaning:
+                self.state.map_display_data = None
         elif short_topic == "upgrade/upgrade_status":
             self.state.update_from_upgrade_status(decoded)
         elif short_topic == "status/download_status":

@@ -160,6 +160,47 @@ def _draw_dock(
     )
 
 
+def _draw_robot(
+    draw: "ImageDraw.ImageDraw",
+    rx: int,
+    ry: int,
+    heading: float | None,
+    radius: int,
+) -> None:
+    """Draw robot position with optional heading arrow.
+
+    Args:
+        draw: PIL ImageDraw instance.
+        rx: Robot X in image coordinates (already Y-flipped).
+        ry: Robot Y in image coordinates (already Y-flipped).
+        heading: Heading in degrees (0=right, 90=up in world coords).
+            None to draw circle only without heading arrow.
+        radius: Circle radius in pixels.
+    """
+    import math
+
+    # Blue filled circle with white outline
+    draw.ellipse(
+        [rx - radius, ry - radius, rx + radius, ry + radius],
+        fill=(0, 120, 255),
+        outline=(255, 255, 255),
+    )
+
+    # Heading arrow — white line from center in heading direction
+    if heading is not None:
+        # Convert degrees to radians. Heading 0=right, 90=up in world coords.
+        # Image Y is flipped (down = positive), so negate the Y component.
+        rad = math.radians(heading)
+        arrow_len = radius * 2.5
+        dx = math.cos(rad) * arrow_len
+        dy = -math.sin(rad) * arrow_len  # negate for image Y-down
+        draw.line(
+            [(rx, ry), (rx + dx, ry + dy)],
+            fill=(255, 255, 255),
+            width=2,
+        )
+
+
 def render_map_png(
     decompressed: bytes,
     width: int,
@@ -293,11 +334,7 @@ def render_map_png(
         rx = int(robot_x)
         ry = height - 1 - int(robot_y)
         radius = max(3, min(width, height) // 80)
-        draw.ellipse(
-            [rx - radius, ry - radius, rx + radius, ry + radius],
-            fill=(0, 120, 255),
-            outline=(255, 255, 255),
-        )
+        _draw_robot(draw, rx, ry, robot_heading, radius)
 
     buf = io.BytesIO()
     img.save(buf, format="PNG")

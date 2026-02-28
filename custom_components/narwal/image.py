@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import logging
+import time
 
 from homeassistant.components.image import ImageEntity
 from homeassistant.core import HomeAssistant
@@ -14,6 +15,10 @@ from .coordinator import NarwalCoordinator
 from .entity import NarwalEntity
 
 _LOGGER = logging.getLogger(__name__)
+
+# Minimum seconds between re-renders (display_map arrives every ~1.5s
+# but re-rendering every time is wasteful for the frontend).
+_MIN_RENDER_INTERVAL = 5
 
 
 async def async_setup_entry(
@@ -39,17 +44,19 @@ class NarwalMapImage(NarwalEntity, ImageEntity):
         device_id = coordinator.config_entry.data["device_id"]
         self._attr_unique_id = f"{device_id}_map"
         self._cached_image: bytes | None = None
-        self._last_map_timestamp: int = 0
+        # Cache key: (static_map_ts, display_map_ts) — re-render when either changes
+        self._cache_key: tuple[int, int] = (0, 0)
+        self._last_render_time: float = 0.0
 
     @property
     def image_last_updated(self) -> datetime | None:
         """Return when the image was last updated."""
         state = self.coordinator.client.state
 
-        # Prefer real-time display_map timestamp
+        # Prefer real-time display_map timestamp (ms since epoch)
         if state.map_display_data and state.map_display_data.timestamp:
             return datetime.fromtimestamp(
-                state.map_display_data.timestamp, tz=timezone.utc
+                state.map_display_data.timestamp / 1000, tz=timezone.utc
             )
 
         # Fall back to static map created_at
@@ -61,54 +68,59 @@ class NarwalMapImage(NarwalEntity, ImageEntity):
         return None
 
     async def async_image(self) -> bytes | None:
-        """Return the map as a PNG image."""
+        """Return the map as a PNG image.
+
+        Always uses the static map grid as background, with robot position
+        overlaid from display_map when the robot is actively cleaning.
+        """
         state = self.coordinator.client.state
-
-        # Determine which map source to use
-        # Prefer real-time display_map during cleaning
-        display = state.map_display_data
         static_map = state.map_data
+        display = state.map_display_data
 
-        compressed = None
-        width = 0
-        height = 0
+        # Must have a static map to render anything
+        if not static_map or not static_map.compressed_map:
+            return self._cached_image
+        if static_map.width <= 0 or static_map.height <= 0:
+            return self._cached_image
+
+        # Build cache key from both data sources
+        static_ts = static_map.created_at or 0
+        display_ts = display.timestamp if display else 0
+        new_key = (static_ts, display_ts)
+
+        # Skip re-render if nothing changed
+        if new_key == self._cache_key and self._cached_image:
+            return self._cached_image
+
+        # Throttle renders during cleaning (display_map arrives every ~1.5s)
+        now = time.monotonic()
+        if (
+            display_ts > 0
+            and self._cached_image
+            and now - self._last_render_time < _MIN_RENDER_INTERVAL
+        ):
+            return self._cached_image
+
+        # Robot position from display_map (convert cm → grid pixels)
         robot_x = None
         robot_y = None
         robot_heading = None
-        dock_x = None
-        dock_y = None
-        current_ts = 0
+        if display:
+            grid_pos = display.to_grid_coords(
+                static_map.resolution, static_map.origin_x, static_map.origin_y,
+            )
+            if grid_pos is not None:
+                robot_x, robot_y = grid_pos
+                robot_heading = display.robot_heading
 
-        if display and display.compressed_grid:
-            compressed = display.compressed_grid
-            width = display.width
-            height = display.height
-            robot_x = display.robot_x if display.robot_x else None
-            robot_y = display.robot_y if display.robot_y else None
-            robot_heading = display.robot_heading if display.robot_heading else None
-            current_ts = display.timestamp or 0
-        elif static_map and static_map.compressed_map:
-            compressed = static_map.compressed_map
-            width = static_map.width
-            height = static_map.height
-            current_ts = static_map.created_at or 0
-
-        # Dock position and room names come from static map (always available)
+        # Dock position and room names from static map
+        dock_x = static_map.dock_x
+        dock_y = static_map.dock_y
         room_names: dict[int, str] | None = None
-        if static_map:
-            dock_x = static_map.dock_x
-            dock_y = static_map.dock_y
-            if static_map.rooms:
-                room_names = {
-                    r.room_id: r.name for r in static_map.rooms if r.name
-                }
-
-        if not compressed or width <= 0 or height <= 0:
-            return self._cached_image
-
-        # Only re-render if data has changed
-        if current_ts == self._last_map_timestamp and self._cached_image:
-            return self._cached_image
+        if static_map.rooms:
+            room_names = {
+                r.room_id: r.name for r in static_map.rooms if r.name
+            }
 
         # Render in executor (Pillow is CPU-bound)
         try:
@@ -116,9 +128,9 @@ class NarwalMapImage(NarwalEntity, ImageEntity):
 
             png_bytes = await self.hass.async_add_executor_job(
                 render_map_from_compressed,
-                compressed,
-                width,
-                height,
+                static_map.compressed_map,
+                static_map.width,
+                static_map.height,
                 robot_x,
                 robot_y,
                 robot_heading,
@@ -129,7 +141,8 @@ class NarwalMapImage(NarwalEntity, ImageEntity):
 
             if png_bytes:
                 self._cached_image = png_bytes
-                self._last_map_timestamp = current_ts
+                self._cache_key = new_key
+                self._last_render_time = now
 
         except Exception:
             _LOGGER.exception("Failed to render map image")
