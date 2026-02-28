@@ -345,6 +345,14 @@ class NarwalClient:
         elif short_topic == "status/download_status":
             self.state.update_from_download_status(decoded)
         elif short_topic == "map/display_map":
+            # Diagnostic: log raw decoded keys and field 1 structure
+            f1 = decoded.get("1")
+            _LOGGER.warning(
+                "DISPLAY_MAP raw keys=%s field1_type=%s field1=%s",
+                list(decoded.keys())[:10],
+                type(f1).__name__,
+                repr(f1)[:300] if f1 is not None else "None",
+            )
             self.state.map_display_data = MapDisplayData.from_broadcast(decoded)
 
         if self.on_state_update:
