@@ -24,8 +24,8 @@ POLL_INTERVAL = timedelta(seconds=60)
 FAST_POLL_INTERVAL = timedelta(seconds=10)
 FAST_POLL_MAX = 6  # up to 60s of fast polling before falling back to normal
 
-# After verifying stale state, ignore CLEANING broadcasts for this long.
-# Prevents stale broadcasts (from brief wake-up) from overriding verified state.
+# After deep-sleep correction, ignore all broadcasts for this long.
+# Prevents stale broadcasts (from brief wake-ups) from overriding corrected state.
 STALE_GUARD_SECONDS = 120.0
 
 
@@ -35,12 +35,16 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
     Primary data source is WebSocket broadcasts (every ~1.5s when awake).
     Fallback polling every 60s via get_status() in case broadcasts stop.
 
-    Stale state handling:
-      The robot's firmware caches working_status from its last active session.
-      When asleep on the dock, both command responses AND broadcasts may
-      contain stale CLEANING data. We verify with task/force_end (the robot
-      confirms whether a task is actually running) and guard against stale
-      broadcasts overwriting the verified state.
+    Deep sleep handling:
+      The robot enters deep sleep only when idle on the dock. In this mode,
+      the WebSocket server still responds to commands but the firmware CPU
+      is in low-power mode, so working_status and dock fields are stale
+      (cached from the last active session). Battery is always fresh
+      (hardware-sampled from the voltage rail).
+
+      Key insight: no broadcasts + command responses work = deep sleep = on dock.
+      We detect this and override to DOCKED, with a time-based guard to prevent
+      stale broadcasts (from brief wake-ups) from overwriting the corrected state.
     """
 
     config_entry: ConfigEntry
@@ -60,8 +64,8 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
         )
         self._listen_task: asyncio.Task[None] | None = None
         self._fast_poll_remaining = 0
-        # Monotonic time until which CLEANING broadcasts are rejected
-        # (set after force_end verification confirms stale state)
+        # Monotonic time until which ALL broadcasts are rejected
+        # (set after deep-sleep detection confirms robot is docked)
         self._stale_guard_until: float = 0.0
 
     async def async_setup(self) -> None:
@@ -111,12 +115,16 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
 
         state = self.client.state
 
-        # Verify CLEANING at startup — robot on dock often reports stale
-        # CLEANING from its last session. Ask the robot directly.
-        if state.working_status in (
-            WorkingStatus.CLEANING, WorkingStatus.CLEANING_ALT,
+        # Deep sleep detection: robot responds but isn't broadcasting.
+        # Deep sleep only occurs on the dock, so if we got a non-dock state
+        # without broadcasts, the state is stale — override to DOCKED.
+        if (
+            not self.client.robot_awake
+            and state.working_status not in (
+                WorkingStatus.DOCKED, WorkingStatus.CHARGED, WorkingStatus.UNKNOWN,
+            )
         ):
-            await self._verify_and_fix_stale_cleaning(state, "startup")
+            await self._fix_deep_sleep_state(state, "startup")
 
         _LOGGER.info(
             "Narwal startup: status=%s, battery=%d, docked=%s, awake=%s",
@@ -168,49 +176,53 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
                 state.working_status.name,
             )
 
-    async def _verify_and_fix_stale_cleaning(
+    async def _fix_deep_sleep_state(
         self, state: NarwalState, context: str
     ) -> None:
-        """Verify whether CLEANING state is real or stale firmware cache.
+        """Correct stale state when robot is in deep sleep (on dock).
 
-        Sends task/force_end and checks the response:
-          - NOT_APPLICABLE → robot confirms it's NOT cleaning → stale
-          - SUCCESS → robot WAS in a lingering active state → now stopped
+        Deep sleep only occurs on the dock. The firmware CPU is in low-power
+        mode, so working_status is stale (CLEANING from last session, STANDBY
+        without dock signals, etc). Battery is always fresh (hardware-sampled).
 
-        If stale, tries common/yell to force a full firmware wake (the robot
-        must fully boot its CPU to play audio), then re-queries status.
-        If still stale after all attempts, forces DOCKED.
+        Strategy:
+          1. If CLEANING, verify with force_end (confirms no active task)
+          2. Try yell to force full CPU wake → re-query
+          3. If state refreshed to DOCKED/CHARGED, done
+          4. Otherwise, override to DOCKED (deep sleep = on dock)
 
-        Sets a time-based guard to prevent stale broadcasts from overriding
-        the verified state.
+        Sets a time-based guard to prevent stale broadcasts from overriding.
         """
         _LOGGER.info(
-            "%s: state says CLEANING — verifying with force_end", context
+            "%s: deep sleep detected (no broadcasts), stale status=%s — "
+            "correcting to DOCKED",
+            context, state.working_status.name,
         )
-        try:
-            resp = await self.client.stop()
-        except Exception:
-            _LOGGER.debug("%s: force_end failed (timeout?)", context)
-            return
 
-        if resp.not_applicable:
-            _LOGGER.info(
-                "%s: force_end=NOT_APPLICABLE — robot confirms NOT cleaning",
-                context,
-            )
-        elif resp.success:
-            _LOGGER.info(
-                "%s: force_end=SUCCESS — ended lingering task", context
-            )
-        else:
-            _LOGGER.info(
-                "%s: force_end returned code %d", context, resp.result_code
-            )
+        # If reporting CLEANING, verify no active task with force_end
+        if state.working_status in (
+            WorkingStatus.CLEANING, WorkingStatus.CLEANING_ALT,
+        ):
+            try:
+                resp = await self.client.stop()
+                if resp.not_applicable:
+                    _LOGGER.info(
+                        "%s: force_end=NOT_APPLICABLE — not actually cleaning",
+                        context,
+                    )
+                elif resp.success:
+                    _LOGGER.info(
+                        "%s: force_end=SUCCESS — ended lingering task", context
+                    )
+                else:
+                    _LOGGER.info(
+                        "%s: force_end code %d", context, resp.result_code
+                    )
+            except Exception:
+                _LOGGER.debug("%s: force_end failed (timeout?)", context)
 
         # Try to force a full wake with yell (locate sound).
-        # The robot must fully boot its CPU to play audio through the
-        # speaker, which should refresh the firmware's state cache.
-        _LOGGER.info("%s: sending yell to force full firmware wake", context)
+        _LOGGER.debug("%s: sending yell to force full firmware wake", context)
         try:
             await self.client.locate()
         except Exception:
@@ -225,20 +237,20 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
         except Exception:
             _LOGGER.debug("%s: re-query after yell failed", context)
 
-        # Check if state is now correct
-        if state.working_status not in (
-            WorkingStatus.CLEANING, WorkingStatus.CLEANING_ALT,
+        # Check if state refreshed to a dock state
+        if state.working_status in (
+            WorkingStatus.DOCKED, WorkingStatus.CHARGED,
         ):
             _LOGGER.info(
-                "%s: state refreshed to %s after yell",
+                "%s: state refreshed to %s after wake attempt",
                 context, state.working_status.name,
             )
             return
 
-        # Still stale after yell + re-query. We verified with force_end
-        # that the robot is NOT cleaning. Override to DOCKED.
+        # Still stale. Deep sleep = on dock. Override to DOCKED.
         _LOGGER.info(
-            "%s: still %s after verification — setting DOCKED (verified idle)",
+            "%s: still %s after wake attempt — setting DOCKED "
+            "(deep sleep only occurs on dock)",
             context, state.working_status.name,
         )
         state.working_status = WorkingStatus.DOCKED
@@ -272,14 +284,15 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
 
         state = self.client.state
 
-        # Verify suspicious CLEANING state when robot is not broadcasting.
-        # A truly cleaning robot broadcasts every ~1.5s.
+        # Deep sleep detection: not broadcasting + non-dock state = stale.
+        # A truly active robot broadcasts every ~1.5s.
         if (
-            state.working_status
-            in (WorkingStatus.CLEANING, WorkingStatus.CLEANING_ALT)
-            and not self.client.robot_awake
+            not self.client.robot_awake
+            and state.working_status not in (
+                WorkingStatus.DOCKED, WorkingStatus.CHARGED, WorkingStatus.UNKNOWN,
+            )
         ):
-            await self._verify_and_fix_stale_cleaning(state, "poll")
+            await self._fix_deep_sleep_state(state, "poll")
 
         _LOGGER.debug(
             "Poll update: status=%s, docked=%s, battery=%d, awake=%s",
