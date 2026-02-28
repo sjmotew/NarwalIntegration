@@ -391,14 +391,17 @@ class NarwalState:
           {1=4, 7=1, 10=2} — working_status stays CLEANING(4),
           field 7=1 (returning flag), field 10=2 (docking in progress).
 
-        We use field 3.7 (is_returning_to_dock) as the primary indicator.
-        Fallback: dock_sub_state == 2 when not in a cleaning/charged/docked state.
+        Only valid while working_status is CLEANING — once the robot
+        transitions to STANDBY/DOCKED/CHARGED, it has already docked
+        even if field 3.7 is momentarily still set.
         """
+        if self.working_status not in (
+            WorkingStatus.CLEANING, WorkingStatus.CLEANING_ALT,
+        ):
+            return False
         if self.is_returning_to_dock:
             return True
-        if self.dock_sub_state == 2 and self.working_status not in (
-            WorkingStatus.DOCKED, WorkingStatus.CHARGED,
-        ):
+        if self.dock_sub_state == 2:
             return True
         return False
 

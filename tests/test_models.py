@@ -215,10 +215,17 @@ class TestNarwalState:
         assert state.dock_activity == 2
 
     def test_returning_via_dock_sub_state_only(self) -> None:
-        """Fallback: dock_sub_state=2 without field 7 also indicates returning."""
+        """Fallback: dock_sub_state=2 while CLEANING also indicates returning."""
+        state = NarwalState()
+        # Must be in CLEANING state — STANDBY with dock_sub_state=2 is "just docked"
+        state.update_from_base_status({"3": {"1": 4, "10": 2}})
+        assert state.is_returning
+
+    def test_not_returning_when_standby_with_dock_sub_state(self) -> None:
+        """STANDBY with dock_sub_state=2 means docked, not returning."""
         state = NarwalState()
         state.update_from_base_status({"3": {"1": 1, "10": 2}})
-        assert state.is_returning
+        assert not state.is_returning
 
     def test_not_returning_when_cleaning_without_field7(self) -> None:
         """Cleaning without field 3.7 is NOT returning (just cleaning)."""
