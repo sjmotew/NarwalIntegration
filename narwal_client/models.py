@@ -70,7 +70,10 @@ class MapData:
             return cls()
 
         rooms = []
-        for room in payload.get("12", []):
+        room_list = payload.get("12", [])
+        if isinstance(room_list, dict):
+            room_list = [room_list]
+        for room in room_list:
             if isinstance(room, dict):
                 name_raw = room.get("3", b"")
                 if isinstance(name_raw, bytes):
@@ -120,6 +123,9 @@ class MapData:
         dock_x = None
         dock_y = None
         field48 = payload.get("48")
+        # bbpb returns single repeated field as dict, not [dict]
+        if isinstance(field48, dict):
+            field48 = [field48]
         if isinstance(field48, list) and isinstance(field6, dict) and resolution > 0:
             best_ts = -1
             best_pos = None
