@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from datetime import timedelta
 
 from homeassistant.config_entries import ConfigEntry
@@ -23,6 +24,10 @@ POLL_INTERVAL = timedelta(seconds=60)
 FAST_POLL_INTERVAL = timedelta(seconds=10)
 FAST_POLL_MAX = 6  # up to 60s of fast polling before falling back to normal
 
+# After verifying stale state, ignore CLEANING broadcasts for this long.
+# Prevents stale broadcasts (from brief wake-up) from overriding verified state.
+STALE_GUARD_SECONDS = 120.0
+
 
 class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
     """Push-mode coordinator for Narwal vacuum.
@@ -30,12 +35,12 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
     Primary data source is WebSocket broadcasts (every ~1.5s when awake).
     Fallback polling every 60s via get_status() in case broadcasts stop.
 
-    State trust model:
-      - Broadcasts are AUTHORITATIVE — working_status, dock flags, etc.
-      - get_status() while robot is broadcasting: AUTHORITATIVE (full update)
-      - get_status() while robot is NOT broadcasting: only battery/health
-        are trustworthy (hardware-sampled). Working_status may be stale
-        firmware cache from a previous session.
+    Stale state handling:
+      The robot's firmware caches working_status from its last active session.
+      When asleep on the dock, both command responses AND broadcasts may
+      contain stale CLEANING data. We verify with task/force_end (the robot
+      confirms whether a task is actually running) and guard against stale
+      broadcasts overwriting the verified state.
     """
 
     config_entry: ConfigEntry
@@ -55,6 +60,9 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
         )
         self._listen_task: asyncio.Task[None] | None = None
         self._fast_poll_remaining = 0
+        # Monotonic time until which CLEANING broadcasts are rejected
+        # (set after force_end verification confirms stale state)
+        self._stale_guard_until: float = 0.0
 
     async def async_setup(self) -> None:
         """Connect to the vacuum and start the WebSocket listener.
@@ -107,26 +115,12 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
         # CLEANING from its last session. Ask the robot directly.
         if state.working_status in (
             WorkingStatus.CLEANING, WorkingStatus.CLEANING_ALT,
-        ) and not self.client.robot_awake:
-            try:
-                resp = await self.client.stop()
-                if resp.not_applicable:
-                    _LOGGER.info(
-                        "Startup: force_end=NOT_APPLICABLE — "
-                        "CLEANING is stale, setting DOCKED"
-                    )
-                    state.working_status = WorkingStatus.DOCKED
-                    state.is_paused = False
-                    state.is_returning_to_dock = False
-            except Exception:
-                _LOGGER.debug("Startup verification failed")
-        _LOGGER.debug(
-            "Narwal startup: status=%s, battery=%d, docked=%s, "
-            "f11=%d, f47=%d, dock_sub=%d, dock_act=%d, field3=%r, awake=%s",
+        ):
+            await self._verify_and_fix_stale_cleaning(state, "startup")
+
+        _LOGGER.info(
+            "Narwal startup: status=%s, battery=%d, docked=%s, awake=%s",
             state.working_status.name, state.battery_level, state.is_docked,
-            state.dock_field11, state.dock_field47,
-            state.dock_sub_state, state.dock_activity,
-            state.raw_base_status.get("3"),
             self.client.robot_awake,
         )
 
@@ -143,13 +137,29 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
 
     def _on_state_update(self, state: NarwalState) -> None:
         """Handle a push state update from the WebSocket listener."""
+        # Guard: after force_end verified stale CLEANING, reject CLEANING
+        # broadcasts for a window. A genuine clean (user-initiated) will
+        # produce sustained broadcasts that outlast the guard.
+        if (
+            self._stale_guard_until > 0
+            and time.monotonic() < self._stale_guard_until
+            and state.working_status
+            in (WorkingStatus.CLEANING, WorkingStatus.CLEANING_ALT)
+        ):
+            _LOGGER.debug(
+                "Dropping stale CLEANING broadcast (guard active for %.0fs)",
+                self._stale_guard_until - time.monotonic(),
+            )
+            return
+
+        # Guard expired or state is not CLEANING — clear it
+        if self._stale_guard_until > 0 and time.monotonic() >= self._stale_guard_until:
+            self._stale_guard_until = 0.0
+
         _LOGGER.debug(
-            "Broadcast update: status=%s, docked=%s, f11=%d, f47=%d, "
-            "dock_sub=%d, dock_act=%d, field3=%r",
+            "Broadcast update: status=%s, docked=%s, f11=%d, f47=%d",
             state.working_status.name, state.is_docked,
             state.dock_field11, state.dock_field47,
-            state.dock_sub_state, state.dock_activity,
-            state.raw_base_status.get("3"),
         )
         self.async_set_updated_data(state)
 
@@ -162,17 +172,92 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
                 state.working_status.name,
             )
 
-    async def _async_update_data(self) -> NarwalState:
-        """Polling fallback — fetch status if no push updates arrived.
+    async def _verify_and_fix_stale_cleaning(
+        self, state: NarwalState, context: str
+    ) -> None:
+        """Verify whether CLEANING state is real or stale firmware cache.
 
-        State verification:
-          When get_status() reports CLEANING but the robot is not actively
-          broadcasting, the state may be a stale firmware cache from a
-          previous session. We verify by sending task/force_end:
-            - NOT_APPLICABLE (2) → robot confirms it's NOT cleaning → stale
-            - SUCCESS (1) → robot WAS cleaning and we ended it → real
-          This is a deterministic check, not inference.
+        Sends task/force_end and checks the response:
+          - NOT_APPLICABLE → robot confirms it's NOT cleaning → stale
+          - SUCCESS → robot WAS in a lingering active state → now stopped
+
+        If stale, tries common/yell to force a full firmware wake (the robot
+        must fully boot its CPU to play audio), then re-queries status.
+        If still stale after all attempts, forces DOCKED.
+
+        Sets a time-based guard to prevent stale broadcasts from overriding
+        the verified state.
         """
+        _LOGGER.info(
+            "%s: state says CLEANING — verifying with force_end", context
+        )
+        try:
+            resp = await self.client.stop()
+        except Exception:
+            _LOGGER.debug("%s: force_end failed (timeout?)", context)
+            return
+
+        if resp.not_applicable:
+            _LOGGER.info(
+                "%s: force_end=NOT_APPLICABLE — robot confirms NOT cleaning",
+                context,
+            )
+        elif resp.success:
+            _LOGGER.info(
+                "%s: force_end=SUCCESS — ended lingering task", context
+            )
+        else:
+            _LOGGER.info(
+                "%s: force_end returned code %d", context, resp.result_code
+            )
+
+        # Try to force a full wake with yell (locate sound).
+        # The robot must fully boot its CPU to play audio through the
+        # speaker, which should refresh the firmware's state cache.
+        _LOGGER.info("%s: sending yell to force full firmware wake", context)
+        try:
+            await self.client.locate()
+        except Exception:
+            _LOGGER.debug("%s: yell failed", context)
+
+        # Give robot 3s to process and update state
+        await asyncio.sleep(3.0)
+
+        # Re-query status — may be fresh now after full wake
+        try:
+            await self.client.get_status(full_update=True)
+        except Exception:
+            _LOGGER.debug("%s: re-query after yell failed", context)
+
+        # Check if state is now correct
+        if state.working_status not in (
+            WorkingStatus.CLEANING, WorkingStatus.CLEANING_ALT,
+        ):
+            _LOGGER.info(
+                "%s: state refreshed to %s after yell",
+                context, state.working_status.name,
+            )
+            return
+
+        # Still stale after yell + re-query. We verified with force_end
+        # that the robot is NOT cleaning. Override to DOCKED.
+        _LOGGER.info(
+            "%s: still %s after verification — setting DOCKED (verified idle)",
+            context, state.working_status.name,
+        )
+        state.working_status = WorkingStatus.DOCKED
+        state.is_paused = False
+        state.is_returning_to_dock = False
+
+        # Activate guard to prevent stale broadcasts from overriding
+        self._stale_guard_until = time.monotonic() + STALE_GUARD_SECONDS
+        _LOGGER.info(
+            "%s: stale broadcast guard active for %ds",
+            context, int(STALE_GUARD_SECONDS),
+        )
+
+    async def _async_update_data(self) -> NarwalState:
+        """Polling fallback — fetch status if no push updates arrived."""
         if not self.client.connected:
             try:
                 await self.client.connect()
@@ -192,65 +277,18 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
         state = self.client.state
 
         # Verify suspicious CLEANING state when robot is not broadcasting.
-        # A truly cleaning robot broadcasts every ~1.5s. If it's not
-        # broadcasting but reports CLEANING, ask the robot directly.
+        # A truly cleaning robot broadcasts every ~1.5s.
         if (
             state.working_status
             in (WorkingStatus.CLEANING, WorkingStatus.CLEANING_ALT)
             and not self.client.robot_awake
         ):
-            _LOGGER.info(
-                "State says CLEANING but no broadcasts — verifying with force_end"
-            )
-            try:
-                resp = await self.client.stop()
-                if resp.not_applicable:
-                    # Robot confirms: "nothing to stop" → CLEANING is stale
-                    _LOGGER.info(
-                        "force_end returned NOT_APPLICABLE — "
-                        "CLEANING is stale, re-querying status"
-                    )
-                    # Re-query: robot just processed a command, state may
-                    # have refreshed
-                    try:
-                        await self.client.get_status(full_update=True)
-                    except Exception:
-                        pass
-                    state = self.client.state
-                    # If STILL stale after re-query, force to DOCKED —
-                    # we verified the robot is not cleaning
-                    if state.working_status in (
-                        WorkingStatus.CLEANING,
-                        WorkingStatus.CLEANING_ALT,
-                    ):
-                        _LOGGER.info(
-                            "Still CLEANING after re-query — "
-                            "robot confirmed idle, setting DOCKED"
-                        )
-                        state.working_status = WorkingStatus.DOCKED
-                        state.is_paused = False
-                        state.is_returning_to_dock = False
-                elif resp.success:
-                    _LOGGER.info(
-                        "force_end returned SUCCESS — "
-                        "robot was in stale active state, now stopped"
-                    )
-                    # Re-query for fresh state after stop
-                    try:
-                        await self.client.get_status(full_update=True)
-                        state = self.client.state
-                    except Exception:
-                        pass
-            except Exception:
-                _LOGGER.debug("force_end verification failed, keeping state as-is")
+            await self._verify_and_fix_stale_cleaning(state, "poll")
 
         _LOGGER.debug(
-            "Poll update: status=%s, docked=%s, battery=%d, awake=%s, "
-            "f11=%d, f47=%d, field3=%r",
+            "Poll update: status=%s, docked=%s, battery=%d, awake=%s",
             state.working_status.name, state.is_docked,
             state.battery_level, self.client.robot_awake,
-            state.dock_field11, state.dock_field47,
-            state.raw_base_status.get("3"),
         )
 
         # Manage fast poll countdown
