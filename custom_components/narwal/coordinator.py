@@ -144,13 +144,28 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
             except NarwalConnectionError as err:
                 raise UpdateFailed(f"Cannot connect to vacuum: {err}") from err
 
-        # If robot isn't broadcasting, try to wake it
+        # Always try to wake the robot — even on the dock in deep sleep,
+        # the WebSocket server may still process wake commands.
         if not self.client.robot_awake:
             await self.client.wake(timeout=10.0)
 
         try:
             await self.client.get_status()
         except Exception as err:
+            # If robot is unresponsive and last state was active (cleaning/returning),
+            # it has likely completed its task and is now idle on the dock.
+            # Clear stale active flags so entities don't stay stuck.
+            state = self.client.state
+            if state.working_status in (
+                WorkingStatus.CLEANING, WorkingStatus(5),  # CLEANING_ALT
+            ):
+                _LOGGER.info(
+                    "Robot unresponsive after cleaning — inferring idle/docked"
+                )
+                state.working_status = WorkingStatus.STANDBY
+                state.is_paused = False
+                state.is_returning_to_dock = False
+                return state
             raise UpdateFailed(f"Failed to get status: {err}") from err
 
         state = self.client.state

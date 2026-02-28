@@ -163,16 +163,23 @@ class NarwalClient:
         if not self.connected:
             raise NarwalConnectionError("Not connected to vacuum")
 
-        # Send get_device_info with empty device_id as wake-up signal.
-        # Topic: /QoEsI5qYXO//common/get_device_info — robot may still process it.
-        wake_topic = self._full_topic(TOPIC_CMD_GET_DEVICE_INFO)
-        wake_frame = build_frame(wake_topic, b"")
-        try:
-            await self._ws.send(wake_frame)
-            _LOGGER.debug("Sent wake-up get_device_info (device_id='%s')", self.device_id)
-        except Exception as e:
-            _LOGGER.warning("Failed to send wake command: %s", e)
+        # Build wake frames with multiple topic prefixes to support all models.
+        # The local WebSocket server may only accept commands with the correct
+        # product key prefix. Since we don't know the model yet, try the default
+        # prefix first, then a bare topic with no prefix.
+        cmd = TOPIC_CMD_GET_DEVICE_INFO
+        wake_frames = [
+            build_frame(self._full_topic(cmd), b""),  # default prefix
+            build_frame(f"//{cmd}", b""),  # no prefix, no device_id
+        ]
+        for frame in wake_frames:
+            try:
+                await self._ws.send(frame)
+            except Exception as e:
+                _LOGGER.warning("Failed to send wake command: %s", e)
+        _LOGGER.debug("Sent discovery wake commands (device_id='%s')", self.device_id)
 
+        wake_index = 0  # cycle through wake frames on retry
         deadline = asyncio.get_event_loop().time() + timeout
         while asyncio.get_event_loop().time() < deadline:
             remaining = deadline - asyncio.get_event_loop().time()
@@ -183,10 +190,11 @@ class NarwalClient:
                     self._ws.recv(), timeout=min(remaining, 2.0)
                 )
             except asyncio.TimeoutError:
-                # Re-send wake command periodically in case robot needs a nudge
+                # Re-send wake commands, cycling through prefixes
                 try:
-                    await self._ws.send(wake_frame)
-                    _LOGGER.debug("Re-sent wake-up command")
+                    await self._ws.send(wake_frames[wake_index % len(wake_frames)])
+                    wake_index += 1
+                    _LOGGER.debug("Re-sent wake-up command (variant %d)", wake_index)
                 except Exception:
                     pass
                 continue
