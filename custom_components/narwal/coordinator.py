@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import time
 from datetime import timedelta
 
 from homeassistant.config_entries import ConfigEntry
@@ -30,6 +29,13 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
 
     Primary data source is WebSocket broadcasts (every ~1.5s when awake).
     Fallback polling every 60s via get_status() in case broadcasts stop.
+
+    State trust model:
+      - Broadcasts are AUTHORITATIVE — working_status, dock flags, etc.
+      - get_status() while robot is broadcasting: AUTHORITATIVE (full update)
+      - get_status() while robot is NOT broadcasting: only battery/health
+        are trustworthy (hardware-sampled). Working_status may be stale
+        firmware cache from a previous session.
     """
 
     config_entry: ConfigEntry
@@ -48,7 +54,6 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
             device_id=entry.data.get("device_id", ""),
         )
         self._listen_task: asyncio.Task[None] | None = None
-        self._startup_time: float = 0.0
         self._fast_poll_remaining = 0
 
     async def async_setup(self) -> None:
@@ -79,8 +84,9 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
         except Exception:
             _LOGGER.debug("Could not fetch device info")
 
+        # Use full_update only if robot is broadcasting (authoritative data)
         try:
-            await self.client.get_status()
+            await self.client.get_status(full_update=self.client.robot_awake)
         except Exception:
             _LOGGER.debug("Could not fetch initial status")
 
@@ -99,15 +105,15 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
         state = self.client.state
         _LOGGER.debug(
             "Narwal startup: status=%s, battery=%d, docked=%s, "
-            "f11=%d, f47=%d, dock_sub=%d, dock_act=%d, field3=%r",
+            "f11=%d, f47=%d, dock_sub=%d, dock_act=%d, field3=%r, awake=%s",
             state.working_status.name, state.battery_level, state.is_docked,
             state.dock_field11, state.dock_field47,
             state.dock_sub_state, state.dock_activity,
             state.raw_base_status.get("3"),
+            self.client.robot_awake,
         )
 
         self.async_set_updated_data(state)
-        self._startup_time = time.monotonic()
 
         # If robot didn't respond, use fast polling to catch it when it wakes
         if state.working_status == WorkingStatus.UNKNOWN:
@@ -140,68 +146,39 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
             )
 
     async def _async_update_data(self) -> NarwalState:
-        """Polling fallback — fetch status if no push updates arrived."""
+        """Polling fallback — fetch status if no push updates arrived.
+
+        Trust model:
+          - Robot IS broadcasting (robot_awake=True): full get_status() update,
+            all fields are authoritative.
+          - Robot NOT broadcasting: only update battery/health from get_status().
+            Working_status kept from last authoritative source (broadcast or
+            previous awake get_status). This avoids overwriting correct state
+            with stale firmware cache.
+        """
         if not self.client.connected:
             try:
                 await self.client.connect()
             except NarwalConnectionError as err:
                 raise UpdateFailed(f"Cannot connect to vacuum: {err}") from err
 
-        # Always try to wake the robot — even on the dock in deep sleep,
-        # the WebSocket server may still process wake commands.
+        # Try to wake the robot if not broadcasting
         if not self.client.robot_awake:
-            await self.client.wake(timeout=10.0)
+            await self.client.wake(timeout=20.0)
 
+        # Query status — trust working_status ONLY when robot is broadcasting
+        awake = self.client.robot_awake
         try:
-            await self.client.get_status()
+            await self.client.get_status(full_update=awake)
         except Exception as err:
-            # If robot is unresponsive and last state was active (cleaning/returning),
-            # it has likely completed its task and is now idle on the dock.
-            # Clear stale active flags so entities don't stay stuck.
-            state = self.client.state
-            if state.working_status in (
-                WorkingStatus.CLEANING, WorkingStatus(5),  # CLEANING_ALT
-            ) and not state.is_paused:
-                _LOGGER.info(
-                    "Robot unresponsive after cleaning — inferring idle/docked"
-                )
-                state.working_status = WorkingStatus.DOCKED
-                state.is_paused = False
-                state.is_returning_to_dock = False
-                return state
             raise UpdateFailed(f"Failed to get status: {err}") from err
 
         state = self.client.state
-
-        # Detect stale CLEANING state: an actively cleaning robot broadcasts
-        # every ~1.5s. If state says CLEANING but no broadcasts for 30+ seconds,
-        # the robot completed its task and the state data is stale.
-        # Also catches post-restart: if we've been up 60s+ with zero broadcasts
-        # while state says CLEANING, the data is from a previous session.
-        if state.working_status in (
-            WorkingStatus.CLEANING, WorkingStatus(5),
-        ) and not state.is_paused:
-            last_bc = self.client._last_broadcast_time
-            now = time.monotonic()
-            if last_bc > 0:
-                silence = now - last_bc
-            elif self._startup_time > 0:
-                silence = now - self._startup_time
-            else:
-                silence = 0
-            if silence > 30:
-                _LOGGER.info(
-                    "Robot reports CLEANING but silent for %.0fs — "
-                    "inferring idle/docked",
-                    silence,
-                )
-                state.working_status = WorkingStatus.DOCKED
-                state.is_paused = False
-                state.is_returning_to_dock = False
-
         _LOGGER.debug(
-            "Poll update: status=%s, docked=%s, f11=%d, f47=%d, field3=%r",
+            "Poll update: status=%s, docked=%s, battery=%d, awake=%s, "
+            "f11=%d, f47=%d, field3=%r",
             state.working_status.name, state.is_docked,
+            state.battery_level, awake,
             state.dock_field11, state.dock_field47,
             state.raw_base_status.get("3"),
         )

@@ -412,46 +412,61 @@ class NarwalClient:
         """Encode a protobuf string field."""
         return cls._encode_bytes_field(field_num, text.encode("utf-8"))
 
+    # All broadcast topics the robot can send — used for active_robot_publish
+    _ALL_BROADCAST_TOPICS = [
+        "status/robot_base_status",
+        "status/working_status",
+        "upgrade/upgrade_status",
+        "status/download_status",
+        "map/display_map",
+        "status/time_line_status",
+    ]
+
+    def _build_topic_subscription(self, duration: int = 600) -> bytes:
+        """Build active_robot_publish payload subscribing to ALL broadcast topics.
+
+        The Narwal app sends this on open to tell the robot which topics to
+        broadcast and for how long. Format: repeated field 1 = TopicDuration
+        sub-messages with {1: topic_string, 2: duration_seconds}.
+        """
+        payload = b""
+        for topic in self._ALL_BROADCAST_TOPICS:
+            inner = (
+                self._encode_string_field(1, topic)
+                + self._encode_varint_field(2, duration)
+            )
+            payload += self._encode_bytes_field(1, inner)
+        return payload
+
     def _build_wake_commands(self) -> list[tuple[str, bytes]]:
         """Build the sequence of wake commands to try.
 
-        Returns list of (short_topic, payload) tuples ordered by likelihood
-        of waking the robot. Derived from APK analysis of:
-          - ActiveRobotPublish (with TopicDuration sub-messages)
-          - AppStatusHeartbeat
-          - NotifyAppEvent
-          - GetDeviceInfo (baseline)
-          - Developer ping
+        Returns list of (short_topic, payload) tuples. Mimics what the
+        Narwal app sends when opened: notify_app_event → subscribe to all
+        broadcast topics → heartbeat → status query.
         """
         cmds: list[tuple[str, bytes]] = []
 
-        # 1. active_robot_publish — empty (simplest, most commands work empty)
-        cmds.append((TOPIC_CMD_ACTIVE_ROBOT, b""))
+        # 1. notify_app_event — signal "app opened" (triggers robot wake)
+        cmds.append((TOPIC_CMD_NOTIFY_APP_EVENT, self._encode_varint_field(1, 1)))
 
-        # 2. active_robot_publish — field 1 = 300 (duration 5 min?)
-        cmds.append((TOPIC_CMD_ACTIVE_ROBOT, self._encode_varint_field(1, 300)))
+        # 2. active_robot_publish — subscribe to ALL topics for 10 minutes
+        cmds.append((TOPIC_CMD_ACTIVE_ROBOT, self._build_topic_subscription(600)))
 
-        # 3. active_robot_publish — nested TopicDuration:
-        #    field 1 = sub { field 1 = "status/robot_base_status", field 2 = 300 }
-        inner = (
-            self._encode_string_field(1, "status/robot_base_status")
-            + self._encode_varint_field(2, 300)
-        )
-        cmds.append((TOPIC_CMD_ACTIVE_ROBOT, self._encode_bytes_field(1, inner)))
+        # 3. active_robot_publish — simple duration (field 1 = 600)
+        cmds.append((TOPIC_CMD_ACTIVE_ROBOT, self._encode_varint_field(1, 600)))
 
         # 4. app heartbeat — field 1 = 1
         cmds.append((TOPIC_CMD_APP_HEARTBEAT, self._encode_varint_field(1, 1)))
 
-        # 5. app heartbeat — empty
-        cmds.append((TOPIC_CMD_APP_HEARTBEAT, b""))
+        # 5. get_device_base_status — forces robot to process a command,
+        #    response updates battery; may also trigger broadcast as side effect
+        cmds.append((TOPIC_CMD_GET_BASE_STATUS, b""))
 
-        # 6. notify_app_event — field 1 = 1 (app opened?)
-        cmds.append((TOPIC_CMD_NOTIFY_APP_EVENT, self._encode_varint_field(1, 1)))
-
-        # 7. get_device_info — the original fallback
+        # 6. get_device_info — lightweight command that always gets a response
         cmds.append((TOPIC_CMD_GET_DEVICE_INFO, b""))
 
-        # 8. developer ping — empty
+        # 7. developer ping
         cmds.append((TOPIC_CMD_PING, b""))
 
         return cmds
@@ -813,19 +828,28 @@ class NarwalClient:
         resp = await self.send_command(TOPIC_CMD_GET_FEATURE_LIST)
         return {int(k): int(v) for k, v in resp.data.items()}
 
-    async def get_status(self) -> CommandResponse:
-        """Query current device base status."""
+    async def get_status(self, full_update: bool = True) -> CommandResponse:
+        """Query current device base status.
+
+        Args:
+            full_update: If True, update all state fields (working_status,
+                battery, etc). If False, only update hardware-sampled fields
+                (battery, health) — used when robot is not broadcasting and
+                working_status in the response may be stale.
+        """
         resp = await self.send_command(TOPIC_CMD_GET_BASE_STATUS)
-        # Update state from the response payload
         status_data = resp.data.get("2", {})
         if status_data:
             _LOGGER.debug(
-                "get_status response field 2 keys: %s, field3=%r, field2=%r",
-                list(status_data.keys()) if isinstance(status_data, dict) else type(status_data).__name__,
+                "get_status response (full=%s): field3=%r, field2=%r",
+                full_update,
                 status_data.get("3") if isinstance(status_data, dict) else None,
                 status_data.get("2") if isinstance(status_data, dict) else None,
             )
-            self.state.update_from_base_status(status_data)
+            if full_update:
+                self.state.update_from_base_status(status_data)
+            else:
+                self.state.update_battery_from_base_status(status_data)
         else:
             _LOGGER.debug("get_status response has no field 2; keys: %s", list(resp.data.keys()))
         return resp

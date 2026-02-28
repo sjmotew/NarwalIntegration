@@ -191,6 +191,37 @@ class TestNarwalState:
         # battery_level unchanged (no field 2)
         assert state.battery_level == 0
 
+    def test_battery_only_update_ignores_working_status(self) -> None:
+        """update_battery_from_base_status updates battery but NOT working_status.
+
+        When robot is in deep sleep, get_status() returns current battery
+        but stale working_status. The battery-only method must not overwrite
+        the last authoritative working_status.
+        """
+        state = NarwalState()
+        # Simulate last authoritative state from a broadcast: DOCKED
+        state.update_from_base_status({
+            "3": {"1": 10, "10": 1},
+            "2": _float_to_uint32(80.0),
+        })
+        assert state.working_status == WorkingStatus.DOCKED
+        assert state.battery_level == 80
+
+        # Now simulate a deep-sleep get_status() response with stale CLEANING
+        # but fresh battery. Use battery-only update.
+        stale_response = {
+            "3": {"1": 4, "7": 1},  # stale CLEANING+returning
+            "2": _float_to_uint32(85.0),
+            "38": 100,
+        }
+        state.update_battery_from_base_status(stale_response)
+
+        # Battery updated, working_status preserved from last authoritative source
+        assert state.battery_level == 85
+        assert state.battery_health == 100
+        assert state.working_status == WorkingStatus.DOCKED  # NOT overwritten
+        assert state.is_docked  # still correct
+
     def test_returning_to_dock_field7(self) -> None:
         """Field 3.7=1 indicates returning to dock (confirmed live)."""
         state = NarwalState()

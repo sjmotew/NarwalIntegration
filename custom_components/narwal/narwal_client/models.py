@@ -506,6 +506,24 @@ class NarwalState:
                 if self.session_id.startswith("b'"):
                     self.session_id = self.session_id[2:-1]
 
+    def update_battery_from_base_status(self, decoded: dict[str, Any]) -> None:
+        """Update ONLY hardware-sampled fields from a base_status response.
+
+        Used when the robot is not broadcasting (deep sleep on dock).
+        In this mode, get_status() returns current battery (hardware counter)
+        but stale working_status (firmware cache from last active session).
+        We update only the fields we can trust.
+        """
+        self.raw_base_status = decoded
+        if "2" in decoded:
+            bat = _to_float32(decoded["2"])
+            if bat is not None:
+                self.battery_level = round(bat)
+        if "38" in decoded:
+            self.battery_health = int(decoded["38"])
+        if "36" in decoded:
+            self.timestamp = int(decoded["36"])
+
     def update_from_upgrade_status(self, decoded: dict[str, Any]) -> None:
         """Update state from a decoded upgrade_status message."""
         if "7" in decoded:
