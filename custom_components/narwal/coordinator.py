@@ -159,7 +159,7 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
             state = self.client.state
             if state.working_status in (
                 WorkingStatus.CLEANING, WorkingStatus(5),  # CLEANING_ALT
-            ):
+            ) and not state.is_paused:
                 _LOGGER.info(
                     "Robot unresponsive after cleaning — inferring idle/docked"
                 )
@@ -176,7 +176,7 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
         # the robot completed its task and the state data is stale.
         if state.working_status in (
             WorkingStatus.CLEANING, WorkingStatus(5),
-        ):
+        ) and not state.is_paused:
             last_bc = self.client._last_broadcast_time
             if last_bc > 0:
                 silence = time.monotonic() - last_bc
