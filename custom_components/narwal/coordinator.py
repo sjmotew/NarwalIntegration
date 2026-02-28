@@ -48,6 +48,7 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
             device_id=entry.data.get("device_id", ""),
         )
         self._listen_task: asyncio.Task[None] | None = None
+        self._startup_time: float = 0.0
         self._fast_poll_remaining = 0
 
     async def async_setup(self) -> None:
@@ -106,6 +107,7 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
         )
 
         self.async_set_updated_data(state)
+        self._startup_time = time.monotonic()
 
         # If robot didn't respond, use fast polling to catch it when it wakes
         if state.working_status == WorkingStatus.UNKNOWN:
@@ -174,21 +176,28 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
         # Detect stale CLEANING state: an actively cleaning robot broadcasts
         # every ~1.5s. If state says CLEANING but no broadcasts for 30+ seconds,
         # the robot completed its task and the state data is stale.
+        # Also catches post-restart: if we've been up 60s+ with zero broadcasts
+        # while state says CLEANING, the data is from a previous session.
         if state.working_status in (
             WorkingStatus.CLEANING, WorkingStatus(5),
         ) and not state.is_paused:
             last_bc = self.client._last_broadcast_time
+            now = time.monotonic()
             if last_bc > 0:
-                silence = time.monotonic() - last_bc
-                if silence > 30:
-                    _LOGGER.info(
-                        "Robot reports CLEANING but silent for %.0fs — "
-                        "inferring idle/docked",
-                        silence,
-                    )
-                    state.working_status = WorkingStatus.DOCKED
-                    state.is_paused = False
-                    state.is_returning_to_dock = False
+                silence = now - last_bc
+            elif self._startup_time > 0:
+                silence = now - self._startup_time
+            else:
+                silence = 0
+            if silence > 30:
+                _LOGGER.info(
+                    "Robot reports CLEANING but silent for %.0fs — "
+                    "inferring idle/docked",
+                    silence,
+                )
+                state.working_status = WorkingStatus.DOCKED
+                state.is_paused = False
+                state.is_returning_to_dock = False
 
         _LOGGER.debug(
             "Poll update: status=%s, docked=%s, f11=%d, f47=%d, field3=%r",
