@@ -44,7 +44,7 @@ from .const import (
     TOPIC_CMD_START_CLEAN,
     TOPIC_CMD_WASH_MOP,
     TOPIC_CMD_YELL,
-    TOPIC_PREFIX,
+    DEFAULT_TOPIC_PREFIX,
     WAKE_TIMEOUT,
     FanLevel,
     MopHumidity,
@@ -91,6 +91,7 @@ class NarwalClient:
         self.port = port
         self.device_id = device_id
         self.url = f"ws://{host}:{port}"
+        self.topic_prefix = DEFAULT_TOPIC_PREFIX  # updated by get_device_info()
         self.state = NarwalState()
         self.on_state_update: Callable[[NarwalState], None] | None = None
         self.on_message: Callable[[NarwalMessage], None] | None = None
@@ -109,7 +110,7 @@ class NarwalClient:
 
     def _full_topic(self, short_topic: str) -> str:
         """Build the full topic path."""
-        return f"{TOPIC_PREFIX}/{self.device_id}/{short_topic}"
+        return f"{self.topic_prefix}/{self.device_id}/{short_topic}"
 
     @property
     def connected(self) -> bool:
@@ -219,6 +220,10 @@ class NarwalClient:
                 parts = msg.topic.split("/")
                 # Topic format: /{product_key}/{device_id}/{category}/{type}
                 if len(parts) >= 4 and parts[2]:
+                    # Extract product_key from topic to set correct prefix
+                    if parts[1]:
+                        self.topic_prefix = f"/{parts[1]}"
+                        _LOGGER.info("Topic prefix from broadcast: %s", self.topic_prefix)
                     self.device_id = parts[2]
                     _LOGGER.info("Discovered device_id from broadcast: %s", self.device_id)
                     return self.device_id
@@ -795,6 +800,12 @@ class NarwalClient:
             firmware_version=_clean_bytes(data.get("3", "")),
         )
         self.state.device_info = info
+
+        # Update topic prefix to match this device's product key
+        if info.product_key:
+            self.topic_prefix = f"/{info.product_key}"
+            _LOGGER.info("Topic prefix set to %s", self.topic_prefix)
+
         return info
 
     async def get_feature_list(self) -> dict[int, int]:

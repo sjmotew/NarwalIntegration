@@ -11,8 +11,10 @@ PROTOBUF_FIELD_TAG = 0x22  # field 4, wire type 2 (broadcasts/requests)
 TOPIC_LENGTH_OFFSET = 3
 TOPIC_DATA_OFFSET = 4
 
-# Topic addressing — prefix is the Narwal Flow (AX12) product key
-TOPIC_PREFIX = "/QoEsI5qYXO"
+# Default topic prefix — Narwal Flow (AX12) product key.
+# Overridden at runtime by NarwalClient once get_device_info returns
+# the actual product_key for the connected device.
+DEFAULT_TOPIC_PREFIX = "/QoEsI5qYXO"
 
 # --- Status topics (robot → client, field 4 / 0x22 frames) ---
 TOPIC_WORKING_STATUS = "status/working_status"

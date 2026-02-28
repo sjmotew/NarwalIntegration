@@ -129,8 +129,12 @@ class NarwalMapImage(NarwalEntity, ImageEntity):
                 robot_x, robot_y = grid_pos
                 robot_heading = display.robot_heading
                 _LOGGER.warning(
-                    "MAP DIAG: pixel=(%d, %d) heading=%.1f",
+                    "MAP DIAG: robot_pixel=(%d, %d) heading=%.1f "
+                    "dock_pixel=(%s, %s) map=%dx%d",
                     int(robot_x), int(robot_y), robot_heading,
+                    int(static_map.dock_x) if static_map.dock_x is not None else "?",
+                    int(static_map.dock_y) if static_map.dock_y is not None else "?",
+                    static_map.width, static_map.height,
                 )
             else:
                 _LOGGER.warning("MAP DIAG: to_grid_coords returned None")
