@@ -28,6 +28,10 @@ FAST_POLL_MAX = 6  # up to 60s of fast polling before falling back to normal
 # Prevents stale broadcasts (from brief wake-ups) from overriding corrected state.
 STALE_GUARD_SECONDS = 120.0
 
+# Battery threshold above which a sleeping robot is assumed to be on the dock.
+# A robot stuck on the floor drains battery; only a docked robot reaches/stays >95%.
+DOCK_BATTERY_THRESHOLD = 95
+
 
 class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
     """Push-mode coordinator for Narwal vacuum.
@@ -36,13 +40,14 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
     Fallback polling every 60s via get_status() in case broadcasts stop.
 
     Deep sleep handling:
-      The robot enters deep sleep only when idle on the dock. In this mode,
+      The robot enters deep sleep when idle (on dock or floor). In this mode,
       the WebSocket server still responds to commands but the firmware CPU
       is in low-power mode, so working_status and dock fields are stale
       (cached from the last active session). Battery is always fresh
       (hardware-sampled from the voltage rail).
 
-      Key insight: no broadcasts + command responses work = deep sleep = on dock.
+      Key insight: high battery (>95%) + no broadcasts = on dock (a floor-stuck
+      robot drains battery, only a docked robot maintains high charge).
       We detect this and override to DOCKED, with a time-based guard to prevent
       stale broadcasts (from brief wake-ups) from overwriting the corrected state.
     """
@@ -115,11 +120,13 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
 
         state = self.client.state
 
-        # Deep sleep detection: robot responds but isn't broadcasting.
-        # Deep sleep only occurs on the dock, so if we got a non-dock state
-        # without broadcasts, the state is stale — override to DOCKED.
+        # Deep sleep detection: robot responds but isn't broadcasting, and
+        # battery is high (>95%). High battery = on dock (a floor-stuck robot
+        # drains battery). Low battery deep sleep = possibly stuck on floor,
+        # don't assume docked.
         if (
             not self.client.robot_awake
+            and state.battery_level >= DOCK_BATTERY_THRESHOLD
             and state.working_status not in (
                 WorkingStatus.DOCKED, WorkingStatus.CHARGED, WorkingStatus.UNKNOWN,
             )
@@ -179,11 +186,12 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
     async def _fix_deep_sleep_state(
         self, state: NarwalState, context: str
     ) -> None:
-        """Correct stale state when robot is in deep sleep (on dock).
+        """Correct stale state when robot is in deep sleep with high battery.
 
-        Deep sleep only occurs on the dock. The firmware CPU is in low-power
-        mode, so working_status is stale (CLEANING from last session, STANDBY
-        without dock signals, etc). Battery is always fresh (hardware-sampled).
+        High battery (>95%) + no broadcasts = on dock. The firmware CPU is in
+        low-power mode, so working_status is stale (CLEANING from last session,
+        STANDBY without dock signals, etc). Battery is always fresh
+        (hardware-sampled from the voltage rail).
 
         Strategy:
           1. If CLEANING, verify with force_end (confirms no active task)
@@ -284,10 +292,11 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
 
         state = self.client.state
 
-        # Deep sleep detection: not broadcasting + non-dock state = stale.
-        # A truly active robot broadcasts every ~1.5s.
+        # Deep sleep detection: not broadcasting + high battery + non-dock state.
+        # High battery = on dock. A truly active robot broadcasts every ~1.5s.
         if (
             not self.client.robot_awake
+            and state.battery_level >= DOCK_BATTERY_THRESHOLD
             and state.working_status not in (
                 WorkingStatus.DOCKED, WorkingStatus.CHARGED, WorkingStatus.UNKNOWN,
             )
