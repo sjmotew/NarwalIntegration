@@ -94,8 +94,6 @@ class NarwalVacuum(NarwalEntity, StateVacuumEntity):
 
     async def async_start(self) -> None:
         """Start cleaning."""
-        # Clear stale guard — user is genuinely starting a clean
-        self.coordinator._stale_guard_until = 0.0
         await self.coordinator.client.start()
 
     async def async_stop(self, **kwargs) -> None:
