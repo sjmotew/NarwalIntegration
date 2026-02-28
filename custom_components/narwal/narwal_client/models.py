@@ -179,23 +179,18 @@ class MapDisplayData:
       field 12: active room list
     """
 
-    robot_x: float = 0.0  # decimeters, world coordinates
-    robot_y: float = 0.0  # decimeters, world coordinates
+    robot_x: float = 0.0  # centimeters, world coordinates
+    robot_y: float = 0.0  # centimeters, world coordinates
     robot_heading: float = 0.0  # degrees (converted from radians for renderer)
     timestamp: int = 0  # milliseconds since epoch (field 10)
 
     def to_grid_coords(
         self, resolution: int, origin_x: int, origin_y: int,
     ) -> tuple[float, float] | None:
-        """Convert world-coordinate position (dm) to grid pixel coordinates.
+        """Convert world-coordinate position (cm) to grid pixel coordinates.
 
-        display_map broadcasts positions in decimeters (validated by comparing
-        movement speed and displacement against user observation: 5 cm/s path
-        speed, 3.8m displacement after 3 min = decimeters, not centimeters).
-
-        Uses the same pixel transform as dock position in MapData.from_response(),
-        with dm→cm conversion (×10):
-          pixel = (dm * 10) / cm_per_pixel - origin_offset
+        Uses the same pixel transform as dock position in MapData.from_response():
+          pixel = x_cm / cm_per_pixel - origin_offset
 
         Args:
             resolution: Map resolution in mm/pixel (e.g. 60).
@@ -210,8 +205,8 @@ class MapDisplayData:
         if resolution <= 0:
             return None
         cm_per_pixel = resolution / 10  # 60mm/px = 6cm/px
-        px = (self.robot_x * 10) / cm_per_pixel - origin_x
-        py = (self.robot_y * 10) / cm_per_pixel - origin_y
+        px = self.robot_x / cm_per_pixel - origin_x
+        py = self.robot_y / cm_per_pixel - origin_y
         return (px, py)
 
     @classmethod
