@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from datetime import timedelta
 
 from homeassistant.config_entries import ConfigEntry
@@ -162,13 +163,33 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
                 _LOGGER.info(
                     "Robot unresponsive after cleaning — inferring idle/docked"
                 )
-                state.working_status = WorkingStatus.STANDBY
+                state.working_status = WorkingStatus.DOCKED
                 state.is_paused = False
                 state.is_returning_to_dock = False
                 return state
             raise UpdateFailed(f"Failed to get status: {err}") from err
 
         state = self.client.state
+
+        # Detect stale CLEANING state: an actively cleaning robot broadcasts
+        # every ~1.5s. If state says CLEANING but no broadcasts for 30+ seconds,
+        # the robot completed its task and the state data is stale.
+        if state.working_status in (
+            WorkingStatus.CLEANING, WorkingStatus(5),
+        ):
+            last_bc = self.client._last_broadcast_time
+            if last_bc > 0:
+                silence = time.monotonic() - last_bc
+                if silence > 30:
+                    _LOGGER.info(
+                        "Robot reports CLEANING but silent for %.0fs — "
+                        "inferring idle/docked",
+                        silence,
+                    )
+                    state.working_status = WorkingStatus.DOCKED
+                    state.is_paused = False
+                    state.is_returning_to_dock = False
+
         _LOGGER.debug(
             "Poll update: status=%s, docked=%s, f11=%d, f47=%d, field3=%r",
             state.working_status.name, state.is_docked,
