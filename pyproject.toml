@@ -1,13 +1,14 @@
 [project]
 name = "narwal-integration"
-version = "0.1.0"
+version = "0.3.0"
 description = "Home Assistant custom integration for Narwal robot vacuums via local WebSocket API"
 requires-python = ">=3.12"
 license = "MIT"
 dependencies = [
     "websockets>=12.0,<14.0",
     "protobuf>=4.25.0,<6.0",
-    "bbpb>=1.0.0",
+    "bbpb>=1.4.0",
+    "Pillow>=9.0.0",
 ]
 
 [project.optional-dependencies]

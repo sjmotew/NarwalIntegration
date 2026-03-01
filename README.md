@@ -20,7 +20,6 @@ Other Narwal models *may* work if they expose a local WebSocket on port 9002 (sa
 - **Return to dock**
 - **Locate** — robot announces "Robot is here"
 - **Fan speed control** — Quiet, Normal, Strong, Max
-- **Mop humidity control** — Dry, Normal, Wet (select entity)
 
 ### Sensors
 - **Battery level** — real-time percentage from robot broadcasts
