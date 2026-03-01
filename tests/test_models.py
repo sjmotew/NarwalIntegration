@@ -298,48 +298,42 @@ class TestMapData:
         assert m.rooms[0].name == "Kitchen"
         assert m.area == 944
 
-    def test_dock_position_from_field48_uint32(self) -> None:
-        """Dock parsed from field 48 (latest timestamp, cm coords as uint32)."""
+    def test_dock_position_from_field8_uint32(self) -> None:
+        """Dock parsed from field 8 (dm coords as uint32, same as display_map field 5)."""
         decoded = {"2": {
             "3": 60,
             "4": 341,
             "5": 494,
             "6": {"1": -341, "2": 152, "3": -280, "4": 60},
-            "48": [
-                {"1": 123, "2": {"1": _float_to_uint32(-49.04), "2": _float_to_uint32(35.74)}, "3": 1000},
-                {"1": 123, "2": {"1": _float_to_uint32(19.88), "2": _float_to_uint32(36.07)}, "3": 2000},
-            ],
+            "8": {"1": {"1": _float_to_uint32(-8.0188), "2": _float_to_uint32(0.221)}, "2": _float_to_uint32(0.036)},
             "17": b"",
         }}
         m = MapData.from_response(decoded)
-        # Latest entry (ts=2000): 19.88cm, 36.07cm
-        # px = 19.88/6 + 280 ≈ 283.31, py = 36.07/6 + 341 ≈ 347.01
+        # -8.0188dm * 10 / 6 + 280 ≈ 266.6, 0.221dm * 10 / 6 + 341 ≈ 341.4
         assert m.dock_x is not None
         assert m.dock_y is not None
-        assert abs(m.dock_x - 283.31) < 1.0
-        assert abs(m.dock_y - 347.01) < 1.0
+        assert abs(m.dock_x - 266.6) < 1.0
+        assert abs(m.dock_y - 341.4) < 1.0
 
-    def test_dock_position_from_field48_float(self) -> None:
+    def test_dock_position_from_field8_float(self) -> None:
         """bbp may return fixed32 fields as Python floats directly."""
         decoded = {"2": {
             "3": 60,
             "4": 341,
             "5": 494,
             "6": {"1": -341, "3": -280},
-            "48": [
-                {"1": 1, "2": {"1": 19.88, "2": 36.07}, "3": 100},
-            ],
+            "8": {"1": {"1": -8.0188, "2": 0.221}, "2": 0.036},
             "17": b"",
         }}
         m = MapData.from_response(decoded)
-        # 19.88cm / 6 + 280 ≈ 283.31, 36.07cm / 6 + 341 ≈ 347.01
+        # -8.0188dm * 10 / 6 + 280 ≈ 266.6, 0.221dm * 10 / 6 + 341 ≈ 341.4
         assert m.dock_x is not None
         assert m.dock_y is not None
-        assert abs(m.dock_x - 283.31) < 1.0
-        assert abs(m.dock_y - 347.01) < 1.0
+        assert abs(m.dock_x - 266.6) < 1.0
+        assert abs(m.dock_y - 341.4) < 1.0
 
-    def test_dock_position_missing_field48(self) -> None:
-        """No dock position when field 48 is missing."""
+    def test_dock_position_missing_field8(self) -> None:
+        """No dock position when field 8 is missing."""
         decoded = {"2": {
             "3": 60,
             "4": 341,
@@ -351,13 +345,13 @@ class TestMapData:
         assert m.dock_x is None
         assert m.dock_y is None
 
-    def test_dock_position_missing_field6(self) -> None:
-        """No dock position when field 6 (transform) is missing."""
+    def test_dock_position_zero_resolution(self) -> None:
+        """No dock position when resolution is zero."""
         decoded = {"2": {
-            "3": 60,
+            "3": 0,
             "4": 341,
             "5": 494,
-            "48": [{"1": 1, "2": {"1": 10.0, "2": 20.0}, "3": 100}],
+            "8": {"1": {"1": -8.0, "2": 0.2}, "2": 0.0},
             "17": b"",
         }}
         m = MapData.from_response(decoded)

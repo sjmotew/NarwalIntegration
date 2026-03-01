@@ -114,41 +114,24 @@ class MapData:
             except (ValueError, TypeError):
                 pass
 
-        # Parse dock position from field 48 (timestamped positions in cm).
-        # Field 48 is a list of {1: id, 2: {1: x_cm, 2: y_cm}, 3: timestamp}.
-        # Use the entry with the latest timestamp (most recent dock position).
-        # Coordinates are in centimeters; convert to pixels via resolution (mm/pixel).
-        # Pixel transform: px = (x_cm * 10 / resolution) - field6.3
-        # Requires field 6 for origin offsets — without it, pixel coords are wrong.
+        # Parse dock position from field 8 (dock/charging station location).
+        # Field 8 structure: {1: {1: x_dm, 2: y_dm}, 2: heading_rad}
+        # Coordinates are in decimeters (same as display_map field 5).
+        # Matches display_map field 5 (confirmed via live capture cross-reference).
+        # Pixel transform: px = (x_dm * 10) / cm_per_pixel - origin
         dock_x = None
         dock_y = None
-        field48 = payload.get("48")
-        # bbpb returns single repeated field as dict, not [dict]
-        if isinstance(field48, dict):
-            field48 = [field48]
-        if isinstance(field48, list) and isinstance(field6, dict) and resolution > 0:
-            best_ts = -1
-            best_pos = None
-            for entry in field48:
-                if not isinstance(entry, dict):
-                    continue
-                ts = 0
+        field8 = payload.get("8")
+        if isinstance(field8, dict) and resolution > 0:
+            pos = field8.get("1")
+            if isinstance(pos, dict) and "1" in pos and "2" in pos:
                 try:
-                    ts = int(entry.get("3", 0))
-                except (ValueError, TypeError):
-                    pass
-                pos = entry.get("2")
-                if isinstance(pos, dict) and "1" in pos and "2" in pos and ts >= best_ts:
-                    best_ts = ts
-                    best_pos = pos
-            if best_pos is not None:
-                try:
-                    x_cm = _to_float32(best_pos["1"])
-                    y_cm = _to_float32(best_pos["2"])
-                    if x_cm is not None and y_cm is not None:
+                    x_dm = _to_float32(pos["1"])
+                    y_dm = _to_float32(pos["2"])
+                    if x_dm is not None and y_dm is not None:
                         cm_per_pixel = resolution / 10  # 60mm/px = 6cm/px
-                        dock_x = x_cm / cm_per_pixel - origin_x
-                        dock_y = y_cm / cm_per_pixel - origin_y
+                        dock_x = (x_dm * 10) / cm_per_pixel - origin_x
+                        dock_y = (y_dm * 10) / cm_per_pixel - origin_y
                 except (struct.error, OverflowError, ValueError, TypeError):
                     pass
 
@@ -185,18 +168,19 @@ class MapDisplayData:
       field 12: active room list
     """
 
-    robot_x: float = 0.0  # centimeters, world coordinates
-    robot_y: float = 0.0  # centimeters, world coordinates
+    robot_x: float = 0.0  # decimeters, world coordinates
+    robot_y: float = 0.0  # decimeters, world coordinates
     robot_heading: float = 0.0  # degrees (converted from radians for renderer)
     timestamp: int = 0  # milliseconds since epoch (field 10)
 
     def to_grid_coords(
         self, resolution: int, origin_x: int, origin_y: int,
     ) -> tuple[float, float] | None:
-        """Convert world-coordinate position (cm) to grid pixel coordinates.
+        """Convert world-coordinate position (dm) to grid pixel coordinates.
 
-        Uses the same pixel transform as dock position in MapData.from_response():
-          pixel = x_cm / cm_per_pixel - origin_offset
+        display_map positions are in decimeters (validated via live capture).
+        Same coordinate system as get_map field 8 (dock position).
+          pixel = (x_dm * 10) / cm_per_pixel - origin_offset
 
         Args:
             resolution: Map resolution in mm/pixel (e.g. 60).
@@ -211,8 +195,8 @@ class MapDisplayData:
         if resolution <= 0:
             return None
         cm_per_pixel = resolution / 10  # 60mm/px = 6cm/px
-        px = self.robot_x / cm_per_pixel - origin_x
-        py = self.robot_y / cm_per_pixel - origin_y
+        px = (self.robot_x * 10) / cm_per_pixel - origin_x
+        py = (self.robot_y * 10) / cm_per_pixel - origin_y
         return (px, py)
 
     @classmethod
@@ -222,7 +206,7 @@ class MapDisplayData:
 
         result = cls()
 
-        # Robot position — field 1.1 = {1: x_cm, 2: y_cm}, field 1.2 = heading_rad
+        # Robot position — field 1.1 = {1: x_dm, 2: y_dm}, field 1.2 = heading_rad
         field1 = decoded.get("1", {})
         if isinstance(field1, dict):
             pos = field1.get("1", {})

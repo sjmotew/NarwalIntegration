@@ -103,41 +103,17 @@ class NarwalMapImage(NarwalEntity, ImageEntity):
         ):
             return self._cached_image
 
-        _LOGGER.warning(
-            "MAP RENDER: since_last=%.1fs cache_key_changed=%s display=%s",
-            since_render,
-            new_key != self._cache_key,
-            display is not None,
-        )
-
-        # Robot position from display_map (convert cm → grid pixels)
+        # Robot position from display_map (convert dm → grid pixels)
         robot_x = None
         robot_y = None
         robot_heading = None
         if display:
-            _LOGGER.warning(
-                "MAP DIAG: raw=(%.2f, %.2f) heading=%.1f ts=%d "
-                "origin=(%d,%d) res=%d",
-                display.robot_x, display.robot_y, display.robot_heading,
-                display.timestamp, static_map.origin_x, static_map.origin_y,
-                static_map.resolution,
-            )
             grid_pos = display.to_grid_coords(
                 static_map.resolution, static_map.origin_x, static_map.origin_y,
             )
             if grid_pos is not None:
                 robot_x, robot_y = grid_pos
                 robot_heading = display.robot_heading
-                _LOGGER.warning(
-                    "MAP DIAG: robot_pixel=(%d, %d) heading=%.1f "
-                    "dock_pixel=(%s, %s) map=%dx%d",
-                    int(robot_x), int(robot_y), robot_heading,
-                    int(static_map.dock_x) if static_map.dock_x is not None else "?",
-                    int(static_map.dock_y) if static_map.dock_y is not None else "?",
-                    static_map.width, static_map.height,
-                )
-            else:
-                _LOGGER.warning("MAP DIAG: to_grid_coords returned None")
 
         # Dock position and room names from static map
         dock_x = static_map.dock_x
