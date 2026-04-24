@@ -23,6 +23,7 @@ DEFAULT_TOPIC_PREFIX = "/QoEsI5qYXO"
 KNOWN_PRODUCT_KEYS = [
     # Confirmed working (local WebSocket)
     "QoEsI5qYXO",  # AX12 — Narwal Flow (primary, confirmed)
+    "QxMSPG6VSO",  # Narwal Flow 2 (confirmed working via local WebSocket)
     "DrzDKQ0MU8",   # CX4  — Freo Z10 Ultra (confirmed by @irekkl-maker)
     # Confirmed cloud-only (port 9002 open but no local broadcasts)
     "BYWBPqSxeC",   # CX7  — Freo Z Ultra (cloud-only, confirmed by @gabrielozcomidi)
