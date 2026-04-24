@@ -15,6 +15,7 @@ MODEL = "Flow (AX12)"
 # "auto" cycles all known keys during discovery (slower, fallback).
 NARWAL_MODELS: dict[str, str] = {
     "Narwal Flow": "QoEsI5qYXO",
+    "Narwal Flow 2": "QxMSPG6VSO",
     "Narwal Freo Z10 Ultra": "DrzDKQ0MU8",
     "Narwal Freo X10 Pro": "CNbforyZWI",
     "Other / Auto-detect": "auto",
