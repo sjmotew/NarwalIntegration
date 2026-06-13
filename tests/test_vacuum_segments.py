@@ -129,7 +129,7 @@ class TestAsyncGetSegments:
 
         names = {s.id: s.name for s in result}
         assert names["1"] == "Master Suite"
-        assert names["2"] == "Bathroom 2"
+        assert names["2"] == "Toilet 2"
 
     async def test_segment_groups_by_category(self) -> None:
         """Category 1 -> group='Rooms', category 2 -> group='Utility'."""

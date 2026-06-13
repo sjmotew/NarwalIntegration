@@ -1292,10 +1292,7 @@ class NarwalClient:
     async def get_map(self) -> MapData:
         """Download the full map data."""
         resp = await self.send_command(TOPIC_CMD_GET_MAP, timeout=15.0)
-        product_key = ""
-        if self.state.device_info and self.state.device_info.product_key:
-            product_key = self.state.device_info.product_key
-        map_data = MapData.from_response(resp.data, product_key=product_key)
+        map_data = MapData.from_response(resp.data)
         self.state.map_data = map_data
         return map_data
 

@@ -27,11 +27,7 @@ class RoomInfo:
 
     Fields from get_map / get_editable_map field 2.12:
       field 1: room_id (matches pixel value >> 8 in map grid)
-      field 2: room_sub_type — ROOM_TYPE enum from APK (0=unspecified,
-               1=main bedroom, 2=secondary room, 3=living room, 4=kitchen,
-               5=study, 6=bathroom, 7=dining room, 8=corridor, 9=balcony,
-               10=utility room, 11=cloak room, 12=nursery, 13=recreation,
-               14=shower room, 15=other)
+      field 2: room_sub_type — RoomType enum (MapBaseType.RoomType); see ROOM_TYPE_NAMES
       field 3: user-assigned name (UTF-8, empty if not named by user)
       field 4: category (1=room, 2=utility/small space)
       field 8: instance_index (1-based, for numbering duplicates: Bathroom 1, 2, 3...)
@@ -42,56 +38,37 @@ class RoomInfo:
     room_sub_type: int = 0  # ROOM_TYPE enum from field 2
     category: int = 0  # 1=room, 2=utility (field 4)
     instance_index: int = 0  # numbering for duplicates (field 8)
-    model_key: str = ""  # product_key — selects per-model name overrides
 
-    # ROOM_TYPE enum → default display name (from APK libapp.so string analysis)
+    # RoomType enum (MapBaseType.RoomType, 0-15) → the app's own en-US.json room-name strings. One shared switch (map_engine_i18n_configer.roomTypei18nKey) takes no model parameter, so every model resolves these same names. See #22.
     ROOM_TYPE_NAMES: dict[int, str] = field(default=None, repr=False)
-
-    # Per-model overrides where Narwal renamed sub-types between models.
-    # Confirmed on Narwal Flow 2 (QxMSPG6VSO, firmware v01.07.16.01) — see #22.
-    MODEL_ROOM_TYPE_OVERRIDES: ClassVar[dict[str, dict[int, str]]] = {
-        "QxMSPG6VSO": {  # Flow 2
-            1: "Master Bedroom",
-            5: "Bathroom",
-            10: "Corridor",
-        },
-    }
 
     def __post_init__(self):
         if self.ROOM_TYPE_NAMES is None:
             object.__setattr__(self, "ROOM_TYPE_NAMES", {
                 0: "Room",
-                1: "Primary Bedroom",
-                2: "Secondary Bedroom",
-                3: "Living Room",
+                1: "Master bedroom",
+                2: "Secondary bedroom",
+                3: "Living room",
                 4: "Kitchen",
-                5: "Study",
-                6: "Bathroom",
-                7: "Dining Room",
-                8: "Corridor",
-                9: "Balcony",
-                10: "Utility Room",
-                11: "Cloak Room",
-                12: "Nursery",
-                13: "Recreation Room",
-                14: "Shower Room",
-                15: "Other",
+                5: "Bathroom",
+                6: "Toilet",
+                7: "Balcony",
+                8: "Dining room",
+                9: "Closet",
+                10: "Corridor",
+                11: "Study",
+                12: "Kids' room",
+                13: "Entertainment room",
+                14: "Storage room",
+                15: "Others",
             })
 
     @property
     def display_name(self) -> str:
-        """Return user name if set, otherwise generate default from ROOM_TYPE enum.
-
-        Matches Narwal app behavior: unnamed rooms show their type name
-        with an instance number suffix for duplicates (e.g. "Bathroom 2").
-        Per-model overrides apply where Narwal renamed sub-types (e.g. Flow 2
-        renames sub_type 1 → "Master Bedroom" vs Flow 1's "Primary Bedroom").
-        """
+        """User name if set, else the RoomType default name, with an instance-number suffix for duplicates ("Bathroom 2")."""
         if self.name:
             return self.name
-        overrides = self.MODEL_ROOM_TYPE_OVERRIDES.get(self.model_key, {})
-        base = overrides.get(self.room_sub_type) or \
-            self.ROOM_TYPE_NAMES.get(self.room_sub_type, "Room")
+        base = self.ROOM_TYPE_NAMES.get(self.room_sub_type, "Room")
         if self.instance_index > 1:
             return f"{base} {self.instance_index}"
         return base
@@ -256,16 +233,8 @@ class MapData:
     raw: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
-    def from_response(
-        cls, decoded: dict[str, Any], product_key: str = ""
-    ) -> MapData:
-        """Parse map data from a get_map field5 response.
-
-        Args:
-            decoded: blackboxprotobuf-decoded get_map response.
-            product_key: Device product key — propagated to RoomInfo so model-
-                specific room-type name overrides apply (see #22 for Flow 2).
-        """
+    def from_response(cls, decoded: dict[str, Any]) -> MapData:
+        """Parse map data from a get_map field5 response."""
         payload = decoded.get("2", {})
         if not payload:
             return cls()
@@ -292,7 +261,6 @@ class MapData:
                     room_sub_type=int(room.get("2", 0)),
                     category=int(room.get("4", 0)),
                     instance_index=int(room.get("8", 0)),
-                    model_key=product_key,
                 ))
 
         compressed = payload.get("17", b"")

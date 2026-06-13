@@ -589,48 +589,36 @@ class TestParseObstacles:
 
 
 
-class TestRoomInfoModelOverrides:
-    """Tests for per-model ROOM_TYPE_NAMES overrides (issue #22)."""
+class TestRoomInfoNames:
+    """Tests for the shared RoomType→name table (issue #22).
 
-    def test_flow_1_uses_default_names(self) -> None:
-        """Flow 1 (no/empty model_key) keeps the original sub-type names."""
-        room = RoomInfo(room_id=1, room_sub_type=1)
-        assert room.display_name == "Primary Bedroom"
-        room = RoomInfo(room_id=5, room_sub_type=5)
-        assert room.display_name == "Study"
-        room = RoomInfo(room_id=10, room_sub_type=10)
-        assert room.display_name == "Utility Room"
+    The app names rooms through one switch keyed only on the RoomType enum (no model parameter), so every model resolves the same names — taken verbatim from the app's en-US.json.
+    """
 
-    def test_flow_2_overrides_apply(self) -> None:
-        """Flow 2 product key renames sub-types 1, 5, 10."""
-        flow2 = "QxMSPG6VSO"
-        assert RoomInfo(room_sub_type=1, model_key=flow2).display_name == "Master Bedroom"
-        assert RoomInfo(room_sub_type=5, model_key=flow2).display_name == "Bathroom"
-        assert RoomInfo(room_sub_type=10, model_key=flow2).display_name == "Corridor"
+    def test_shared_table_names(self) -> None:
+        """Sub-types resolve to the app's en-US.json room names."""
+        assert RoomInfo(room_sub_type=1).display_name == "Master bedroom"
+        assert RoomInfo(room_sub_type=3).display_name == "Living room"
+        assert RoomInfo(room_sub_type=6).display_name == "Toilet"
+        assert RoomInfo(room_sub_type=9).display_name == "Closet"
+        assert RoomInfo(room_sub_type=13).display_name == "Entertainment room"
 
-    def test_flow_2_non_overridden_types_use_defaults(self) -> None:
-        """Sub-types not in the Flow 2 override map use the base names."""
-        flow2 = "QxMSPG6VSO"
-        assert RoomInfo(room_sub_type=3, model_key=flow2).display_name == "Living Room"
-        assert RoomInfo(room_sub_type=4, model_key=flow2).display_name == "Kitchen"
-        assert RoomInfo(room_sub_type=6, model_key=flow2).display_name == "Bathroom"
-
-    def test_user_assigned_name_wins_over_override(self) -> None:
-        """A user-assigned name always wins, regardless of model overrides."""
-        room = RoomInfo(
-            room_sub_type=5, model_key="QxMSPG6VSO", name="Powder Room"
-        )
+    def test_user_assigned_name_wins(self) -> None:
+        """A user-assigned name always wins over the table."""
+        room = RoomInfo(room_sub_type=5, name="Powder Room")
         assert room.display_name == "Powder Room"
 
-    def test_instance_index_appends_to_overridden_name(self) -> None:
-        """Duplicate Flow 2 bathrooms number as Bathroom 2, 3..."""
-        room = RoomInfo(
-            room_sub_type=5, model_key="QxMSPG6VSO", instance_index=2
-        )
+    def test_instance_index_appends(self) -> None:
+        """Duplicate rooms get an instance-number suffix (Bathroom 2)."""
+        room = RoomInfo(room_sub_type=5, instance_index=2)
         assert room.display_name == "Bathroom 2"
 
-    def test_map_data_from_response_propagates_product_key(self) -> None:
-        """get_map parse pushes product_key into every RoomInfo."""
+    def test_unknown_sub_type_falls_back_to_room(self) -> None:
+        """An out-of-range sub-type falls back to the default name."""
+        assert RoomInfo(room_sub_type=99).display_name == "Room"
+
+    def test_map_data_from_response_resolves_names(self) -> None:
+        """get_map parse resolves room names via the shared table."""
         decoded = {
             "2": {
                 "12": [
@@ -639,14 +627,6 @@ class TestRoomInfoModelOverrides:
                 ],
             }
         }
-        map_data = MapData.from_response(decoded, product_key="QxMSPG6VSO")
-        names = [r.display_name for r in map_data.rooms]
-        assert names == ["Master Bedroom", "Bathroom 2"]
-
-    def test_map_data_from_response_default_no_key(self) -> None:
-        """Omitting product_key keeps the original behavior unchanged."""
-        decoded = {
-            "2": {"12": [{"1": 1, "2": 1, "3": b"", "4": 1, "8": 1}]},
-        }
         map_data = MapData.from_response(decoded)
-        assert map_data.rooms[0].display_name == "Primary Bedroom"
+        names = [r.display_name for r in map_data.rooms]
+        assert names == ["Master bedroom", "Bathroom 2"]
