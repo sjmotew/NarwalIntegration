@@ -3,10 +3,11 @@
     "step": {
       "user": {
         "title": "Connexion à l’aspirateur Narwal",
-        "description": "Entrez l’adresse IP de votre robot aspirateur Narwal.",
+        "description": "Entrez l’adresse IP de votre robot aspirateur Narwal et sélectionnez votre modèle.",
         "data": {
           "host": "Adresse IP",
-          "port": "Port"
+          "port": "Port",
+          "model": "Modèle"
         }
       }
     },

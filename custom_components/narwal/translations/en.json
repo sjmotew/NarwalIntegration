@@ -3,10 +3,11 @@
     "step": {
       "user": {
         "title": "Connect to Narwal Vacuum",
-        "description": "Enter the IP address of your Narwal robot vacuum.",
+        "description": "Enter the IP address of your Narwal robot vacuum and select your model.",
         "data": {
           "host": "IP Address",
-          "port": "Port"
+          "port": "Port",
+          "model": "Model"
         }
       }
     },
