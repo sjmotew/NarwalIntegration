@@ -596,12 +596,16 @@ class TestRoomInfoNames:
     """
 
     def test_shared_table_names(self) -> None:
-        """Sub-types resolve to the app's en-US.json room names."""
-        assert RoomInfo(room_sub_type=1).display_name == "Master bedroom"
-        assert RoomInfo(room_sub_type=3).display_name == "Living room"
-        assert RoomInfo(room_sub_type=6).display_name == "Toilet"
-        assert RoomInfo(room_sub_type=9).display_name == "Closet"
-        assert RoomInfo(room_sub_type=13).display_name == "Entertainment room"
+        """Every RoomType resolves to its verbatim en-US.json name."""
+        expected = {
+            0: "Room", 1: "Master bedroom", 2: "Secondary bedroom",
+            3: "Living room", 4: "Kitchen", 5: "Bathroom", 6: "Toilet",
+            7: "Balcony", 8: "Dining room", 9: "Closet", 10: "Corridor",
+            11: "Study", 12: "Kids' room", 13: "Entertainment room",
+            14: "Storage room", 15: "Others",
+        }
+        for sub_type, name in expected.items():
+            assert RoomInfo(room_sub_type=sub_type).display_name == name
 
     def test_user_assigned_name_wins(self) -> None:
         """A user-assigned name always wins over the table."""

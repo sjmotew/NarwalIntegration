@@ -40,28 +40,24 @@ class RoomInfo:
     instance_index: int = 0  # numbering for duplicates (field 8)
 
     # RoomType enum (MapBaseType.RoomType, 0-15) → the app's own en-US.json room-name strings. One shared switch (map_engine_i18n_configer.roomTypei18nKey) takes no model parameter, so every model resolves these same names. See #22.
-    ROOM_TYPE_NAMES: dict[int, str] = field(default=None, repr=False)
-
-    def __post_init__(self):
-        if self.ROOM_TYPE_NAMES is None:
-            object.__setattr__(self, "ROOM_TYPE_NAMES", {
-                0: "Room",
-                1: "Master bedroom",
-                2: "Secondary bedroom",
-                3: "Living room",
-                4: "Kitchen",
-                5: "Bathroom",
-                6: "Toilet",
-                7: "Balcony",
-                8: "Dining room",
-                9: "Closet",
-                10: "Corridor",
-                11: "Study",
-                12: "Kids' room",
-                13: "Entertainment room",
-                14: "Storage room",
-                15: "Others",
-            })
+    ROOM_TYPE_NAMES: ClassVar[dict[int, str]] = {
+        0: "Room",
+        1: "Master bedroom",
+        2: "Secondary bedroom",
+        3: "Living room",
+        4: "Kitchen",
+        5: "Bathroom",
+        6: "Toilet",
+        7: "Balcony",
+        8: "Dining room",
+        9: "Closet",
+        10: "Corridor",
+        11: "Study",
+        12: "Kids' room",
+        13: "Entertainment room",
+        14: "Storage room",
+        15: "Others",
+    }
 
     @property
     def display_name(self) -> str:
