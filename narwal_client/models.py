@@ -509,7 +509,7 @@ class NarwalState:
     position: Position | None = None
 
     # Cleaning stats
-    cleaning_area: int = 0  # cm²
+    cleaning_area: float = 0.0  # m² (coveredArea)
     cleaning_time: int = 0  # seconds
 
     # Map
@@ -627,11 +627,13 @@ class NarwalState:
     def update_from_working_status(self, decoded: dict[str, Any]) -> None:
         """Update state from a decoded working_status message.
 
-        Confirmed via 35-min monitor capture (2026-02-27):
-          Field 3  = current session elapsed time (seconds)
-                     (confirmed: 2136→2159 over 35-min clean)
-          Field 13 = cleaning area (cm²) — CONFIRMED (18000 = 1.8m²)
-          Field 15 = 600 during cleaning (purpose uncertain)
+        WorkingStatus proto fields (decompiled BuilderInfo):
+          Field 2 = coveredArea (float32, PbFieldType 0x100) — area cleaned this session, m²
+          Field 3 = timeConsuming (seconds) — session elapsed time
+                    (confirmed: 2136→2159 over a 35-min clean)
+
+        Field 13 is totalDryStationBagTime (cumulative station timer, 18000 = 5h),
+        not area — reading it as area is why the sensor was stuck at 1.8 m².
         """
         self.raw_working_status = decoded
         if "3" in decoded:
@@ -639,11 +641,10 @@ class NarwalState:
                 self.cleaning_time = int(decoded["3"])
             except (ValueError, TypeError):
                 pass
-        if "13" in decoded:
-            self.cleaning_area = int(decoded["13"])
-        if "15" in decoded:
-            # Field 15 may be cumulative time; prefer field 3 for current session
-            pass
+        if "2" in decoded:
+            area = _to_float32(decoded["2"])
+            if area is not None and area >= 0:
+                self.cleaning_area = area
 
     def update_from_base_status(self, decoded: dict[str, Any]) -> None:
         """Update state from a decoded robot_base_status message.

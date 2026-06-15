@@ -29,9 +29,12 @@ class TestNarwalState:
     def test_update_from_working_status(self) -> None:
         """working_status topic sets cleaning metrics, not robot state."""
         state = NarwalState()
-        state.update_from_working_status({"3": 120, "13": 18000, "15": 600})
+        # Field 2 = coveredArea (float32, m²); field 13 = totalDryStationBagTime, ignored.
+        state.update_from_working_status(
+            {"2": _float_to_uint32(12.5), "3": 120, "13": 18000}
+        )
         assert state.cleaning_time == 120
-        assert state.cleaning_area == 18000
+        assert state.cleaning_area == 12.5
         # working_status is NOT set by this method (comes from base_status)
         assert state.working_status == WorkingStatus.UNKNOWN
 
@@ -223,13 +226,13 @@ class TestNarwalState:
         """State should accumulate across multiple topic updates."""
         state = NarwalState()
         state.update_from_base_status({"3": {"1": 4}, "2": _float_to_uint32(95.0)})
-        state.update_from_working_status({"3": 120, "13": 18000})
+        state.update_from_working_status({"3": 120, "2": _float_to_uint32(12.5)})
         state.update_from_upgrade_status({"7": "v01.02.19.02"})
 
         assert state.battery_level == 95
         assert state.is_cleaning
         assert state.cleaning_time == 120
-        assert state.cleaning_area == 18000
+        assert state.cleaning_area == 12.5
         assert state.firmware_version == "v01.02.19.02"
 
     def test_raw_data_preserved(self) -> None:

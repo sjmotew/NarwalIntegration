@@ -227,20 +227,19 @@ class UpgradeStatusField(IntEnum):
 class WorkingStatusField(IntEnum):
     """Field numbers in the working_status protobuf message.
 
-    Confirmed via live test (2026-02-27):
-      3  = current session elapsed seconds (confirmed: 2136→2159 over 35-min clean)
-      13 = cleaning area in cm² (confirmed: 18000 = 1.8m²)
-      15 = 600 during cleaning (possibly cumulative or constant)
-      6  = 1 during cleaning (observed in plan-based clean; may vary by mode)
-      10 = time since docked in seconds (post-dock only, counts up)
-      11 = 2700 post-dock (unknown, constant)
-
-    Also broadcast during cleaning:
-      status/time_line_status — timeline/history data
-      developer/planning_debug_info — navigation debug (collision count, stall count)
+    Names from the decompiled WorkingStatus proto BuilderInfo:
+      1  = workingProgress (double)
+      2  = coveredArea (float32, PbFieldType 0x100) — area cleaned this session, m²
+      3  = timeConsuming (seconds) — session elapsed time
+      4  = remainedTime (seconds)
+      6  = cleaningZoneId
+      8..17 = station drying/sterilization/dust-bag timers (seconds); the
+              cumulative "total*" counters (9/11/13/15/17) stay constant while
+              idle. Field 13 = totalDryStationBagTime (18000 = 5h) — earlier
+              misread as cleaning area because 18000/10000 looked like 1.8 m².
     """
 
-    ELAPSED_TIME = 3  # current session elapsed seconds — CONFIRMED
-    AREA = 13  # cm² — CONFIRMED (18000 = 1.8m²)
-    CUMULATIVE_TIME = 15  # 600 during cleaning (purpose uncertain)
-    TIME_SINCE_DOCKED = 10  # seconds since docked (post-dock only)
+    PROGRESS = 1  # workingProgress (float32, 0..1)
+    AREA = 2  # coveredArea (float32) — m²
+    ELAPSED_TIME = 3  # timeConsuming — session elapsed seconds
+    REMAINING_TIME = 4  # remainedTime — seconds
