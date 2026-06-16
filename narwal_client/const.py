@@ -228,7 +228,7 @@ class WorkingStatusField(IntEnum):
     """Field numbers in the working_status protobuf message.
 
     Names from the decompiled WorkingStatus proto BuilderInfo:
-      1  = workingProgress (double)
+      1  = workingProgress (float32, PbFieldType 0x100)
       2  = coveredArea (float32, PbFieldType 0x100) — area cleaned this session, m²
       3  = timeConsuming (seconds) — session elapsed time
       4  = remainedTime (seconds)

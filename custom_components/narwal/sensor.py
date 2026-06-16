@@ -43,8 +43,7 @@ SENSOR_DESCRIPTIONS: tuple[NarwalSensorEntityDescription, ...] = (
         translation_key="cleaning_area",
         native_unit_of_measurement=UnitOfArea.SQUARE_METERS,
         state_class=SensorStateClass.MEASUREMENT,
-        # working_status field 2 (coveredArea) is already m²; populated only
-        # during active cleaning.
+        # working_status field 2 (coveredArea) is already m²; populated only during active cleaning.
         value_fn=lambda state: round(state.cleaning_area, 2)
         if state.cleaning_area > 0
         else None,
