@@ -4,13 +4,17 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
+import pytest
+
 import tests.ha_stubs
 
 tests.ha_stubs.install()
 
+from custom_components.narwal.const import NARWAL_MODELS  # noqa: E402
 from custom_components.narwal.sensor import (  # noqa: E402
     SENSOR_DESCRIPTIONS,
     NarwalSensor,
+    async_setup_entry,
 )
 from narwal_client.const import WorkingStatus  # noqa: E402
 from narwal_client.models import NarwalState  # noqa: E402
@@ -65,3 +69,38 @@ def test_cleaning_metrics_are_available_during_active_clean() -> None:
     assert _sensor("cleaning_time", state).native_value == 900
     assert _sensor("remaining_time", state).available
     assert _sensor("remaining_time", state).native_value == 300
+
+
+@pytest.mark.parametrize(
+    ("model", "enabled_by_default"),
+    [
+        ("Narwal Flow", False),
+        ("Narwal Flow 2", False),
+        ("Narwal Freo Z10 Ultra", True),
+    ],
+)
+async def test_detergent_sensor_disabled_by_default_without_detergent_tank(
+    model: str, enabled_by_default: bool
+) -> None:
+    """Flow models have no detergent tank, so field 41 is created but disabled."""
+    state = NarwalState()
+    coordinator = _sensor("battery", state).coordinator
+    entry = MagicMock()
+    entry.runtime_data = coordinator
+    entry.data = {"device_id": "test_device", "product_key": NARWAL_MODELS[model]}
+    added: list = []
+
+    await async_setup_entry(MagicMock(), entry, added.extend)
+
+    detergent = next(
+        entity for entity in added
+        if getattr(entity, "entity_description", None) is not None
+        and entity.entity_description.key == "detergent_remaining"
+    )
+    assert detergent.entity_description.entity_registry_enabled_default is enabled_by_default
+    other = [
+        entity.entity_description for entity in added
+        if getattr(entity, "entity_description", None) is not None
+        and entity.entity_description.key != "detergent_remaining"
+    ]
+    assert all(description.entity_registry_enabled_default for description in other)

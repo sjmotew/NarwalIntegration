@@ -457,6 +457,7 @@ def install() -> None:
         native_unit_of_measurement: object | None = None
         state_class: object | None = None
         options: object | None = None
+        entity_registry_enabled_default: bool = True
 
     ha_sensor.SensorEntityDescription = _SensorEntityDescription  # type: ignore[attr-defined]
 
