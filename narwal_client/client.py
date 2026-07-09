@@ -44,6 +44,7 @@ from .const import (
     TOPIC_CMD_SET_MOP_HUMIDITY,
     TOPIC_CMD_START_CLEAN,
     TOPIC_CMD_TAKE_PICTURE,
+    TOPIC_CMD_GET_DEBUG_IMAGE,
     TOPIC_CMD_SET_LED,
     TOPIC_CMD_WASH_MOP,
     TOPIC_CMD_YELL,
@@ -1319,6 +1320,42 @@ class NarwalClient:
             return resp.data.get("2")
         _LOGGER.warning("take_picture returned result_code=%d", resp.result_code)
         return None
+
+    async def get_robot_debug_image(self) -> bytes | None:
+        """Fetch the robot's latest debug/planning image (cleartext PNG).
+
+        developer/get_robot_debug_image returns a batch of carpet-detection and
+        planning overlays as UNENCRYPTED PNGs (222x232 RGB), keyed by filename
+        (InitCarpet/GlobalCarpet/UpdateRoomN_PlanningCarpet). Only produced while
+        the robot is mapping/cleaning; returns None when idle or unavailable.
+
+        Response shape: field 1 = repeated {1: filename, 2: png_bytes}. Returns the
+        most recent whole-map ("GlobalCarpet") PNG if present, else the last image
+        in the batch, else None.
+        """
+        try:
+            resp = await self.send_command(TOPIC_CMD_GET_DEBUG_IMAGE, timeout=15.0)
+        except Exception:
+            _LOGGER.warning("get_robot_debug_image command failed")
+            return None
+        entries = resp.data.get("1")
+        if isinstance(entries, dict):
+            entries = [entries]
+        if not isinstance(entries, list):
+            return None
+        best: bytes | None = None
+        last: bytes | None = None
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            img = entry.get("2")
+            if not isinstance(img, (bytes, bytearray)):
+                continue
+            last = bytes(img)
+            name = entry.get("1")
+            if isinstance(name, str) and "GlobalCarpet" in name:
+                best = bytes(img)  # prefer the most recent whole-map carpet overlay
+        return best or last
 
     async def set_led(self, on: bool) -> None:
         """Turn the camera LED fill light on or off.

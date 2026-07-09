@@ -39,10 +39,48 @@ async def async_setup_entry(
     entry: NarwalConfigEntry,
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
-    """Set up the Narwal map camera entity."""
+    """Set up the Narwal camera entities."""
     coordinator = entry.runtime_data
-    entity = NarwalMapCamera(coordinator)
-    async_add_entities([entity])
+    async_add_entities([NarwalMapCamera(coordinator), NarwalCarpetCamera(coordinator)])
+
+
+class NarwalCarpetCamera(NarwalEntity, Camera):
+    """On-demand camera showing the robot's carpet-detection debug image.
+
+    Backed by developer/get_robot_debug_image, which returns cleartext PNGs (no
+    crypto). Images are only produced while the robot is mapping/cleaning, so this
+    only polls in an active state and otherwise serves the last image.
+    """
+
+    _attr_name = "Carpet map"
+
+    def __init__(self, coordinator: NarwalCoordinator) -> None:
+        """Initialize the carpet debug camera entity."""
+        NarwalEntity.__init__(self, coordinator)
+        Camera.__init__(self)
+        device_id = coordinator.config_entry.data["device_id"]
+        self._attr_unique_id = f"{device_id}_carpet_map"
+        self._cached: bytes | None = None
+        self._cached_at: float = 0.0
+
+    async def async_camera_image(
+        self, width: int | None = None, height: int | None = None,
+    ) -> bytes | None:
+        """Return the latest carpet-detection PNG; poll only while active."""
+        state = self.coordinator.data
+        active = state is not None and (
+            state.is_cleaning or state.working_status == WorkingStatus.REMAPPING
+        )
+        if not active:
+            return self._cached  # keep last image; don't hit the WS while idle
+        now = time.monotonic()
+        if self._cached is not None and now - self._cached_at < 8.0:
+            return self._cached
+        img = await self.coordinator.client.get_robot_debug_image()
+        if img is not None:
+            self._cached = img
+            self._cached_at = now
+        return self._cached
 
 
 class NarwalMapCamera(NarwalEntity, Camera):

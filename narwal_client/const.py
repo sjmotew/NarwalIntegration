@@ -96,6 +96,7 @@ TOPIC_CMD_GET_ALL_MAPS = "map/get_all_reduced_maps"
 # Camera (developer commands)
 TOPIC_CMD_TAKE_PICTURE = "developer/take_picture"
 TOPIC_CMD_SET_LED = "developer/led_control"
+TOPIC_CMD_GET_DEBUG_IMAGE = "developer/get_robot_debug_image"  # cleartext carpet/planning PNGs
 
 # Wake / Keep-alive (from APK analysis — candidates for waking sleeping robot)
 TOPIC_CMD_ACTIVE_ROBOT = "common/active_robot_publish"  # TopicDuration keepalive
@@ -151,6 +152,8 @@ class WorkingStatus(IntEnum):
       2  = DOCKED_V2 (on dock; confirmed v01.07.23.00 while charging at 10-36%)
       4  = CLEANING (plan-based start; also stays 4 while returning to dock on older FW)
       5  = CLEANING_ALT (observed live: robot was physically stuck when reporting 5)
+      7  = REMAPPING (live 2026-07-09: robot exploring/rebuilding the map; camera
+           active — developer/take_picture is accepted in this state)
       10 = DOCKED (on dock, charging)
       14 = CHARGED (on dock, fully charged)
       19 = TASK_COMPLETED (transitional: scheduled task finished, returning to base)
@@ -170,6 +173,7 @@ class WorkingStatus(IntEnum):
     DOCKED_V2 = 2     # on dock (v01.07.23.00+ — replaces DOCKED=10/CHARGED=14 from older FW)
     CLEANING = 4      # active cleaning (stays 4 even while returning to dock)
     CLEANING_ALT = 5  # cleaning — observed when robot was physically stuck; may indicate error/stuck state
+    REMAPPING = 7     # mapping/exploration (live 2026-07-09); camera active, take_picture accepted
     DOCKED = 10       # on dock (does NOT reliably indicate charging vs charged)
     CHARGED = 14      # on dock (reported before 100% — use battery_level for charge state)
     TASK_COMPLETED = 19  # transitional: task finished, robot returning to base (#41)
