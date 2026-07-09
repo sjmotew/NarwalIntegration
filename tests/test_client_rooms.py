@@ -80,7 +80,8 @@ class TestBuildRoomCleanPayload:
 class TestStartRooms:
     """Tests for start_rooms async method."""
 
-    def test_empty_rooms_calls_start(self) -> None:
+    @pytest.mark.asyncio
+    async def test_empty_rooms_calls_start(self) -> None:
         """start_rooms([]) falls back to whole-house start()."""
         client = NarwalClient("127.0.0.1")
         client._ws = AsyncMock()  # fake connected state
@@ -88,10 +89,11 @@ class TestStartRooms:
 
         with patch.object(client, "start", new_callable=AsyncMock) as mock_start:
             mock_start.return_value = AsyncMock()
-            asyncio.get_event_loop().run_until_complete(client.start_rooms([]))
+            await client.start_rooms([])
             mock_start.assert_awaited_once()
 
-    def test_room_ids_sends_room_payload(self) -> None:
+    @pytest.mark.asyncio
+    async def test_room_ids_sends_room_payload(self) -> None:
         """start_rooms with IDs sends room-specific payload via send_command."""
         client = NarwalClient("127.0.0.1")
         client._ws = AsyncMock()
@@ -102,7 +104,7 @@ class TestStartRooms:
             client, "send_command", new_callable=AsyncMock
         ) as mock_send:
             mock_send.return_value = success
-            asyncio.get_event_loop().run_until_complete(client.start_rooms([11, 9]))
+            await client.start_rooms([11, 9])
             mock_send.assert_awaited_once()
             payload_arg = mock_send.await_args.kwargs.get("payload")
             assert payload_arg is not None
@@ -122,7 +124,8 @@ class TestStartRoomsV2First:
         client._connected = True
         return client
 
-    def test_success_on_v2_does_not_retry(self) -> None:
+    @pytest.mark.asyncio
+    async def test_success_on_v2_does_not_retry(self) -> None:
         """If the v2 room payload is accepted, no legacy retry happens."""
         client = self._connected_client()
         success = CommandResponse(result_code=CommandResult.SUCCESS)
@@ -131,14 +134,13 @@ class TestStartRoomsV2First:
             client, "send_command", new_callable=AsyncMock
         ) as mock_send:
             mock_send.return_value = success
-            result = asyncio.get_event_loop().run_until_complete(
-                client.start_rooms([5])
-            )
+            result = await client.start_rooms([5])
 
         assert result is success
         mock_send.assert_awaited_once()
 
-    def test_v2_sends_correct_room_ids(self) -> None:
+    @pytest.mark.asyncio
+    async def test_v2_sends_correct_room_ids(self) -> None:
         """v2 payload encodes exactly the requested rooms."""
         client = self._connected_client()
         success = CommandResponse(result_code=CommandResult.SUCCESS)
@@ -147,9 +149,7 @@ class TestStartRoomsV2First:
             client, "send_command", new_callable=AsyncMock
         ) as mock_send:
             mock_send.return_value = success
-            asyncio.get_event_loop().run_until_complete(
-                client.start_rooms([5, 7])
-            )
+            await client.start_rooms([5, 7])
 
         import blackboxprotobuf
         payload = mock_send.await_args.kwargs.get("payload")
@@ -158,7 +158,8 @@ class TestStartRoomsV2First:
         ids = [e["1"]["2"] for e in entries]
         assert ids == [5, 7]
 
-    def test_not_applicable_triggers_legacy_retry(self) -> None:
+    @pytest.mark.asyncio
+    async def test_not_applicable_triggers_legacy_retry(self) -> None:
         """NOT_APPLICABLE on v2 triggers a legacy flat-room retry."""
         client = self._connected_client()
         not_applicable = CommandResponse(result_code=CommandResult.NOT_APPLICABLE)
@@ -168,9 +169,7 @@ class TestStartRoomsV2First:
             client, "send_command", new_callable=AsyncMock
         ) as mock_send:
             mock_send.side_effect = [not_applicable, success]
-            result = asyncio.get_event_loop().run_until_complete(
-                client.start_rooms([5, 7])
-            )
+            result = await client.start_rooms([5, 7])
 
         assert mock_send.await_count == 2
         v2_payload = mock_send.await_args_list[0].kwargs.get("payload")
@@ -178,7 +177,8 @@ class TestStartRoomsV2First:
         assert v2_payload != legacy_payload
         assert result is success
 
-    def test_conflict_does_not_trigger_retry(self) -> None:
+    @pytest.mark.asyncio
+    async def test_conflict_does_not_trigger_retry(self) -> None:
         """A CONFLICT response (robot busy) surfaces as-is — no retry."""
         client = self._connected_client()
         conflict = CommandResponse(result_code=CommandResult.CONFLICT)
@@ -187,9 +187,7 @@ class TestStartRoomsV2First:
             client, "send_command", new_callable=AsyncMock
         ) as mock_send:
             mock_send.return_value = conflict
-            result = asyncio.get_event_loop().run_until_complete(
-                client.start_rooms([5])
-            )
+            result = await client.start_rooms([5])
 
         mock_send.assert_awaited_once()
         assert result.result_code == CommandResult.CONFLICT
