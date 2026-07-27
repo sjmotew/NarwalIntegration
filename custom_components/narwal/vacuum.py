@@ -28,6 +28,11 @@ from .entity import NarwalEntity
 
 _LOGGER = logging.getLogger(__name__)
 
+# working_status values already reported as unmapped. Activity is recomputed on
+# every state broadcast (~1.5s), so an unmapped value otherwise floods the log
+# with thousands of identical lines (#46). Warn once per distinct value.
+_WARNED_UNMAPPED_ACTIVITY: set[int] = set()
+
 WORKING_STATUS_TO_ACTIVITY: dict[WorkingStatus, VacuumActivity] = {
     WorkingStatus.DOCKED: VacuumActivity.DOCKED,
     WorkingStatus.CHARGED: VacuumActivity.DOCKED,
@@ -100,10 +105,13 @@ class NarwalVacuum(NarwalEntity, StateVacuumEntity):
         # don't report IDLE while the robot is clearly active off-dock.
         # New firmware versions may introduce values we haven't mapped yet.
         if not state.is_docked:
-            _LOGGER.warning(
-                "Unmapped working_status %s (%d) while off-dock — reporting CLEANING",
-                state.working_status.name, state.working_status.value,
-            )
+            if state.working_status.value not in _WARNED_UNMAPPED_ACTIVITY:
+                _WARNED_UNMAPPED_ACTIVITY.add(state.working_status.value)
+                _LOGGER.warning(
+                    "Unmapped working_status %s (%d) while off-dock — reporting "
+                    "CLEANING (further occurrences of this value are suppressed)",
+                    state.working_status.name, state.working_status.value,
+                )
             return VacuumActivity.CLEANING
         return VacuumActivity.IDLE
 

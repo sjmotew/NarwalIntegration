@@ -9,6 +9,11 @@ from typing import Any, ClassVar
 
 _LOGGER = logging.getLogger(__name__)
 
+# Raw working_status values already reported. The robot rebroadcasts its status
+# every ~1.5s, so warning on each broadcast floods the log with thousands of
+# identical lines (#46). Warn once per distinct value instead.
+_WARNED_WORKING_STATUS: set[Any] = set()
+
 from .const import CommandResult, FanLevel, MopHumidity, WorkingStatus
 
 
@@ -694,11 +699,14 @@ class NarwalState:
                     self.working_status = WorkingStatus(int(field3["1"]))
                 except (ValueError, TypeError):
                     raw_val = field3["1"]
-                    _LOGGER.warning(
-                        "Unknown working_status value: %s — treating as UNKNOWN. "
-                        "Please report this value at the GitHub repo.",
-                        raw_val,
-                    )
+                    if raw_val not in _WARNED_WORKING_STATUS:
+                        _WARNED_WORKING_STATUS.add(raw_val)
+                        _LOGGER.warning(
+                            "Unknown working_status value: %s — treating as UNKNOWN. "
+                            "Please report this value at the GitHub repo. "
+                            "(further occurrences of this value are suppressed)",
+                            raw_val,
+                        )
                     self.working_status = WorkingStatus.UNKNOWN
             # Sub-field 2: paused overlay (0 or absent = not paused, 1 = paused)
             self.is_paused = bool(field3.get("2"))

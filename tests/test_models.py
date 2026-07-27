@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import struct
 
 from narwal_client.const import WorkingStatus
@@ -191,6 +192,24 @@ class TestNarwalState:
         """Unmapped working_status value falls back to UNKNOWN."""
         state = NarwalState()
         state.update_from_base_status({"3": {"1": 99}})
+        assert state.working_status == WorkingStatus.UNKNOWN
+
+    def test_unknown_working_status_warns_once(self, caplog) -> None:
+        """Repeated unknown values warn once, not once per broadcast (#46).
+
+        The robot rebroadcasts status every ~1.5s; warning each time floods
+        the log with thousands of identical lines.
+        """
+        from narwal_client import models as models_mod
+
+        models_mod._WARNED_WORKING_STATUS.discard(17)
+        state = NarwalState()
+        with caplog.at_level(logging.WARNING, logger=models_mod.__name__):
+            for _ in range(50):
+                state.update_from_base_status({"3": {"1": 17}})
+
+        warnings = [r for r in caplog.records if "Unknown working_status" in r.message]
+        assert len(warnings) == 1
         assert state.working_status == WorkingStatus.UNKNOWN
 
     def test_update_from_base_status(self) -> None:
