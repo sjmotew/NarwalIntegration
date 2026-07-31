@@ -39,3 +39,11 @@ FAN_SPEED_MAP: dict[str, FanLevel] = {
 }
 
 FAN_SPEED_LIST: list[str] = list(FAN_SPEED_MAP.keys())
+
+# Best-effort help-center deep link for a robot error code. The app's goHelpCenterByCode
+# builds <localized help base>?code=<n>&deviceId=…&lang=…; the exact base is a runtime
+# i18n value we can't read, so this is inferred from the Flow's help-center family and
+# should be corrected if a real error opens a different path. The raw code is the fallback.
+ERROR_HELP_URL_TEMPLATE = (
+    "https://help.narwal.com/helpcenter/vall/#/p2/question/all?eType=1&code={code}&lang=en-US"
+)

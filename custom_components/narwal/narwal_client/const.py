@@ -146,6 +146,11 @@ class CommandResult(IntEnum):
 class WorkingStatus(IntEnum):
     """Robot working state from robot_base_status field 3 → sub-field 1.
 
+    These values are EMPIRICAL and intentionally do NOT match the app's compiled
+    RobotTaskStatus.TaskType enum (sub-field 1's declared type): on this firmware
+    the robot reports e.g. 14=charged where TaskType 14=WASH_AND_DRY_MOP. Trust
+    the live-observed mapping below, not re/ENUMS.md, for this field (and f47).
+
     Values confirmed via live WebSocket monitoring:
       1  = STANDBY (idle, transition state between cleaning and docked)
       2  = DOCKED_V2 (on dock; confirmed v01.07.23.00 while charging at 10-36%)
@@ -197,28 +202,42 @@ class MopHumidity(IntEnum):
 
 # robot_base_status field numbers
 class BaseStatusField(IntEnum):
-    """Field numbers in the robot_base_status protobuf message.
+    """Field numbers in the robot_base_status (RobotBaseStatus) message.
 
-    Battery notes (confirmed via 35-min monitor capture, 2026-02-27):
-      Field 2  = real-time battery level as IEEE 754 float32
-                 (e.g. 1118175232 → 83.0%, matching app display ~84%)
-      Field 38 = static battery health (always 100; design capacity, not SOC)
+    Names from the decompiled BuilderInfo, several live-validated on dock.
+    Field 2 is float32 (PbFieldType 0x100), e.g. 1120403456 → 100.0.
+    Most state fields (5,11,12,14,15,20-24,26,28,29,31,33,39,40,42,47,49,50)
+    are enums whose value→label tables are not yet decoded.
     """
 
-    BATTERY_LEVEL = 2  # real-time SOC as float32 — CONFIRMED
-    MODE_STATE = 3
-    SESSION_ID = 13
-    SENSOR_DATA = 25
-    TIMESTAMP = 36
-    BATTERY_HEALTH = 38  # static, always 100 (design capacity)
-    BATTERY_CAPACITY = 41
+    ERROR_CODE = 1  # repeated ErrorCode; empty when no fault
+    BATTERY_LEVEL = 2  # batteryPercentage, float32
+    ROBOT_TASK_STATUS = 3  # nested task-status message
+    BINDED_UUID = 13  # bound account/device UUID (string)
+    CLEAN_WATER_TANK_STATE = 23  # enum
+    SEWAGE_TANK_STATE = 24  # enum
+    DEVICE_STATUS_CODE_LIST = 25
+    FAN_LEVEL = 26  # active suction (FanLevel enum)
+    MOP_HUMIDITY = 29  # active water level (MopHumidity enum)
+    STATION_BAG_HEALTH_SCORE = 35  # float32, %
+    STATION_BAG_HEALTH_RESET_TIME = 36  # epoch
+    CURING_AGENT_CONSUMPTION_PERCENT = 38
+    HEAVY_DETERGENT_REMAIN_PERCENT = 41
+    CHARGING_STATUS = 47  # canonical charging state (enum)
 
 
-# upgrade_status field numbers
+# upgrade_status field numbers (OTAUpgradeStatus)
 class UpgradeStatusField(IntEnum):
-    """Field numbers in the upgrade_status protobuf message."""
+    """Field numbers in the upgrade_status (OTAUpgradeStatus) message.
 
-    STATUS_CODE = 4
+    Names from the decompiled BuilderInfo: 1 type, 2 status, 3 progress,
+    4 stage, 5 errorCode, 6 detailErrorCode, 7 currentVersion, 8 targetVersion.
+    """
+
+    STATUS = 2
+    PROGRESS = 3
+    STAGE = 4
+    ERROR_CODE = 5
     CURRENT_FIRMWARE = 7
     TARGET_FIRMWARE = 8
 

@@ -62,7 +62,7 @@ class TestNarwalState:
         assert state.working_status == WorkingStatus.CHARGED
         assert state.is_docked
         assert state.battery_level == 100
-        assert state.battery_health == 100
+        assert state.curing_agent_consumption_percent == 100
 
     def test_update_from_base_status_standby_on_dock(self) -> None:
         """STANDBY(1) with dock sub-state=1 means docked."""
@@ -202,24 +202,74 @@ class TestNarwalState:
             "13": "d4bec8c82c484a3ba0428bb0dd4359e2",
         })
         assert state.battery_level == 85
-        assert state.battery_health == 100
-        assert state.timestamp == 1757252225
-        assert state.session_id == "d4bec8c82c484a3ba0428bb0dd4359e2"
+        assert state.curing_agent_consumption_percent == 100
+        assert state.station_bag_health_reset_time == 1757252225
+        assert state.binded_uuid == "d4bec8c82c484a3ba0428bb0dd4359e2"
+
+    def test_base_status_consumables_and_error(self) -> None:
+        """Field 35 dust-bag health (float32 %), 41 detergent %, 1 errorCode presence."""
+        state = NarwalState()
+        state.update_from_base_status({
+            "1": {},  # empty errorCode = no fault
+            "35": _float_to_uint32(68.5),
+            "41": 100,
+        })
+        assert round(state.dust_bag_health, 1) == 68.5
+        assert state.detergent_remaining == 100
+        assert state.has_error is False
+        assert state.error_codes == []
+        # A populated ErrorCode flips has_error on and exposes code/level/detail.
+        state.update_from_base_status({"1": {"1": 2105, "2": 3, "3": b"wheel stuck"}})
+        assert state.has_error is True
+        assert state.error_codes == [2105]
+        assert state.error_level == 3
+        assert state.error_detail == "wheel stuck"
+        # Clears when the next base_status reports an empty errorCode.
+        state.update_from_base_status({"1": {}})
+        assert state.has_error is False
+        assert state.error_codes == []
+
+    def test_multiple_error_codes(self) -> None:
+        """Repeated ErrorCode (bbp list) collects all identityCodes, max level."""
+        state = NarwalState()
+        state.update_from_base_status({"1": [{"1": 10, "2": 1}, {"1": 20, "2": 4}]})
+        assert state.error_codes == [10, 20]
+        assert state.error_level == 4
+        assert state.has_error is True
+
+    def test_base_status_tank_states(self) -> None:
+        """Tank/bag enum states parse into Optional ints; unreported stays None."""
+        state = NarwalState()
+        # Live healthy snapshot: clean-water/sewage ok (1), dust box ok (1),
+        # station bag installed (1). No dust-bag field on this model.
+        state.update_from_base_status({"23": 1, "24": 1, "20": 1, "39": 1})
+        assert state.clean_water_tank_state == 1
+        assert state.sewage_tank_state == 1
+        assert state.dust_box_state == 1
+        assert state.station_bag_state == 1
+        assert state.dust_bag_state is None  # not reported by this model
+        # Attention states.
+        state.update_from_base_status({"23": 2, "39": 3})
+        assert state.clean_water_tank_state == 2  # EMPTY
+        assert state.station_bag_state == 3  # SUGGEST_REPLACE
 
     def test_update_from_upgrade_status(self) -> None:
         state = NarwalState()
         state.update_from_upgrade_status({
             "7": "v01.02.19.02",
             "8": "v01.02.19.02",
+            "2": 3,
             "4": 10,
         })
         assert state.firmware_version == "v01.02.19.02"
         assert state.firmware_target == "v01.02.19.02"
-        assert state.upgrade_status_code == 10
+        assert state.upgrade_status == 3
+        assert state.upgrade_stage == 10
 
     def test_update_from_download_status(self) -> None:
+        # Field 3 = state (field 1 is download type, ignored).
         state = NarwalState()
-        state.update_from_download_status({"1": 2})
+        state.update_from_download_status({"1": 5, "3": 2})
         assert state.download_status == 2
 
     def test_incremental_updates(self) -> None:
@@ -259,11 +309,11 @@ class TestNarwalState:
         state.update_from_base_status({"2": 83.0})
         assert state.battery_level == 83
 
-    def test_battery_health_field38_static(self) -> None:
-        """Field 38 is static battery health (always 100), not real-time SOC."""
+    def test_field38_curing_agent_not_battery(self) -> None:
+        """Field 38 is curingAgentConsumptionPercent, not battery SOC/health."""
         state = NarwalState()
         state.update_from_base_status({"38": 100})
-        assert state.battery_health == 100
+        assert state.curing_agent_consumption_percent == 100
         # battery_level unchanged (no field 2)
         assert state.battery_level == 0
 
@@ -294,7 +344,7 @@ class TestNarwalState:
 
         # Battery updated, working_status preserved from last authoritative source
         assert state.battery_level == 85
-        assert state.battery_health == 100
+        assert state.curing_agent_consumption_percent == 100
         assert state.working_status == WorkingStatus.DOCKED  # NOT overwritten
         assert state.is_docked  # still correct
 

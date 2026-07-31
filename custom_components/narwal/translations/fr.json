@@ -35,6 +35,12 @@
       "firmware_version": {
         "name": "Version du firmware"
       },
+      "dust_bag_health": {
+        "name": "État du sac à poussière"
+      },
+      "detergent_remaining": {
+        "name": "Détergent restant"
+      },
       "charging_state": {
         "name": "Charge",
         "state": {
@@ -51,6 +57,28 @@
           "on": "Stationné",
           "off": "Non stationné"
         }
+      },
+      "error": {
+        "name": "Erreur",
+        "state": {
+          "on": "Problème",
+          "off": "OK"
+        }
+      },
+      "clean_water_tank": {
+        "name": "Réservoir d'eau propre"
+      },
+      "sewage_tank": {
+        "name": "Réservoir d'eau sale"
+      },
+      "dust_box": {
+        "name": "Bac à poussière"
+      },
+      "dust_bag": {
+        "name": "Sac à poussière"
+      },
+      "station_bag": {
+        "name": "Sac à poussière de la station"
       }
     }
   }

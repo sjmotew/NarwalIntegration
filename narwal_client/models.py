@@ -494,16 +494,15 @@ class NarwalState:
     # Core status
     working_status: WorkingStatus = WorkingStatus.UNKNOWN
     battery_level: int = 0  # real-time SOC from field 2 (float32)
-    battery_health: int = 0  # static design capacity from field 38 (always 100)
     firmware_version: str = ""
     firmware_target: str = ""
 
     # Device identity
     device_info: DeviceInfo | None = None
 
-    # Session
-    session_id: str = ""
-    timestamp: int = 0
+    # Identity / station maintenance (base_status)
+    binded_uuid: str = ""  # field 13 — bound account/device UUID
+    station_bag_health_reset_time: int = 0  # field 36 — epoch of last bag-health reset
 
     # Position (from map data)
     position: Position | None = None
@@ -512,14 +511,31 @@ class NarwalState:
     cleaning_area: float = 0.0  # m² (coveredArea)
     cleaning_time: int = 0  # seconds
 
+    # Consumables / station / fault (base_status; present on dock and during cleaning)
+    dust_bag_health: float = 0.0  # field 35 stationBagHealthScore (%)
+    detergent_remaining: int = 0  # field 41 heavyDetergentRemainPercent (%)
+    curing_agent_consumption_percent: int = 0  # field 38
+    has_error: bool = False  # field 1 errorCode has an active code
+    error_codes: list[int] = field(default_factory=list)  # field 1 ErrorCode.identityCode(s)
+    error_level: int = 0  # ErrorCode.level (field 1 sub-2)
+    error_detail: str = ""  # ErrorCode.debugDetail (field 1 sub-3)
+
+    # Station tank/bag enum states (base_status; None = not reported by this model).
+    # 0=unspecified, 1=ok/installed, ≥2=attention (empty/abnormal/replace) — see BaseStatusField.
+    clean_water_tank_state: int | None = None  # field 23 (CleanWaterTankState)
+    sewage_tank_state: int | None = None  # field 24 (SewageTankState)
+    dust_box_state: int | None = None  # field 20 (DustBoxState)
+    dust_bag_state: int | None = None  # field 21 (DustBagState)
+    station_bag_state: int | None = None  # field 39 (StationBagStatus)
+
     # Map
     map_data: MapData | None = None
     map_display_data: MapDisplayData | None = None
 
-    # Vision obstacles (camera-detected transient objects during cleaning)
-    # Download/upgrade status
-    download_status: int = 0
-    upgrade_status_code: int = 0
+    # Download / upgrade status
+    download_status: int = 0  # download_status field 3 (state)
+    upgrade_status: int = 0  # upgrade_status field 2 (status)
+    upgrade_stage: int = 0  # upgrade_status field 4 (stage)
 
     # Pause overlay (field 3 sub-field 2 = 1 means paused)
     is_paused: bool = False
@@ -736,24 +752,75 @@ class NarwalState:
                 type(field3).__name__, field3,
             )
         if "2" in decoded:
-            # Field 2 = real-time battery SOC as float32
+            # Field 2 = real-time battery SOC as float32 (batteryPercentage)
             # (e.g. 1118175232 → 83.0%; bbp may return int or float)
             bat = _to_float32(decoded["2"])
             if bat is not None:
                 self.battery_level = round(bat)
-        if "38" in decoded:
-            # Field 38 = static battery health (always 100, design capacity)
-            self.battery_health = int(decoded["38"])
-        if "36" in decoded:
-            self.timestamp = int(decoded["36"])
+        self._update_consumables(decoded)
         if "13" in decoded:
             raw = decoded["13"]
             if isinstance(raw, bytes):
-                self.session_id = raw.decode("utf-8", errors="replace")
+                self.binded_uuid = raw.decode("utf-8", errors="replace")
             else:
-                self.session_id = str(raw)
-                if self.session_id.startswith("b'"):
-                    self.session_id = self.session_id[2:-1]
+                self.binded_uuid = str(raw)
+                if self.binded_uuid.startswith("b'"):
+                    self.binded_uuid = self.binded_uuid[2:-1]
+
+    def _update_consumables(self, decoded: dict[str, Any]) -> None:
+        """Parse base_status consumable/station/fault fields — hardware-sampled, so trustworthy even in deep-sleep battery-only updates."""
+        if "35" in decoded:
+            score = _to_float32(decoded["35"])
+            if score is not None:
+                self.dust_bag_health = score
+        if "41" in decoded:
+            self.detergent_remaining = int(decoded["41"])
+        if "38" in decoded:
+            self.curing_agent_consumption_percent = int(decoded["38"])
+        if "36" in decoded:
+            self.station_bag_health_reset_time = int(decoded["36"])
+        if "1" in decoded:
+            self._parse_error_codes(decoded["1"])
+        for attr, key in (
+            ("clean_water_tank_state", "23"), ("sewage_tank_state", "24"),
+            ("dust_box_state", "20"), ("dust_bag_state", "21"),
+            ("station_bag_state", "39"),
+        ):
+            if key in decoded:
+                try:
+                    setattr(self, attr, int(decoded[key]))
+                except (ValueError, TypeError):
+                    pass
+
+    def _parse_error_codes(self, raw: Any) -> None:
+        """Decode base_status field 1 (repeated ErrorCode{1:identityCode, 2:level, 3:debugDetail}).
+
+        Empty/zero codes mean no active fault. bbp gives a dict for one entry, a list for many.
+        """
+        entries = raw if isinstance(raw, list) else [raw] if isinstance(raw, dict) else []
+        codes: list[int] = []
+        level = 0
+        detail = ""
+        for entry in entries:
+            if not isinstance(entry, dict) or not entry.get("1"):
+                continue
+            try:
+                codes.append(int(entry["1"]))
+            except (ValueError, TypeError):
+                continue
+            try:
+                level = max(level, int(entry.get("2", 0)))
+            except (ValueError, TypeError):
+                pass
+            raw_detail = entry.get("3")
+            if isinstance(raw_detail, bytes):
+                detail = detail or raw_detail.decode("utf-8", errors="replace")
+            elif isinstance(raw_detail, str):
+                detail = detail or raw_detail
+        self.error_codes = codes
+        self.error_level = level
+        self.error_detail = detail
+        self.has_error = bool(codes)
 
     def update_battery_from_base_status(self, decoded: dict[str, Any]) -> None:
         """Update ONLY hardware-sampled fields from a base_status response.
@@ -768,13 +835,13 @@ class NarwalState:
             bat = _to_float32(decoded["2"])
             if bat is not None:
                 self.battery_level = round(bat)
-        if "38" in decoded:
-            self.battery_health = int(decoded["38"])
-        if "36" in decoded:
-            self.timestamp = int(decoded["36"])
+        self._update_consumables(decoded)
 
     def update_from_upgrade_status(self, decoded: dict[str, Any]) -> None:
-        """Update state from a decoded upgrade_status message."""
+        """Update state from a decoded upgrade_status message.
+
+        Fields: 2 status, 4 stage, 7 currentVersion, 8 targetVersion.
+        """
         if "7" in decoded:
             raw = decoded["7"]
             if isinstance(raw, bytes):
@@ -791,10 +858,15 @@ class NarwalState:
                 self.firmware_target = str(raw)
                 if self.firmware_target.startswith("b'"):
                     self.firmware_target = self.firmware_target[2:-1]
+        if "2" in decoded:
+            self.upgrade_status = int(decoded["2"])
         if "4" in decoded:
-            self.upgrade_status_code = int(decoded["4"])
+            self.upgrade_stage = int(decoded["4"])
 
     def update_from_download_status(self, decoded: dict[str, Any]) -> None:
-        """Update state from a decoded download_status message."""
-        if "1" in decoded:
-            self.download_status = int(decoded["1"])
+        """Update state from a decoded download_status message (voice/timbre pack).
+
+        Field 3 = state; field 1 is `type` (download category), not status.
+        """
+        if "3" in decoded:
+            self.download_status = int(decoded["3"])

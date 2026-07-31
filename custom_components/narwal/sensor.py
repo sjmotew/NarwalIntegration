@@ -61,6 +61,28 @@ SENSOR_DESCRIPTIONS: tuple[NarwalSensorEntityDescription, ...] = (
         else None,
     ),
     NarwalSensorEntityDescription(
+        key="dust_bag_health",
+        translation_key="dust_bag_health",
+        native_unit_of_measurement=PERCENTAGE,
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        # base_status field 35 stationBagHealthScore (float32 %); present only with a station.
+        value_fn=lambda state: round(state.dust_bag_health, 1)
+        if "35" in state.raw_base_status
+        else None,
+    ),
+    NarwalSensorEntityDescription(
+        key="detergent_remaining",
+        translation_key="detergent_remaining",
+        native_unit_of_measurement=PERCENTAGE,
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        # base_status field 41 heavyDetergentRemainPercent.
+        value_fn=lambda state: state.detergent_remaining
+        if "41" in state.raw_base_status
+        else None,
+    ),
+    NarwalSensorEntityDescription(
         key="firmware_version",
         translation_key="firmware_version",
         entity_category=EntityCategory.DIAGNOSTIC,

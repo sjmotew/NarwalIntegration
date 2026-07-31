@@ -35,6 +35,12 @@
       "firmware_version": {
         "name": "Firmware version"
       },
+      "dust_bag_health": {
+        "name": "Dust bag health"
+      },
+      "detergent_remaining": {
+        "name": "Detergent remaining"
+      },
       "charging_state": {
         "name": "Charging",
         "state": {
@@ -51,6 +57,28 @@
           "on": "Docked",
           "off": "Undocked"
         }
+      },
+      "error": {
+        "name": "Error",
+        "state": {
+          "on": "Problem",
+          "off": "OK"
+        }
+      },
+      "clean_water_tank": {
+        "name": "Clean water tank"
+      },
+      "sewage_tank": {
+        "name": "Sewage tank"
+      },
+      "dust_box": {
+        "name": "Dust box"
+      },
+      "dust_bag": {
+        "name": "Dust bag"
+      },
+      "station_bag": {
+        "name": "Station dust bag"
       }
     }
   }

@@ -8,6 +8,7 @@ can be imported and tested in isolation.
 from __future__ import annotations
 
 import sys
+from dataclasses import dataclass
 from types import ModuleType
 from unittest.mock import MagicMock
 
@@ -42,6 +43,12 @@ def install() -> None:
     # homeassistant.const
     ha_const = _mod("homeassistant.const", ha)
     ha_const.Platform = MagicMock()  # type: ignore[attr-defined]
+
+    class _EntityCategory:
+        CONFIG = "config"
+        DIAGNOSTIC = "diagnostic"
+
+    ha_const.EntityCategory = _EntityCategory  # type: ignore[attr-defined]
 
     # homeassistant.core
     ha_core = _mod("homeassistant.core", ha)
@@ -187,8 +194,27 @@ def install() -> None:
     ha_sensor.SensorStateClass = MagicMock  # type: ignore[attr-defined]
 
     ha_bs = _mod("homeassistant.components.binary_sensor", ha_comp)
-    ha_bs.BinarySensorEntity = MagicMock  # type: ignore[attr-defined]
-    ha_bs.BinarySensorDeviceClass = MagicMock  # type: ignore[attr-defined]
+
+    class _BinarySensorEntity:
+        """Stub for BinarySensorEntity base class."""
+
+        def __init_subclass__(cls, **kw: object) -> None:
+            pass
+
+    ha_bs.BinarySensorEntity = _BinarySensorEntity  # type: ignore[attr-defined]
+    ha_bs.BinarySensorDeviceClass = MagicMock()  # type: ignore[attr-defined]
+
+    @dataclass(frozen=True, kw_only=True)
+    class _BinarySensorEntityDescription:
+        """Stub for BinarySensorEntityDescription (fields our code sets)."""
+
+        key: str
+        name: str | None = None
+        translation_key: str | None = None
+        entity_category: object | None = None
+        device_class: object | None = None
+
+    ha_bs.BinarySensorEntityDescription = _BinarySensorEntityDescription  # type: ignore[attr-defined]
 
     ha_cam = _mod("homeassistant.components.camera", ha_comp)
 
