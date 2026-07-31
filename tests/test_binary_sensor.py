@@ -25,6 +25,17 @@ def test_error_gated_on_base_status_seen() -> None:
     assert fn(s) is True
 
 
+def test_error_clears_when_field_absent() -> None:
+    """A recovered robot omits field 1 entirely (empty repeated) — the fault must clear, not stick."""
+    fn = _DESCS["error"].value_fn
+    s = NarwalState()
+    s.update_from_base_status({"1": {"1": 7}})  # fault
+    assert fn(s) is True
+    s.update_from_base_status({"2": 0})  # next status drops field 1
+    assert fn(s) is False
+    assert s.error_codes == []
+
+
 def test_error_attributes_expose_code_detail() -> None:
     """The error sensor surfaces code/level/detail + a help link when faulted."""
     desc = _DESCS["error"]

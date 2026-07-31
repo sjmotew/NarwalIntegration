@@ -779,8 +779,8 @@ class NarwalState:
             self.curing_agent_consumption_percent = int(decoded["38"])
         if "36" in decoded:
             self.station_bag_health_reset_time = int(decoded["36"])
-        if "1" in decoded:
-            self._parse_error_codes(decoded["1"])
+        # Always reparse (even when field 1 is absent) — protobuf omits an empty repeated field, so a recovered robot drops it; without this the prior fault would stick forever.
+        self._parse_error_codes(decoded.get("1"))
         for attr, key in (
             ("clean_water_tank_state", "23"), ("sewage_tank_state", "24"),
             ("dust_box_state", "20"), ("dust_bag_state", "21"),
@@ -823,12 +823,9 @@ class NarwalState:
         self.has_error = bool(codes)
 
     def update_battery_from_base_status(self, decoded: dict[str, Any]) -> None:
-        """Update ONLY hardware-sampled fields from a base_status response.
+        """Update only the trustworthy hardware-sampled fields (battery + consumable/station/fault/tank state, via _update_consumables) from a base_status response.
 
-        Used when the robot is not broadcasting (deep sleep on dock).
-        In this mode, get_status() returns current battery (hardware counter)
-        but stale working_status (firmware cache from last active session).
-        We update only the fields we can trust.
+        Used when the robot is not broadcasting (deep sleep on dock): get_status() returns a current battery counter but a stale working_status (firmware cache from the last active session), so working_status is deliberately skipped.
         """
         self.raw_base_status = decoded
         if "2" in decoded:
