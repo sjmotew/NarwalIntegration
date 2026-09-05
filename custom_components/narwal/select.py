@@ -508,6 +508,8 @@ class NarwalSelect(NarwalEntity, RestoreEntity, SelectEntity):
 class RoomNarwalSettingSelect(NarwalEntity, RestoreEntity, SelectEntity):
     """Per-room clean profile select backed by coordinator room settings."""
 
+    _attr_entity_registry_enabled_default = False
+
     entity_description: RoomNarwalSelectEntityDescription
 
     def __init__(

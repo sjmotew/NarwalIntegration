@@ -56,6 +56,7 @@ def _coordinator(state: NarwalState | None = None) -> NarwalCoordinator:
 def test_room_selection_switch_bases() -> None:
     """Room selection switches expose coordinator-owned state."""
     assert issubclass(NarwalRoomSelectionSwitch, SwitchEntity)
+    assert NarwalRoomSelectionSwitch._attr_entity_registry_visible_default is False
 
 
 async def test_room_selection_switch_updates_selected_rooms() -> None:

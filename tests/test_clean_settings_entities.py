@@ -705,6 +705,10 @@ class TestLegacyNarwalSettingSelect:
 
 
 class TestRoomNarwalSettingSelect:
+    def test_disabled_by_default(self) -> None:
+        """High-cardinality room profile entities are opt-in."""
+        assert RoomNarwalSettingSelect._attr_entity_registry_enabled_default is False
+
     def test_current_option_reflects_room_settings(self) -> None:
         coord = _coordinator()
         coord.room_clean_settings[(None, 4)] = RoomCleanSettings(

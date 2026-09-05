@@ -275,6 +275,7 @@ class NarwalDockTaskSwitch(NarwalDockEntity, SwitchEntity):
 class NarwalRoomSelectionSwitch(NarwalEntity, SwitchEntity):
     """Room inclusion switch for the next native vacuum start command."""
 
+    _attr_entity_registry_visible_default = False
     _attr_icon = "mdi:floor-plan"
 
     def __init__(

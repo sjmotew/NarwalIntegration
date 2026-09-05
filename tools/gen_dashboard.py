@@ -87,9 +87,16 @@ def collect(entries: list[dict], map_id: str | None):
     for e in entries:
         uid, eid = e["unique_id"], e["entity_id"]
         if m := ROOM_KEY.search(uid):
-            maps.add(m["map"])
             if map_id is not None and m["map"] != map_id:
                 continue
+            if e.get("disabled_by") is not None:
+                if m["key"] == "selected":
+                    sys.exit(
+                        f"{eid} is disabled; re-enable it and clear any stale "
+                        "selection before generating the dashboard"
+                    )
+                continue
+            maps.add(m["map"])
             room = rooms.setdefault(int(m["room"]), {"entities": {}})
             room["entities"][m["key"]] = eid
             room.setdefault("name", room_name(e, m["key"]))
@@ -255,7 +262,10 @@ def main() -> None:
 
     rooms, globals_, dock = collect(load_registry(args.registry), args.map_id)
     if not rooms:
-        sys.exit("no complete room profile entities found in the registry")
+        sys.exit(
+            "no enabled room controls found; enable the Narwal room entities "
+            "you want on the dashboard, then run this tool again"
+        )
     missing = [k for k in PROFILE_KEYS if k not in globals_]
     if missing:
         print(f"warning: global selects missing for {missing}; Whole house panel will be partial", file=sys.stderr)
