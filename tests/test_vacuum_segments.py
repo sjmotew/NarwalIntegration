@@ -213,11 +213,26 @@ class TestVacuumActivity:
     def test_task_completed_reports_returning_status(self) -> None:
         """Task-completed transition agrees with the HA returning activity."""
         state = NarwalState(working_status=WorkingStatus.TASK_COMPLETED)
+        state.dock_presence = 2
+        state.dock_field11 = 1
+        state.dock_field47 = 2
         vac = _make_vacuum(state=state)
 
         assert vac.activity == VacuumActivity.RETURNING
         assert vac.extra_state_attributes["task_status"] == "returning"
         assert vac.extra_state_attributes["status_summary"] == "Returning"
+
+    def test_task_completed_docked_reports_docked_status(self) -> None:
+        """Retained task-completed status does not mask a seated robot."""
+        state = NarwalState()
+        state.update_from_base_status(
+            {"3": {"1": int(WorkingStatus.TASK_COMPLETED), "3": 6}}
+        )
+        vac = _make_vacuum(state=state)
+
+        assert vac.activity == VacuumActivity.DOCKED
+        assert vac.extra_state_attributes["task_status"] == "docked"
+        assert vac.extra_state_attributes["status_summary"] == "Docked"
 
     def test_assumed_clean_reports_active_during_start_handoff(self) -> None:
         """An accepted start remains visible until native task telemetry arrives."""
@@ -1443,6 +1458,31 @@ class TestAsyncStartWholeHouse:
         with pytest.raises(HomeAssistantError):
             await vac.async_start()
 
+        vac.coordinator.client.resume.assert_not_awaited()
+        vac.coordinator.client.start_rooms.assert_not_awaited()
+
+    async def test_terminal_transition_clears_future_stale_resume_context(self) -> None:
+        """A later paused standby cannot revive a completed accepted start."""
+        state = NarwalState(working_status=WorkingStatus.CLEANING)
+        state.assume_robot_clean()
+        state.update_from_base_status(
+            {"3": {"1": int(WorkingStatus.TASK_COMPLETED)}}
+        )
+        state.update_from_base_status(
+            {"3": {"1": int(WorkingStatus.DOCKED), "10": 1}, "11": 2}
+        )
+        state.update_from_base_status(
+            {"3": {"1": int(WorkingStatus.STANDBY), "2": 1, "10": 1}, "11": 2}
+        )
+        vac = _make_vacuum(state=state)
+        vac.coordinator.client.robot_awake = True
+        vac.coordinator.client.resume = AsyncMock()
+        vac.coordinator.client.start_rooms = AsyncMock()
+
+        with pytest.raises(HomeAssistantError):
+            await vac.async_start()
+
+        assert not state.has_assumed_robot_clean
         vac.coordinator.client.resume.assert_not_awaited()
         vac.coordinator.client.start_rooms.assert_not_awaited()
 

@@ -870,15 +870,48 @@ def test_paused_standby_task_context_blocks_new_actions() -> None:
     assert not can_start_cleaning(state)
 
 
-def test_task_completed_remains_busy_until_terminal_dock_state() -> None:
-    """TASK_COMPLETED is the return leg, not an editable idle state."""
+def test_task_completed_off_dock_remains_busy() -> None:
+    """TASK_COMPLETED remains the return leg while the robot is off-dock."""
     state = NarwalState(working_status=WorkingStatus.TASK_COMPLETED)
-    state.dock_presence = 6
+    state.dock_presence = 2
+    state.dock_field11 = 1
+    state.dock_field47 = 2
 
-    assert state.is_docked
+    assert not state.is_docked
     assert is_clean_session_context(state)
     assert is_narwal_task_busy(state)
     assert not can_edit_pending_clean_settings(state)
+    assert not can_start_cleaning(state)
+
+
+def test_task_completed_docked_releases_robot_controls() -> None:
+    """A seated robot is idle even if its dock retains TASK_COMPLETED."""
+    state = NarwalState()
+    state.update_from_base_status(
+        {"3": {"1": int(WorkingStatus.TASK_COMPLETED), "3": 6}}
+    )
+
+    assert state.is_docked
+    assert not is_clean_session_context(state)
+    assert not is_narwal_task_busy(state)
+    assert can_edit_pending_clean_settings(state)
+    assert can_start_cleaning(state)
+
+
+def test_task_completed_does_not_reuse_retained_dock_fields() -> None:
+    """A status-only completion packet keeps the return leg busy."""
+    state = NarwalState()
+    state.update_from_base_status(
+        {"3": {"1": int(WorkingStatus.DOCKED), "3": 6}, "11": 2}
+    )
+    state.update_from_base_status(
+        {"3": {"1": int(WorkingStatus.TASK_COMPLETED)}}
+    )
+
+    assert state.is_docked
+    assert not state.has_current_dock_presence_signal
+    assert is_clean_session_context(state)
+    assert is_narwal_task_busy(state)
     assert not can_start_cleaning(state)
 
 

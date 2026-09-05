@@ -112,7 +112,10 @@ def _task_status(state: Any) -> str:
         return "paused"
     if state.working_status == WorkingStatus.REMAPPING:
         return "remapping"
-    if state.is_returning or state.working_status == WorkingStatus.TASK_COMPLETED:
+    if state.is_returning or (
+        state.working_status == WorkingStatus.TASK_COMPLETED
+        and not state.has_current_dock_presence_signal
+    ):
         return "returning"
     if state.is_cleaning or state.has_assumed_robot_clean:
         return "cleaning"

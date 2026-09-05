@@ -128,10 +128,22 @@ def test_retained_paused_context_hides_dock_start_controls() -> None:
     assert not can_start_dock_task(state, DOCK_TASK_EMPTY_DUSTBIN)
 
 
-def test_task_completed_state_hides_dock_start_controls() -> None:
-    """TASK_COMPLETED is still return-to-dock context, not an idle station."""
-    state = _docked_state()
-    state.working_status = WorkingStatus.TASK_COMPLETED
+def test_task_completed_docked_state_exposes_dock_start_controls() -> None:
+    """A seated robot releases dock controls despite retained task status."""
+    state = NarwalState()
+    state.update_from_base_status(
+        {"3": {"1": int(WorkingStatus.TASK_COMPLETED), "3": 6}, "11": 2}
+    )
+
+    assert can_start_dock_task(state, DOCK_TASK_EMPTY_DUSTBIN)
+
+
+def test_task_completed_off_dock_state_hides_dock_start_controls() -> None:
+    """TASK_COMPLETED remains return-to-dock context until physically seated."""
+    state = NarwalState(working_status=WorkingStatus.TASK_COMPLETED)
+    state.dock_presence = 2
+    state.dock_field11 = 1
+    state.dock_field47 = 2
 
     assert not can_start_dock_task(state, DOCK_TASK_EMPTY_DUSTBIN)
 
