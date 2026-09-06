@@ -742,6 +742,159 @@ class TestNarwalState:
         assert not state.has_paused_clean_task_context
 
     @pytest.mark.parametrize(
+        "status", (WorkingStatus.TASK_COMPLETED, WorkingStatus.ERROR)
+    )
+    def test_explicit_terminal_status_rejects_progressing_metrics(
+        self, status: WorkingStatus
+    ) -> None:
+        """Metric progression cannot override an explicit terminal robot state."""
+        state = NarwalState()
+        state.update_from_base_status({"3": {"1": int(status)}})
+
+        state.update_from_working_status({"1": 25, "3": 120})
+        state.update_from_working_status({"1": 26, "3": 121})
+
+        assert not state.has_recent_active_working_status
+        assert not state.is_cleaning
+
+    def test_blocking_station_task_rejects_external_clean_candidate(self) -> None:
+        """Empty/wash telemetry cannot retain or confirm stale clean metrics."""
+        state = NarwalState()
+        state.update_from_base_status(
+            {"3": {"1": int(WorkingStatus.DOCKED), "10": 1}, "11": 2}
+        )
+        state.station_activity = 1
+
+        state.update_from_working_status({"1": 25, "3": 120})
+        state.update_from_working_status({"1": 26, "3": 121})
+
+        assert state.pending_active_working_status is None
+        assert state.task_progress_percent is None
+        assert state.task_elapsed_time == 0
+        assert not state.has_recent_active_working_status
+        assert not state.is_cleaning
+
+    def test_unmapped_station_task_rejects_external_clean_candidate(self) -> None:
+        """Unknown dock work cannot be replaced by inferred robot cleaning."""
+        state = NarwalState()
+        state.update_from_base_status(
+            {"3": {"1": int(WorkingStatus.DOCKED), "10": 1}, "11": 2}
+        )
+        state.dock_activity = 99
+
+        state.update_from_working_status({"3": 120})
+        state.update_from_working_status({"3": 121})
+
+        assert state.pending_active_working_status is None
+        assert state.task_elapsed_time == 0
+        assert not state.has_recent_active_working_status
+        assert not state.is_cleaning
+
+    def test_device_error_rejects_external_clean_candidate(self) -> None:
+        """Delayed clean metrics cannot override an active device fault."""
+        state = NarwalState()
+        state.update_from_base_status(
+            {
+                "1": {"1": 2105, "2": 3, "3": b"wheel stuck"},
+                "3": {"1": int(WorkingStatus.DOCKED), "10": 1},
+                "11": 2,
+            }
+        )
+
+        state.update_from_working_status({"1": 25, "3": 120})
+        state.update_from_working_status({"1": 26, "3": 121})
+
+        assert state.has_error
+        assert state.pending_active_working_status is None
+        assert state.task_progress_percent is None
+        assert state.task_elapsed_time == 0
+        assert not state.has_recent_active_working_status
+        assert not state.is_cleaning
+
+        state.update_from_base_status(
+            {"1": {}, "3": {"1": int(WorkingStatus.DOCKED), "10": 1}, "11": 2}
+        )
+
+        assert not state.has_error
+        assert state.working_status == WorkingStatus.DOCKED
+        assert not state.is_cleaning
+
+    def test_device_error_discards_preexisting_external_clean_candidate(self) -> None:
+        """A candidate from before a fault cannot confirm after recovery."""
+        state = NarwalState()
+        state.update_from_base_status(
+            {"3": {"1": int(WorkingStatus.DOCKED), "10": 1}, "11": 2}
+        )
+        state.update_from_working_status({"3": 120})
+        assert state.pending_active_working_status is not None
+
+        state.update_from_base_status({"1": {"1": 2105}})
+        assert state.pending_active_working_status is None
+
+        state.update_from_base_status(
+            {"1": {}, "3": {"1": int(WorkingStatus.DOCKED), "10": 1}, "11": 2}
+        )
+        state.update_from_working_status({"3": 122})
+
+        assert not state.has_error
+        assert state.pending_active_working_status is not None
+        assert not state.has_recent_active_working_status
+        assert not state.is_cleaning
+
+    def test_device_error_prevents_clean_metrics_refresh(self) -> None:
+        """Task counters cannot keep active-clean evidence alive through a fault."""
+        state = NarwalState()
+        with patch("narwal_client.models.time.monotonic", return_value=100.0):
+            state.update_from_base_status(
+                {"3": {"1": int(WorkingStatus.CLEANING)}, "11": 1, "47": 2}
+            )
+            state.update_from_working_status({"1": 25, "3": 120})
+        with patch("narwal_client.models.time.monotonic", return_value=101.0):
+            state.update_from_base_status(
+                {"1": {"1": 2105, "2": 3, "3": b"wheel stuck"}}
+            )
+        with patch("narwal_client.models.time.monotonic", return_value=120.0):
+            state.update_from_working_status({"1": 26, "3": 121})
+
+            assert state.has_error
+            assert not state.has_recent_active_working_status
+            assert not state.is_cleaning
+
+    @pytest.mark.parametrize(
+        ("first", "second", "third"),
+        (
+            ({"1": 25}, {"1": 26}, {"1": 27}),
+            ({"4": 600}, {"4": 599}, {"4": 598}),
+        ),
+    )
+    def test_directional_partial_metrics_confirm_external_clean(
+        self,
+        first: dict[str, int],
+        second: dict[str, int],
+        third: dict[str, int],
+    ) -> None:
+        """Progress-only and remaining-only streams can confirm robot work."""
+        state = NarwalState()
+        with patch("narwal_client.models.time.monotonic", return_value=100.0):
+            state.update_from_base_status(
+                {"3": {"1": int(WorkingStatus.DOCKED), "10": 1}, "11": 2}
+            )
+
+        with patch("narwal_client.models.time.monotonic", return_value=101.0):
+            state.update_from_working_status(first)
+            assert not state.is_cleaning
+        with patch("narwal_client.models.time.monotonic", return_value=102.0):
+            state.update_from_working_status(second)
+            assert state.is_cleaning
+        with patch("narwal_client.models.time.monotonic", return_value=116.0):
+            state.update_from_working_status(third)
+            assert state.is_cleaning
+
+        with patch("narwal_client.models.time.monotonic", return_value=130.0):
+            assert state.has_recent_active_working_status
+            assert state.is_cleaning
+
+    @pytest.mark.parametrize(
         "dock_fields",
         ({"11": 2}, {"11": 3}, {"47": 1}, {"47": 3}),
     )

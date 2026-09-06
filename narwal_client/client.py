@@ -121,7 +121,10 @@ def _clean_session_context(state: NarwalState) -> bool:
         state.is_cleaning
         or state.has_assumed_robot_clean
         or state.working_status in ACTIVE_CLEANING_STATUSES
-        or state.working_status == WorkingStatus.TASK_COMPLETED
+        or (
+            state.working_status == WorkingStatus.TASK_COMPLETED
+            and not state.has_current_dock_presence_signal
+        )
         or state.has_recent_active_working_status
         or state.has_paused_clean_task_context
         or state.is_returning
@@ -186,6 +189,43 @@ def _base_status_working_status(decoded: dict[str, Any] | object) -> WorkingStat
         return WorkingStatus(int(field3["1"]))
     except (TypeError, ValueError):
         return None
+
+
+def _base_status_dock_evidence(decoded: dict[str, Any] | object) -> bool | None:
+    """Return explicit current dock evidence, or None when the payload is silent."""
+    if not isinstance(decoded, dict):
+        return None
+    field3 = decoded.get("3")
+    if isinstance(field3, list):
+        field3 = field3[0] if field3 else None
+    if not isinstance(field3, dict):
+        field3 = {}
+    def optional_int(value: Any) -> int | None:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    presence = optional_int(field3.get("3"))
+    sub_state = optional_int(field3.get("10"))
+    field11 = optional_int(decoded.get("11"))
+    field47 = optional_int(decoded.get("47"))
+    reports_docked = (
+        presence in (1, 6)
+        or sub_state == 1
+        or (field11 is not None and field11 >= 2)
+        or field47 in (1, 3)
+    )
+    reports_off_dock = (
+        presence == 2
+        or sub_state == 2
+        or (field11 == 1 and field47 == 2)
+    )
+    if reports_off_dock:
+        return False
+    if reports_docked:
+        return True
+    return None
 
 
 def _base_status_payload(response: CommandResponse) -> dict[str, Any] | None:
@@ -343,6 +383,18 @@ class NarwalClient:
             self.state.has_recent_active_working_status
             and status in _STALE_DOCK_BASE_STATUSES
         ):
+            terminal_dock_status = status in {
+                WorkingStatus.DOCKED,
+                WorkingStatus.CHARGED,
+                WorkingStatus.DOCKED_V2,
+            }
+            dock_evidence = _base_status_dock_evidence(decoded)
+            if dock_evidence is True or (
+                dock_evidence is None
+                and terminal_dock_status
+                and not self.state.has_explicit_off_dock_signal
+            ):
+                self.state.terminal_working_status_generation += 1
             self.state.update_battery_from_base_status(decoded)
             _LOGGER.debug(
                 "Ignoring stale base_status=%s while working_status task metrics are fresh",
@@ -1580,7 +1632,25 @@ class NarwalClient:
 
     async def resume(self, timeout: float = COMMAND_RESPONSE_TIMEOUT) -> CommandResponse:
         """Resume paused task."""
-        return await self.send_command(TOPIC_CMD_RESUME, timeout=timeout)
+        had_paused_clean_context = self.state.is_paused and (
+            self.state.working_status in ACTIVE_CLEANING_STATUSES
+            or self.state.has_paused_clean_task_context
+        )
+        terminal_generation = self.state.terminal_working_status_generation
+        response = await self.send_command(TOPIC_CMD_RESUME, timeout=timeout)
+        terminal_during_request = (
+            self.state.terminal_working_status_generation != terminal_generation
+            or self.state.working_status
+            in {WorkingStatus.TASK_COMPLETED, WorkingStatus.ERROR}
+            or self.state.has_error
+        )
+        if (
+            _accepted_response(response)
+            and had_paused_clean_context
+            and not terminal_during_request
+        ):
+            self.state.mark_robot_resumed()
+        return response
 
     async def stop(self, timeout: float = 15.0) -> CommandResponse:
         """Force-stop current task.

@@ -184,8 +184,11 @@ def is_clean_session_context(state: NarwalState | None) -> bool:
         return False
     return (
         state.working_status in ACTIVE_CLEANING_STATUSES
-        or state.working_status
-        in {WorkingStatus.REMAPPING, WorkingStatus.TASK_COMPLETED}
+        or state.working_status == WorkingStatus.REMAPPING
+        or (
+            state.working_status == WorkingStatus.TASK_COMPLETED
+            and not state.has_current_dock_presence_signal
+        )
         or _state_attr_is_true(state, "has_assumed_robot_clean")
         or _state_attr_is_true(state, "has_recent_active_working_status")
         or _state_attr_is_true(state, "has_paused_clean_task_context")
@@ -222,8 +225,11 @@ def is_narwal_task_busy(state: NarwalState | None) -> bool:
         return False
     return (
         state.working_status in ACTIVE_CLEANING_STATUSES
-        or state.working_status
-        in {WorkingStatus.REMAPPING, WorkingStatus.TASK_COMPLETED}
+        or state.working_status == WorkingStatus.REMAPPING
+        or (
+            state.working_status == WorkingStatus.TASK_COMPLETED
+            and not state.has_current_dock_presence_signal
+        )
         or _state_attr_is_true(state, "has_assumed_robot_clean")
         or _state_attr_is_true(state, "has_recent_active_working_status")
         or _state_attr_is_true(state, "has_paused_clean_task_context")

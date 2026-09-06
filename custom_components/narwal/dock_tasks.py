@@ -87,7 +87,10 @@ def is_clean_session_context(state: NarwalState | None) -> bool:
         state.is_cleaning
         or state.has_assumed_robot_clean
         or state.working_status in ACTIVE_CLEANING_STATUSES
-        or state.working_status == WorkingStatus.TASK_COMPLETED
+        or (
+            state.working_status == WorkingStatus.TASK_COMPLETED
+            and not state.has_current_dock_presence_signal
+        )
         or state.has_recent_active_working_status
         or state.has_paused_clean_task_context
         or state.is_returning

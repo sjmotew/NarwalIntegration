@@ -21,6 +21,7 @@ from narwal_client.const import (
     TOPIC_CMD_FORCE_END,
     TOPIC_CMD_GET_BASE_STATUS,
     TOPIC_CMD_GET_MAP,
+    TOPIC_CMD_RESUME,
     TOPIC_CMD_SET_FAN_LEVEL,
     TOPIC_CMD_WASH_MOP,
     AmbientLightCtrlType,
@@ -236,6 +237,219 @@ class TestNarwalClientInit:
         client = NarwalClient("10.0.0.1")
         with pytest.raises(NarwalConnectionError):
             await client.start()
+
+    @pytest.mark.asyncio
+    async def test_accepted_resume_recovers_partial_metric_stream(self) -> None:
+        """Accepted resume keeps partial progress active beyond the old TTL."""
+        client = NarwalClient("10.0.0.1")
+        client.state.working_status = WorkingStatus.STANDBY
+        client.state.is_paused = True
+        client.state.task_progress_percent = 25
+        client.state.last_active_working_status_time = 100.0
+
+        with (
+            patch("narwal_client.models.time.monotonic", return_value=200.0),
+            patch.object(
+                client,
+                "send_command",
+                new_callable=AsyncMock,
+                return_value=CommandResponse(result_code=CommandResult.SUCCESS),
+            ) as mock_send,
+        ):
+            response = await client.resume()
+
+        assert response.accepted
+        mock_send.assert_awaited_once_with(TOPIC_CMD_RESUME, timeout=5.0)
+        assert not client.state.is_paused
+
+        with patch("narwal_client.models.time.monotonic", return_value=201.0):
+            client.state.update_from_working_status({"1": 26})
+        with patch("narwal_client.models.time.monotonic", return_value=215.0):
+            client.state.update_from_working_status({"1": 27})
+        with patch("narwal_client.models.time.monotonic", return_value=229.0):
+            assert client.state.has_recent_active_working_status
+            assert client.state.is_cleaning
+
+    @pytest.mark.asyncio
+    async def test_rejected_resume_does_not_change_paused_state(self) -> None:
+        """Only an accepted robot response can establish resume activity."""
+        client = NarwalClient("10.0.0.1")
+        client.state.is_paused = True
+
+        with patch.object(
+            client,
+            "send_command",
+            new_callable=AsyncMock,
+            return_value=CommandResponse(result_code=CommandResult.NOT_APPLICABLE),
+        ):
+            response = await client.resume()
+
+        assert not response.accepted
+        assert client.state.is_paused
+        assert not client.state.has_recent_active_working_status
+
+    @pytest.mark.asyncio
+    async def test_accepted_resume_without_paused_clean_context_is_not_active(
+        self,
+    ) -> None:
+        """An accepted idle no-op must not manufacture active-clean state."""
+        client = NarwalClient("10.0.0.1")
+        client.state.working_status = WorkingStatus.DOCKED
+
+        with patch.object(
+            client,
+            "send_command",
+            new_callable=AsyncMock,
+            return_value=CommandResponse(result_code=CommandResult.SUCCESS),
+        ):
+            response = await client.resume()
+
+        assert response.accepted
+        assert client.state.is_docked
+        assert not client.state.has_recent_active_working_status
+        assert not client.state.is_cleaning
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "status", (WorkingStatus.TASK_COMPLETED, WorkingStatus.ERROR)
+    )
+    async def test_resume_response_does_not_overwrite_intervening_terminal_status(
+        self, status: WorkingStatus
+    ) -> None:
+        """A terminal packet received in flight outranks resume acceptance."""
+        client = NarwalClient("10.0.0.1")
+        client.state.working_status = WorkingStatus.STANDBY
+        client.state.is_paused = True
+        client.state.task_progress_percent = 25
+
+        async def terminal_then_accept(*args, **kwargs) -> CommandResponse:
+            client.state.update_from_base_status({"3": {"1": int(status)}})
+            return CommandResponse(result_code=CommandResult.SUCCESS)
+
+        with (
+            patch("narwal_client.models.time.monotonic", return_value=200.0),
+            patch.object(client, "send_command", side_effect=terminal_then_accept),
+        ):
+            response = await client.resume()
+
+        assert response.accepted
+        assert client.state.working_status == status
+        assert not client.state.has_recent_active_working_status
+        assert not client.state.is_cleaning
+
+    @pytest.mark.asyncio
+    async def test_resume_response_does_not_overwrite_new_pause_after_terminal(
+        self,
+    ) -> None:
+        """A terminal event remains visible after later telemetry resets its timestamp."""
+        client = NarwalClient("10.0.0.1")
+        client.state.working_status = WorkingStatus.CLEANING
+        client.state.is_paused = True
+        client.state.task_progress_percent = 25
+
+        async def terminal_then_paused(*args, **kwargs) -> CommandResponse:
+            client.state.update_from_base_status(
+                {"3": {"1": int(WorkingStatus.TASK_COMPLETED)}}
+            )
+            client.state.update_from_base_status(
+                {
+                    "3": {"1": int(WorkingStatus.CLEANING), "2": 1, "10": 2},
+                    "11": 1,
+                    "47": 2,
+                }
+            )
+            return CommandResponse(result_code=CommandResult.SUCCESS)
+
+        with patch.object(client, "send_command", side_effect=terminal_then_paused):
+            response = await client.resume()
+
+        assert response.accepted
+        assert client.state.is_paused
+        assert not client.state.has_recent_active_working_status
+
+    @pytest.mark.asyncio
+    async def test_resume_observes_suppressed_docked_broadcast(self) -> None:
+        """A dock event blocks resume inference even when its stale state is ignored."""
+        client = NarwalClient("10.0.0.1")
+        client.state.working_status = WorkingStatus.CLEANING
+        client.state.is_paused = True
+        client.state.task_progress_percent = 25
+        client.state.last_active_working_status_time = time.monotonic()
+
+        async def docked_then_accept(*args, **kwargs) -> CommandResponse:
+            client._update_from_base_status_broadcast(
+                {
+                    "3": {"1": int(WorkingStatus.DOCKED), "10": 1},
+                    "11": 2,
+                    "47": 3,
+                }
+            )
+            return CommandResponse(result_code=CommandResult.SUCCESS)
+
+        with patch.object(client, "send_command", side_effect=docked_then_accept):
+            response = await client.resume()
+
+        assert response.accepted
+        assert client.state.working_status == WorkingStatus.CLEANING
+        assert client.state.is_paused
+
+    @pytest.mark.asyncio
+    async def test_resume_ignores_suppressed_off_dock_standby_label(self) -> None:
+        """An off-dock standby label is not terminal proof for resume ordering."""
+        client = NarwalClient("10.0.0.1")
+        client.state.working_status = WorkingStatus.CLEANING
+        client.state.is_paused = True
+        client.state.task_progress_percent = 25
+        client.state.last_active_working_status_time = time.monotonic()
+        client.state.dock_sub_state = 2
+        client.state.dock_field11 = 1
+        client.state.dock_field47 = 2
+
+        async def standby_then_accept(*args, **kwargs) -> CommandResponse:
+            client._update_from_base_status_broadcast(
+                {
+                    "3": {"1": int(WorkingStatus.STANDBY), "10": 2},
+                    "11": 1,
+                    "47": 2,
+                }
+            )
+            return CommandResponse(result_code=CommandResult.SUCCESS)
+
+        with patch.object(client, "send_command", side_effect=standby_then_accept):
+            response = await client.resume()
+
+        assert response.accepted
+        assert not client.state.is_paused
+        assert client.state.has_recent_active_working_status
+
+    @pytest.mark.asyncio
+    async def test_resume_prefers_current_off_dock_over_retained_dock_state(self) -> None:
+        """Current off-dock fields outrank stale retained dock indicators."""
+        client = NarwalClient("10.0.0.1")
+        client.state.working_status = WorkingStatus.CLEANING
+        client.state.is_paused = True
+        client.state.task_progress_percent = 25
+        client.state.last_active_working_status_time = time.monotonic()
+        client.state.dock_sub_state = 1
+        client.state.dock_field11 = 2
+        client.state.dock_field47 = 3
+
+        async def stale_label_then_accept(*args, **kwargs) -> CommandResponse:
+            client._update_from_base_status_broadcast(
+                {
+                    "3": {"1": int(WorkingStatus.DOCKED), "10": 2},
+                    "11": 1,
+                    "47": 2,
+                }
+            )
+            return CommandResponse(result_code=CommandResult.SUCCESS)
+
+        with patch.object(client, "send_command", side_effect=stale_label_then_accept):
+            response = await client.resume()
+
+        assert response.accepted
+        assert not client.state.is_paused
+        assert client.state.has_recent_active_working_status
 
     @pytest.mark.asyncio
     async def test_send_raw_without_connection_raises(self) -> None:
@@ -567,6 +781,40 @@ class TestWholeHouseStart:
         mock_send.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_start_rooms_allows_docked_task_completed(self) -> None:
+        """Dock presence makes a retained TASK_COMPLETED label idle."""
+        client = self._connected_client()
+        client.state.map_data = MapData(map_id=1, rooms=[RoomInfo(room_id=2)])
+        client.state.update_from_base_status(
+            {"3": {"1": int(WorkingStatus.TASK_COMPLETED), "3": 6}, "11": 2}
+        )
+        success = CommandResponse(result_code=CommandResult.SUCCESS)
+
+        with patch.object(client, "send_command", new_callable=AsyncMock) as mock_send:
+            mock_send.return_value = success
+            result = await client.start_rooms([2])
+
+        assert result is success
+        mock_send.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_start_rooms_rejects_task_completed_without_current_dock_proof(
+        self,
+    ) -> None:
+        """A status-only completion packet cannot reuse retained dock fields."""
+        client = self._connected_client()
+        client.state.map_data = MapData(map_id=1, rooms=[RoomInfo(room_id=2)])
+        client.state.update_from_base_status(
+            {"3": {"1": int(WorkingStatus.TASK_COMPLETED)}}
+        )
+
+        with patch.object(client, "send_command", new_callable=AsyncMock) as mock_send:
+            result = await client.start_rooms([2])
+
+        assert result.result_code == CommandResult.NOT_APPLICABLE
+        mock_send.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_start_rooms_reserves_private_guard_on_acceptance(self) -> None:
         """Accepted direct room starts block follow-up starts until telemetry arrives."""
         client = self._connected_client()
@@ -778,6 +1026,27 @@ class TestDockTaskCommands:
         mock_status.assert_awaited_once_with(full_update=True)
         mock_send.assert_awaited_once_with(TOPIC_CMD_DUST_GATHERING)
         assert client.state.assumed_active_dock_task == DOCK_TASK_EMPTY_DUSTBIN
+
+    @pytest.mark.asyncio
+    async def test_empty_dustbin_allows_docked_task_completed(self) -> None:
+        """Dock presence makes a retained TASK_COMPLETED label idle."""
+        client = self._docked_client()
+        client.state.update_from_base_status(
+            {"3": {"1": int(WorkingStatus.TASK_COMPLETED), "3": 6}, "11": 2}
+        )
+        success = CommandResponse(result_code=CommandResult.SUCCESS)
+
+        with patch.object(
+            client, "get_status", new_callable=AsyncMock
+        ) as mock_status, patch.object(
+            client, "send_command", new_callable=AsyncMock
+        ) as mock_send:
+            mock_status.return_value = self._docked_status_response()
+            mock_send.return_value = success
+            result = await client.empty_dustbin()
+
+        assert result is success
+        mock_send.assert_awaited_once_with(TOPIC_CMD_DUST_GATHERING)
 
     @pytest.mark.asyncio
     async def test_wash_mop_command_assumes_task_on_success(self) -> None:
@@ -1689,9 +1958,12 @@ class TestDockTaskCommands:
             client.state.update_from_base_status(
                 {"3": {"1": int(WorkingStatus.DOCKED)}, "11": 2, "47": 3}
             )
-        with patch("narwal_client.models.time.monotonic", return_value=120.0):
-            client.state.update_from_working_status({"1": 25, "3": 120, "6": 4})
-        with patch("narwal_client.models.time.monotonic", return_value=121.0):
+        with patch("narwal_client.models.time.monotonic", return_value=101.0):
+            client.state.update_from_working_status(
+                {"1": 25, "2": 12.5, "3": 120, "4": 600, "6": 4}
+            )
+            assert not client.state.is_cleaning
+        with patch("narwal_client.models.time.monotonic", return_value=102.0):
             client._update_from_base_status_broadcast(
                 {
                     "3": {"1": int(WorkingStatus.DOCKED), "10": 1},
@@ -1699,15 +1971,201 @@ class TestDockTaskCommands:
                     "47": 3,
                 }
             )
-
             assert client.state.working_status == WorkingStatus.DOCKED
+            assert not client.state.is_cleaning
+        with patch("narwal_client.models.time.monotonic", return_value=102.5):
+            client.state.update_from_working_status({"3": 120})
+            assert not client.state.is_cleaning
+        with patch("narwal_client.models.time.monotonic", return_value=103.0):
+            client.state.update_from_working_status({"3": 121})
             assert client.state.is_cleaning
-        with patch("narwal_client.models.time.monotonic", return_value=122.0):
-            client.state.update_from_working_status({"1": 26, "3": 121, "6": 4})
+        with patch("narwal_client.models.time.monotonic", return_value=104.0):
+            client._update_from_base_status_broadcast(
+                {
+                    "3": {"1": int(WorkingStatus.DOCKED), "10": 1},
+                    "11": 2,
+                    "47": 3,
+                }
+            )
             assert client.state.is_cleaning
-        assert client.state.task_progress_percent == 26
+        assert client.state.task_progress_percent == 25
+        assert client.state.cleaning_area == 12.5
         assert client.state.task_elapsed_time == 121
+        assert client.state.task_remaining_time == 600
         assert client.state.current_room_id == 4
+
+    def test_expired_external_start_candidate_requires_new_progression(self) -> None:
+        """An old candidate cannot confirm a later metric packet by itself."""
+        client = NarwalClient("127.0.0.1")
+        docked = {
+            "3": {"1": int(WorkingStatus.DOCKED), "10": 1},
+            "11": 2,
+            "47": 3,
+        }
+        with patch("narwal_client.models.time.monotonic", return_value=100.0):
+            client.state.update_from_base_status(docked)
+        with patch("narwal_client.models.time.monotonic", return_value=101.0):
+            client.state.update_from_working_status({"1": 25, "3": 120})
+        with patch("narwal_client.models.time.monotonic", return_value=500.0):
+            client._update_from_base_status_broadcast(docked)
+        with patch("narwal_client.models.time.monotonic", return_value=501.0):
+            client.state.update_from_working_status({"1": 26, "3": 121})
+            assert not client.state.is_cleaning
+        with patch("narwal_client.models.time.monotonic", return_value=502.0):
+            client.state.update_from_working_status({"1": 27, "3": 122})
+            assert client.state.is_cleaning
+
+    def test_fresh_candidate_outlives_older_terminal_evidence(self) -> None:
+        """A fresh candidate can confirm after the older dock evidence expires."""
+        client = NarwalClient("127.0.0.1")
+        docked = {
+            "3": {"1": int(WorkingStatus.DOCKED), "10": 1},
+            "11": 2,
+            "47": 3,
+        }
+        with patch("narwal_client.models.time.monotonic", return_value=100.0):
+            client.state.update_from_base_status(docked)
+        with patch("narwal_client.models.time.monotonic", return_value=114.0):
+            client.state.update_from_working_status({"1": 25})
+            assert not client.state.is_cleaning
+        with patch("narwal_client.models.time.monotonic", return_value=116.0):
+            client.state.update_from_working_status({"1": 26})
+            assert client.state.is_cleaning
+
+    def test_omitted_nested_room_name_does_not_confirm_external_start(self) -> None:
+        """A partial nested room packet must contain real metric progression."""
+        client = NarwalClient("127.0.0.1")
+        docked = {
+            "3": {"1": int(WorkingStatus.DOCKED), "10": 1},
+            "11": 2,
+            "47": 3,
+        }
+        with patch("narwal_client.models.time.monotonic", return_value=100.0):
+            client.state.update_from_base_status(docked)
+        with patch("narwal_client.models.time.monotonic", return_value=101.0):
+            client.state.update_from_working_status(
+                {"3": 120, "6": {"1": 4, "3": "Kitchen"}}
+            )
+        with patch("narwal_client.models.time.monotonic", return_value=102.0):
+            client._update_from_base_status_broadcast(docked)
+        with patch("narwal_client.models.time.monotonic", return_value=103.0):
+            client.state.update_from_working_status({"3": 120, "6": {"1": 4}})
+            assert not client.state.is_cleaning
+        with patch("narwal_client.models.time.monotonic", return_value=104.0):
+            client.state.update_from_working_status({"3": 121, "6": {"1": 4}})
+            assert client.state.is_cleaning
+
+    def test_regressed_metrics_do_not_confirm_external_start(self) -> None:
+        """Out-of-order counters cannot revive a terminal clean session."""
+        client = NarwalClient("127.0.0.1")
+        with patch("narwal_client.models.time.monotonic", return_value=100.0):
+            client.state.update_from_base_status(
+                {"3": {"1": int(WorkingStatus.DOCKED)}, "11": 2, "47": 3}
+            )
+        with patch("narwal_client.models.time.monotonic", return_value=101.0):
+            client.state.update_from_working_status({"1": 75, "3": 900})
+        with patch("narwal_client.models.time.monotonic", return_value=102.0):
+            client.state.update_from_working_status({"1": 74, "3": 899})
+            assert not client.state.is_cleaning
+        with patch("narwal_client.models.time.monotonic", return_value=103.0):
+            client.state.update_from_working_status({"1": 75, "3": 900})
+            assert not client.state.is_cleaning
+        with patch("narwal_client.models.time.monotonic", return_value=104.0):
+            client.state.update_from_working_status({"1": 76, "3": 901})
+            assert client.state.is_cleaning
+
+    def test_mixed_direction_metrics_do_not_confirm_external_start(self) -> None:
+        """One advancing counter cannot outweigh another counter regressing."""
+        client = NarwalClient("127.0.0.1")
+        with patch("narwal_client.models.time.monotonic", return_value=100.0):
+            client.state.update_from_base_status(
+                {"3": {"1": int(WorkingStatus.DOCKED)}, "11": 2, "47": 3}
+            )
+        with patch("narwal_client.models.time.monotonic", return_value=101.0):
+            client.state.update_from_working_status({"1": 75, "3": 900})
+        with patch("narwal_client.models.time.monotonic", return_value=102.0):
+            client.state.update_from_working_status({"1": 74, "3": 901})
+
+            assert not client.state.is_cleaning
+
+    def test_candidate_tracks_room_transition_before_confirmation(self) -> None:
+        """A later room report replaces stale candidate room metadata."""
+        client = NarwalClient("127.0.0.1")
+        with patch("narwal_client.models.time.monotonic", return_value=100.0):
+            client.state.update_from_base_status(
+                {"3": {"1": int(WorkingStatus.DOCKED)}, "11": 2, "47": 3}
+            )
+        with patch("narwal_client.models.time.monotonic", return_value=101.0):
+            client.state.update_from_working_status(
+                {"3": 120, "6": {"1": 4, "3": "Kitchen"}}
+            )
+        with patch("narwal_client.models.time.monotonic", return_value=102.0):
+            client.state.update_from_working_status({"3": 120, "6": {"1": 5}})
+        with patch("narwal_client.models.time.monotonic", return_value=103.0):
+            client.state.update_from_working_status({"3": 121})
+
+            assert client.state.is_cleaning
+            assert client.state.current_room_id == 5
+            assert client.state.current_room_aux_name == ""
+
+    def test_room_only_packet_preserves_external_start_candidate(self) -> None:
+        """Metadata-only telemetry cannot erase a fresh metric baseline."""
+        client = NarwalClient("127.0.0.1")
+        with patch("narwal_client.models.time.monotonic", return_value=100.0):
+            client.state.update_from_base_status(
+                {"3": {"1": int(WorkingStatus.DOCKED)}, "11": 2, "47": 3}
+            )
+        with patch("narwal_client.models.time.monotonic", return_value=101.0):
+            client.state.update_from_working_status({"3": 120})
+        with patch("narwal_client.models.time.monotonic", return_value=102.0):
+            client.state.update_from_working_status({"6": {"1": 5, "3": "Lounge"}})
+            assert client.state.pending_active_working_status is not None
+        with patch("narwal_client.models.time.monotonic", return_value=103.0):
+            client.state.update_from_working_status({"3": 121})
+
+            assert client.state.is_cleaning
+            assert client.state.current_room_id == 5
+            assert client.state.current_room_aux_name == "Lounge"
+
+    def test_confirming_new_room_does_not_restore_prior_room_name(self) -> None:
+        """A partial room transition cannot inherit the candidate room name."""
+        client = NarwalClient("127.0.0.1")
+        with patch("narwal_client.models.time.monotonic", return_value=100.0):
+            client.state.update_from_base_status(
+                {"3": {"1": int(WorkingStatus.DOCKED)}, "11": 2, "47": 3}
+            )
+        with patch("narwal_client.models.time.monotonic", return_value=101.0):
+            client.state.update_from_working_status(
+                {"3": 120, "6": {"1": 4, "3": "Kitchen"}}
+            )
+        with patch("narwal_client.models.time.monotonic", return_value=102.0):
+            client.state.update_from_working_status({"3": 121, "6": {"1": 5}})
+
+            assert client.state.is_cleaning
+            assert client.state.current_room_id == 5
+            assert client.state.current_room_aux_name == ""
+
+    def test_explicit_terminal_status_discards_external_start_candidate(self) -> None:
+        """A candidate from before completion cannot confirm later telemetry."""
+        client = NarwalClient("127.0.0.1")
+        with patch("narwal_client.models.time.monotonic", return_value=100.0):
+            client.state.update_from_base_status(
+                {"3": {"1": int(WorkingStatus.DOCKED)}, "11": 2, "47": 3}
+            )
+        with patch("narwal_client.models.time.monotonic", return_value=101.0):
+            client.state.update_from_working_status({"1": 25, "3": 120})
+        with patch("narwal_client.models.time.monotonic", return_value=102.0):
+            client.state.update_from_base_status(
+                {"3": {"1": int(WorkingStatus.TASK_COMPLETED)}}
+            )
+            assert client.state.pending_active_working_status is None
+        with patch("narwal_client.models.time.monotonic", return_value=103.0):
+            client.state.update_from_base_status(
+                {"3": {"1": int(WorkingStatus.DOCKED)}, "11": 2, "47": 3}
+            )
+        with patch("narwal_client.models.time.monotonic", return_value=104.0):
+            client.state.update_from_working_status({"1": 26, "3": 121})
+            assert not client.state.is_cleaning
 
     def test_repeated_final_metrics_cannot_mask_confirmed_docking(self) -> None:
         """Unchanged final counters expire so repeated dock evidence can win."""
