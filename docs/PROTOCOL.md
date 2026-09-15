@@ -588,6 +588,31 @@ rest are known-to-exist and unexplored — good starting points for anyone probi
 Also observed but not in the table above: `/status/get_device_base_status` (C→R, full status
 dump on demand) and `/developer/get_robot_debug_image` (C→R, cleartext carpet/planning PNGs).
 
+### Answered locally, previously unexplored
+
+Probed read-only against a CX7 on fw `v01.13.11.02`. All returned data. Sizes are the raw
+response frame.
+
+| Topic | Size | Content |
+|---|---|---|
+| `/developer/get_robot_info` | ~830 B | Labelled sections: device/product id, network (**including the Wi-Fi SSID and PSK in cleartext**, over the unauthenticated socket), per-component firmware, and a battery block: level, real level, health %, charge cycles, charge-time-remaining, current, voltage, temperature |
+| `/common/upgrade/get_firmware_version` | ~350 B | Per-module firmware: robot mcu/ble/cpu, base-station mcu/ble/cpu, vision ai/cpu, plus sensor modules (`0220_SS_LD02`, `0220_SS_CH01`) |
+| `/config/get` | ~175 B | Settings block. Field 2.1 = `70` (volume-shaped), 2.4.2/2.4.3 = `79200`/`28800` — a 22:00→08:00 do-not-disturb window in seconds — 2.3 = timezone, plus ~8 unmapped flags |
+| `/region/get` | ~75 B | Timezone, UTC offset, country, city, and the robot's own wall clock |
+| `/config/language/get_current_voice_info` | ~35 B | Language code, voice-pack version and pack id |
+| `/info/get_clean_time_line` | ~330 B | Session timeline |
+| `/consumable/get_consumable_info` | 6 B | Empty payload when nothing needs attention — the §10 trap, and a useful fixture for it |
+
+### Silent on CX7
+
+Requested and never answered, idle and mid-clean. Worth recording so nobody re-probes them
+hoping to substitute for the missing broadcasts:
+
+`status/working_status` · `map/display_map` · `status/point_navi_plan_traj` ·
+`info/get_clean_progress_info` · `robot/status/get` · `robot/task/status/get` ·
+`info/battery_info` · `schedule/clean_schedule/get` · `config/key_mapping/get` ·
+`operate/conf/get` · `voice/get_voice_list` · all 27 `clean_system/*` topics
+
 ### Confirmed cloud-only
 
 These exist as topics but do not serve data locally:

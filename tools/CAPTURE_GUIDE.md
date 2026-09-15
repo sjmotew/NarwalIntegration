@@ -81,13 +81,21 @@ WebSocket framing is documented (RFC 6455). For our purposes each
 text/binary frame holds a Narwal protocol message:
 
 ```
-+------+--------+----------+--------+
-| 0x01 | topic  | length   | proto  |
-| (1B) | (NUL-  | (uint32) | bytes  |
-|      | term'd |          |        |
-|      | string)|          |        |
-+------+--------+----------+--------+
++------+---------------+------+---------------+-----------+---------+
+| 0x01 | len(topic)+2  | 0x22 | len(topic)    | topic     | proto   |
+| (1B) | (1B)          | (1B) | (1B, uint8)   | (UTF-8,   | bytes   |
+|      | header byte   | tag  |               | no NUL)   |         |
++------+---------------+------+---------------+-----------+---------+
 ```
+
+The topic is **not** NUL-terminated and the length is **not** a uint32 — an earlier
+revision of this guide said both, and decoding a capture by hand from that produces
+nonsense. Byte 2 is the protobuf tag: `0x22` (field 4) on requests and broadcasts,
+`0x2a` (field 5) on command responses. Response frames carry an *empty* topic, so byte 1
+is `2` and there is nothing to parse between the header and the payload — which also
+means responses are not self-identifying and commands must be serialised.
+
+Byte 1 must equal `len(topic) + 2` or the robot silently drops the connection.
 
 (see `narwal_client/protocol.py` for the exact frame parser).
 

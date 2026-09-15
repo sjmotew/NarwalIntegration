@@ -137,10 +137,19 @@ To add one by hand, or if discovery doesn't find it:
 <details>
 <summary>How discovery finds the robot</summary>
 
-The robot advertises `_narwal_sweeper._tcp.local.` over mDNS, as an instance named
-`_app_wss_server_<6hex>` with hostname `NARWAL_<6hex>.local.` on port 9002. Those six
-hex characters are the tail of the robot's device ID, which is how a discovery is
-matched to a robot you already added manually.
+The robot advertises `_narwal_sweeper._tcp.local.` over mDNS on port 9002. Those six
+hex characters in its name are the tail of the robot's device ID, which is how a
+discovery is matched to a robot you already added manually.
+
+The name's shape varies by model, so the **hostname** is what discovery reads:
+
+| Model | Instance | Hostname |
+|---|---|---|
+| Flow (AX12) | `_app_wss_server_<6hex>` | `NARWAL_<6hex>.local.` |
+| Freo Z Ultra (CX7) | `_app_ws_server` (no suffix) | `NARWAL_<6hex>-<3digits>.local.` |
+
+On the CX7 the instance name carries no device-ID tail at all, so anything matching on
+the instance rather than the hostname will not find it.
 
 Some networks drop multicast between VLANs or under wireless client isolation, and
 mDNS then never arrives. DHCP hostname matching covers that case — Home Assistant
@@ -207,10 +216,26 @@ identifier used as the second component of a Narwal MQTT topic:
 
 You can obtain it from one of these sources:
 
-- The `deviceId` field returned by Narwal's authenticated account endpoint
-  `/user-device-platform-server/device-info/getDeviceInfoList`.
-- A Narwal MQTT capture, where it appears in the topic position shown above.
+- **A Narwal MQTT capture**, where it appears in the topic position shown above. This is the
+  reliable route: the app's MQTT client does not verify the broker's certificate, so a relay
+  with a self-signed certificate can read the topics. Point the broker hostname
+  (`<region>-mqtt.narwaltech.com`, e.g. `eu-mqtt`) at a machine on your LAN, relay port 8883
+  to the real broker, and reopen the app — the first frames carry
+  `/<product_key>/<device_id>/...`. Note the app keeps a long-lived MQTT connection, so the
+  app must be **force-stopped** for it to re-resolve the hostname.
 - The stored device identifier or diagnostics from an existing Narwal cloud integration.
+
+> **The account API cannot give you this value.** Earlier revisions of this document pointed at
+> `/user-device-platform-server/device-info/getDeviceInfoList`; that endpoint returns 404 on
+> every Narwal host (`eu-app`, `us-app`, `il-app`, `cn-app`, `app`, `usaclient`, `universal`).
+> The API has no endpoint that enumerates your devices at all — every per-device route requires
+> the `device_id` you are trying to find, and answers `err_code 101502`
+> ("has no privilege of device") without it. Login itself is unsigned email + password against
+> `/user-authentication-server/v2/login/loginByEmail`, and the auth header is `Auth-Token`;
+> anything else returns `err_code 130105`.
+
+A cross-check once you have it: the six hex characters in the robot's mDNS hostname are the
+**tail of the device ID**, so `NARWAL_c07174-….local.` confirms an ID ending `c07174`.
 
 Account and MQTT tooling is deliberately kept separate from this integration so Home Assistant
 never receives your Narwal credentials. Do not post the Device ID publicly; treat it as a device
@@ -345,7 +370,7 @@ Notes:
 
 - **Wake from deep sleep is unreliable** — robot may not respond after long idle periods. Opening the Narwal app briefly can help.
 - **Single connection** — close the Narwal app before using HA to avoid conflicts.
-- **CX7 has no live stream** — it never broadcasts, so cleaning position and progress do not update live. Polled base status, battery, dock state, maps, consumables, and commands remain available. State follows the 60-second poll, so the vacuum entity reaches `cleaning` up to a minute after the robot starts (31 s in a recorded run), and `cleaning_time`, `cleaning_area` and `current_room` stay `unknown` throughout a clean because they are only carried in broadcasts.
+- **CX7 has no live stream** — it never broadcasts, so cleaning position and progress do not update live. Polled base status, battery, dock state, maps, consumables, and commands remain available. `cleaning_time`, `cleaning_area` and `current_room` stay `unknown` throughout a clean because they are only carried in broadcasts. Requesting the broadcast-only topics directly does not substitute: `status/working_status`, `map/display_map`, `status/point_navi_plan_traj`, `info/get_clean_progress_info`, `robot/status/get`, `robot/task/status/get` and `info/battery_info` were all silent on a CX7, both idle and mid-clean.
 - **Fan speed is set-only** — robot doesn't broadcast its current level.
 - **All cleaning requires the dock** — `clean/start_clean` returns `NOT_READY` if the robot is not docked when the command is sent. This applies to whole-house `vacuum.start` as well as room cleans.
 - **Room cleaning needs a segment-to-area mapping** — `vacuum.clean_area` targets Home Assistant *areas*, not robot rooms, and the mapping editor is on the **entity**, not the integration or device page. See [Room cleaning setup](#room-cleaning-setup-required-before-vacuumclean_area-works). Without it the service fails with "Area mapping is not configured".
