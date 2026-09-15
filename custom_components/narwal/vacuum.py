@@ -260,11 +260,69 @@ class NarwalVacuum(NarwalEntity, RestoreEntity, StateVacuumEntity):
             )
 
     @property
+    def _trusts_state(self) -> bool:
+        """Return True when the robot's reported state tracks what it is doing.
+
+        Non-broadcasting models answer polls, but the fields the capability
+        predicates read lag the robot badly. Measured on a Freo Z Ultra (CX7)
+        on fw v01.13.11.02:
+
+        * While the robot physically drove back to its dock, `base_status`
+          field 3 stayed `{1: 19, 18: 1}` across 40s of polling — it never
+          reported CLEANING or RETURNING. The Flow's sub-fields for paused
+          (3.2), returning (3.7) and dock sub-state (3.10/3.12) are absent.
+        * `is_docked` read True throughout, including while the robot was
+          away, so `async_return_to_base` treats a recall as an idle-dock
+          no-op.
+        * In that state every capability predicate returned False —
+          `can_start_cleaning`, `can_prepare_clean_start`, `can_return_home`,
+          `_can_accept_return_home`, `can_pause_cleaning`, `_can_stop_vacuum`
+          and `can_locate_robot` — so the entity advertised `STATE` alone and
+          the robot could not be driven from Home Assistant at all.
+
+        The state does eventually settle (it later read STANDBY, where several
+        of those predicates return True again), so the failure is intermittent
+        rather than permanent — which makes it worse to debug, not better: the
+        buttons come and go.
+
+        Throughout, the robot itself accepted the commands the predicates were
+        refusing. It rejects what it genuinely cannot do, with
+        NOT_APPLICABLE / CONFLICT / NOT_READY, so on these models let the robot
+        arbitrate instead of a snapshot that trails it.
+
+        This relaxes local vetoes only; the robot's capabilities are unchanged
+        and fully addressable. `map/get_map` answers normally on the same CX7
+        (map_id 1, rooms 1-3), and a `clean/start_clean` CleanTask naming a
+        single room in vacuum-only mode was accepted and read back verbatim
+        from `clean/current_clean_task/get`. Room selection and work mode work
+        here exactly as on a broadcasting model.
+        """
+        return self.coordinator.client.supports_broadcasts
+
+    @property
     def supported_features(self) -> VacuumEntityFeature:
         """Return currently usable native Home Assistant vacuum features."""
         features = VacuumEntityFeature.STATE
         state = self.coordinator.data
         if state is None or not self.available:
+            return features
+
+        if not self._trusts_state:
+            # State cannot narrow this down; advertise what the robot accepts.
+            features |= (
+                VacuumEntityFeature.START
+                | VacuumEntityFeature.STOP
+                | VacuumEntityFeature.PAUSE
+                | VacuumEntityFeature.RETURN_HOME
+                | VacuumEntityFeature.LOCATE
+                | VacuumEntityFeature.FAN_SPEED
+            )
+            if (
+                Segment is not None
+                and getattr(self.coordinator, "_room_profile_store_loaded", True)
+                and self._known_room_ids(state)
+            ):
+                features |= VacuumEntityFeature.CLEAN_AREA
             return features
 
         if can_resume_cleaning(state) or self._can_start_selected_rooms(state):
@@ -466,7 +524,9 @@ class NarwalVacuum(NarwalEntity, RestoreEntity, StateVacuumEntity):
                 map_id=map_id,
             )
             await self._validate_clean_start()
-            if not can_start_cleaning(self.coordinator.client.state):
+            if self._trusts_state and not can_start_cleaning(
+                self.coordinator.client.state
+            ):
                 raise HomeAssistantError("Narwal clean cannot be started right now")
             resp = await self.coordinator.client.start_rooms(
                 room_ids,
@@ -517,7 +577,7 @@ class NarwalVacuum(NarwalEntity, RestoreEntity, StateVacuumEntity):
             if not refreshed:
                 raise HomeAssistantError("Narwal status could not be refreshed")
             state = self.coordinator.client.state
-            if not _can_stop_vacuum(state):
+            if self._trusts_state and not _can_stop_vacuum(state):
                 raise HomeAssistantError("Narwal has no active robot task to stop")
             resp = await self.coordinator.client.stop()
         _LOGGER.info("Stop response: code=%s, success=%s", resp.result_code, resp.success)
@@ -530,7 +590,7 @@ class NarwalVacuum(NarwalEntity, RestoreEntity, StateVacuumEntity):
             if not await self.coordinator.async_refresh_action_status():
                 raise HomeAssistantError("Narwal status could not be refreshed")
             state = self.coordinator.client.state
-            if not can_pause_cleaning(state):
+            if self._trusts_state and not can_pause_cleaning(state):
                 raise HomeAssistantError("Narwal clean cannot be paused right now")
             resp = await self.coordinator.client.pause()
         _LOGGER.info("Pause response: code=%s, success=%s", resp.result_code, resp.success)
@@ -543,10 +603,13 @@ class NarwalVacuum(NarwalEntity, RestoreEntity, StateVacuumEntity):
             if not await self.coordinator.async_refresh_action_status():
                 raise HomeAssistantError("Narwal status could not be refreshed")
             state = self.coordinator.client.state
-            if state.is_docked and _can_accept_return_home(state):
-                return
-            if not can_return_home(state):
-                raise HomeAssistantError("Narwal cannot return to the dock right now")
+            if self._trusts_state:
+                if state.is_docked and _can_accept_return_home(state):
+                    return
+                if not can_return_home(state):
+                    raise HomeAssistantError(
+                        "Narwal cannot return to the dock right now"
+                    )
             resp = await self.coordinator.client.return_to_base(timeout=self._ACTION_TIMEOUT)
         _LOGGER.info(
             "Return-to-base response: code=%s, success=%s",
@@ -568,7 +631,7 @@ class NarwalVacuum(NarwalEntity, RestoreEntity, StateVacuumEntity):
             if not await self.coordinator.async_refresh_action_status():
                 raise HomeAssistantError("Narwal status could not be refreshed")
             state = self.coordinator.client.state
-            if not can_locate_robot(state):
+            if self._trusts_state and not can_locate_robot(state):
                 raise HomeAssistantError("Narwal locate cannot be used right now")
             resp = await self.coordinator.client.locate()
         _raise_if_command_failed(resp, "locate")
