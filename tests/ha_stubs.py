@@ -64,8 +64,20 @@ def install() -> None:
     class _UnitOfTime:
         SECONDS = "s"
 
+    class _UnitOfElectricPotential:
+        VOLT = "V"
+
+    class _UnitOfElectricCurrent:
+        AMPERE = "A"
+
+    class _UnitOfTemperature:
+        CELSIUS = "°C"
+
     ha_const.UnitOfArea = _UnitOfArea  # type: ignore[attr-defined]
     ha_const.UnitOfTime = _UnitOfTime  # type: ignore[attr-defined]
+    ha_const.UnitOfElectricPotential = _UnitOfElectricPotential  # type: ignore[attr-defined]
+    ha_const.UnitOfElectricCurrent = _UnitOfElectricCurrent  # type: ignore[attr-defined]
+    ha_const.UnitOfTemperature = _UnitOfTemperature  # type: ignore[attr-defined]
 
     class _EntityCategory:
         CONFIG = "config"
@@ -435,11 +447,15 @@ def install() -> None:
 
     class _SensorDeviceClass:
         BATTERY = "battery"
+        CURRENT = "current"
         DURATION = "duration"
         ENUM = "enum"
+        TEMPERATURE = "temperature"
+        VOLTAGE = "voltage"
 
     class _SensorStateClass:
         MEASUREMENT = "measurement"
+        TOTAL_INCREASING = "total_increasing"
 
     ha_sensor.SensorDeviceClass = _SensorDeviceClass  # type: ignore[attr-defined]
     ha_sensor.SensorStateClass = _SensorStateClass  # type: ignore[attr-defined]
@@ -457,6 +473,7 @@ def install() -> None:
         native_unit_of_measurement: object | None = None
         state_class: object | None = None
         options: object | None = None
+        suggested_display_precision: int | None = None
 
     ha_sensor.SensorEntityDescription = _SensorEntityDescription  # type: ignore[attr-defined]
 

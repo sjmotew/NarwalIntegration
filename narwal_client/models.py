@@ -757,6 +757,37 @@ class MapDisplayData:
 
 
 @dataclass
+class RobotDiagnostics:
+    """Engineering data from developer/get_robot_info.
+
+    The robot answers with labelled sections rather than a typed message:
+    Section{1: title, 2: repeated Item{1: label, 2: value}}. Labels are
+    Chinese regardless of the configured voice language, so they are matched
+    literally; anything unrecognised is still kept in `sections`.
+
+    Captured on a Freo Z Ultra (CX7, fw v01.13.11.02): battery health 89%,
+    519 charge cycles, 16.039 V, 35.5 degC. None of this appears in
+    `status/robot_base_status`, and it settles that base_status field 38 —
+    which reads a constant 100 — is not battery health.
+
+    SECURITY: the same response carries the Wi-Fi SSID and pre-shared key in
+    clear over an unauthenticated socket. `sections` is scrubbed of the PSK on
+    parse (see client._parse_robot_info) so it can never reach a diagnostics
+    download or a log line.
+    """
+
+    battery_level: int | None = None
+    battery_real_level: int | None = None
+    battery_health: int | None = None
+    battery_cycles: int | None = None
+    battery_voltage: float | None = None
+    battery_current: float | None = None
+    battery_temperature: float | None = None
+    charge_remaining_minutes: int | None = None
+    sections: dict[str, dict[str, str]] = field(default_factory=dict)
+
+
+@dataclass
 class Position:
     """Robot position from map/display_map."""
 
@@ -802,6 +833,9 @@ class NarwalState:
 
     # Device identity
     device_info: DeviceInfo | None = None
+
+    # Engineering data from developer/get_robot_info (polled, never broadcast)
+    diagnostics: RobotDiagnostics | None = None
 
     # Identity / station maintenance (base_status)
     binded_uuid: str = ""  # field 13 — bound account/device UUID
