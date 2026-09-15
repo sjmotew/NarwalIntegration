@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import struct
+import time
 from dataclasses import replace
 from unittest.mock import patch
 
@@ -56,6 +57,30 @@ class TestNarwalState:
         assert state.working_status == WorkingStatus.UNKNOWN
         assert state.last_active_working_status_time == 0.0
         assert not state.has_recent_active_working_status
+
+    def test_active_metrics_retire_terminal_working_status(self) -> None:
+        """Fresh robot metrics establish a new episode after a terminal one."""
+        state = NarwalState(
+            working_status=WorkingStatus.CLEANING,
+            last_terminal_working_status_time=1.0,
+        )
+
+        state.update_from_working_status({"3": 120})
+
+        assert state.last_terminal_working_status_time == 0.0
+        assert state.has_recent_active_working_status
+
+    def test_assumed_start_retire_terminal_working_status(self) -> None:
+        """Accepted starts retire terminal state before the enum catches up."""
+        state = NarwalState(
+            working_status=WorkingStatus.STANDBY,
+            last_terminal_working_status_time=time.monotonic(),
+        )
+        state.assumed_robot_clean_until = time.monotonic() + 30
+
+        state.update_from_working_status({"3": 120})
+
+        assert state.last_terminal_working_status_time == 0.0
 
     def test_robot_side_drying_ignores_stale_clean_counters(self) -> None:
         """Mop and robot-bin drying timers override prior clean metrics."""

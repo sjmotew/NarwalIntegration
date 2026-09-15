@@ -815,6 +815,7 @@ class NarwalState:
     cleaning_time: int = 0  # seconds
     last_active_working_status_time: float = 0.0
     last_terminal_working_status_time: float = 0.0
+    terminal_working_status_generation: int = 0
     task_progress_percent: int | None = None
     task_elapsed_time: int = 0
     task_remaining_time: int = 0
@@ -1448,11 +1449,18 @@ class NarwalState:
             in {WorkingStatus.TASK_COMPLETED, WorkingStatus.ERROR}
             or self.has_recent_terminal_working_status
         )
-        if (
+        fresh_active_metrics = (
             active_payload
             and not has_blocking_station_task
-            and not has_terminal_robot_status
-        ):
+            and (
+                self.working_status in ACTIVE_CLEANING_STATUSES
+                or self.has_explicit_off_dock_signal
+                or self.has_assumed_robot_clean
+            )
+        )
+        if fresh_active_metrics:
+            # A fresh metric packet retires the prior terminal episode.
+            self.last_terminal_working_status_time = 0.0
             if task_details_changed:
                 self.last_active_working_status_time = time.monotonic()
                 self.is_paused = False
@@ -1490,6 +1498,7 @@ class NarwalState:
 
         Note: field 32 mirrors field 3 exactly (redundant).
         """
+        was_terminal_status = self.last_terminal_working_status_time > 0
         self.raw_base_status = decoded
         if "2" in decoded:
             self._update_battery_level(decoded["2"])
@@ -1579,6 +1588,8 @@ class NarwalState:
                 if terminal_robot or (
                     terminal_dock and not self.has_explicit_off_dock_signal
                 ):
+                    if not was_terminal_status:
+                        self.terminal_working_status_generation += 1
                     self.last_terminal_working_status_time = time.monotonic()
                 elif (
                     terminal_dock
@@ -1700,6 +1711,8 @@ class NarwalState:
             WorkingStatus.ERROR,
         )
         if standby_docked:
+            if not was_terminal_status:
+                self.terminal_working_status_generation += 1
             self.last_terminal_working_status_time = time.monotonic()
         if (
             (terminal_robot or (terminal_docked and not self.has_explicit_off_dock_signal))

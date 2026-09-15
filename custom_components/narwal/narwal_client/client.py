@@ -129,6 +129,20 @@ def _clean_session_context(state: NarwalState) -> bool:
     )
 
 
+def _active_clean_signal(state: NarwalState) -> bool:
+    """Return true for enum, metric, or accepted-command cleaning evidence."""
+    return (
+        state.is_cleaning
+        or state.has_assumed_robot_clean
+        or state.working_status in ACTIVE_CLEANING_STATUSES
+        or (
+            state.working_status == WorkingStatus.TASK_COMPLETED
+            and state.has_explicit_off_dock_signal
+        )
+        or state.has_recent_active_working_status
+    )
+
+
 def _robot_work_blocks_generic_dock_stop(state: NarwalState) -> bool:
     """Return true when generic force-end could target robot work, not dock work."""
     return (
@@ -281,6 +295,7 @@ class NarwalClient:
         self.supports_broadcasts = supports_broadcasts
         self.state = NarwalState()
         self.on_state_update: Callable[[NarwalState], None] | None = None
+        self.on_display_map: Callable[[NarwalState], None] | None = None
         self.on_message: Callable[[NarwalMessage], None] | None = None
 
         self._ws: Any = None
@@ -294,6 +309,7 @@ class NarwalClient:
         self._last_broadcast_time: float = 0.0  # monotonic time of last broadcast
         self._last_response_time: float = 0.0  # monotonic time of last addressed response
         self._last_display_map_time: float = 0.0  # monotonic time of last display_map
+        self._last_clean_start_time: float = 0.0
         # Queue for field5 command responses
         self._response_queue: asyncio.Queue[NarwalMessage] = asyncio.Queue()
         # Lock to prevent concurrent send_command calls from racing on the queue
@@ -346,12 +362,30 @@ class NarwalClient:
             return 999.0
         return time.monotonic() - self._last_display_map_time
 
+    @property
+    def last_display_map_received_at(self) -> float:
+        """Return the monotonic receive time of the last display-map packet."""
+        return self._last_display_map_time
+
+    @property
+    def last_clean_start_received_at(self) -> float:
+        """Return when working status last transitioned into active cleaning."""
+        return self._last_clean_start_time
+
+    def _record_clean_start_transition(self, was_active: bool) -> None:
+        """Latch the first packet that moves an idle robot into cleaning."""
+        if not was_active and _active_clean_signal(self.state):
+            self._last_clean_start_time = time.monotonic()
+
     def _update_from_working_status_broadcast(self, decoded: dict[str, Any]) -> None:
         """Apply live task metrics from the working_status broadcast."""
+        was_active = _active_clean_signal(self.state)
         self.state.update_from_working_status(decoded)
+        self._record_clean_start_transition(was_active)
 
     def _update_from_base_status_broadcast(self, decoded: dict[str, Any]) -> None:
         """Apply a base-status broadcast without clobbering fresh task metrics."""
+        was_active = _active_clean_signal(self.state)
         status = _base_status_working_status(decoded)
         if (
             self.state.has_recent_active_working_status
@@ -365,6 +399,7 @@ class NarwalClient:
             return
 
         self.state.update_from_base_status(decoded)
+        self._record_clean_start_transition(was_active)
 
     def _update_from_display_map_broadcast(self, decoded: dict[str, Any]) -> None:
         """Apply a display-map broadcast and mark the trajectory as fresh."""
@@ -676,6 +711,8 @@ class NarwalClient:
             self.state.update_from_download_status(decoded)
         elif short_topic == "map/display_map":
             self._update_from_display_map_broadcast(decoded)
+            if self.on_display_map:
+                self.on_display_map(self.state)
         if self.on_state_update:
             self.on_state_update(self.state)
 
@@ -1163,6 +1200,8 @@ class NarwalClient:
                 self.state.update_from_download_status(decoded)
             elif short_topic == "map/display_map":
                 self._update_from_display_map_broadcast(decoded)
+                if self.on_display_map:
+                    self.on_display_map(self.state)
 
         raise NarwalCommandError(
             f"No field5 response within {timeout}s"
