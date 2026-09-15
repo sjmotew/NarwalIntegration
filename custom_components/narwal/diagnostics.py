@@ -110,6 +110,30 @@ def _map_summary(map_data: Any) -> dict[str, Any] | None:
     }
 
 
+def _robot_info(diagnostics: Any) -> dict[str, Any] | None:
+    """Battery engineering data plus the labelled sections it was read from.
+
+    `sections` keeps the robot's own labels (Chinese, whatever the voice
+    language) so an unrecognised line can be mapped from a download without
+    another capture. The PSK never reaches `RobotDiagnostics` in the first
+    place, which is what makes including the sections whole safe.
+    """
+    if diagnostics is None:
+        return None
+    return {
+        "battery_health": diagnostics.battery_health,
+        "battery_cycles": diagnostics.battery_cycles,
+        "battery_voltage": diagnostics.battery_voltage,
+        "battery_current": diagnostics.battery_current,
+        "battery_temperature": diagnostics.battery_temperature,
+        "battery_real_level": diagnostics.battery_real_level,
+        "charge_remaining_minutes": diagnostics.charge_remaining_minutes,
+        "sections": {
+            title: dict(items) for title, items in diagnostics.sections.items()
+        },
+    }
+
+
 async def _feature_list(coordinator: Any) -> dict[str, Any]:
     """Query the robot's feature list, degrading to the reason it failed.
 
@@ -200,6 +224,10 @@ async def async_get_config_entry_diagnostics(
             "error_detail": state.error_detail,
         },
         "map": _map_summary(state.map_data),
+        # developer/get_robot_info. The robot returns the Wi-Fi PSK in this
+        # response; the client discards it at parse time, so nothing here can
+        # carry it. See narwal_client.client._parse_robot_info.
+        "robot_info": _robot_info(getattr(state, "diagnostics", None)),
         # The undecoded field map. Keys are protobuf field numbers as strings.
         # This is what new-model support is actually built from, so it is
         # included whole rather than filtered to fields this build understands.

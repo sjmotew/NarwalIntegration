@@ -76,6 +76,10 @@ Shipped in v1.0.2 ([#50](https://github.com/sjmotew/NarwalIntegration/pull/50)) 
 - Dust bag health and detergent remaining ([#52](https://github.com/sjmotew/NarwalIntegration/pull/52), v1.0.2)
 - Station and consumable binary sensors — clean water tank, sewage tank, dust box, dust bag, station bag, error ([#52](https://github.com/sjmotew/NarwalIntegration/pull/52), v1.0.2)
 - Maintenance and replacement alerts, with the affected parts listed as attributes ([#54](https://github.com/sjmotew/NarwalIntegration/pull/54), v1.0.2)
+- **Battery diagnostics** — health, charge cycles, voltage, current, temperature, and the true cell
+  charge alongside the level the app displays. Polled from `developer/get_robot_info` every 15
+  minutes; absent on models that do not answer that topic, and the entities simply stay
+  unavailable there
 
 ### Live Map
 - Color-coded floor plan with room labels (all rooms — user-named and auto-generated)

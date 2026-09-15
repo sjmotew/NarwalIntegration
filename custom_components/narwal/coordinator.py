@@ -67,6 +67,11 @@ NATIVE_TRAJECTORY_RESTORE_GRACE = 60.0
 # base_status-derived value, and the live map stops updating (#73).
 TOPIC_SUBSCRIPTION_TTL = 600.0
 TOPIC_RESUBSCRIBE_AFTER = 240.0
+
+# developer/get_robot_info carries battery health, charge cycles, voltage and
+# temperature. None of it moves quickly and the robot answers it slowly, so it
+# is refreshed far less often than the 60s status poll.
+DIAGNOSTICS_REFRESH_AFTER = 900.0
 ROOM_CLEAN_SETTING_ATTRS = frozenset(field.name for field in fields(RoomCleanSettings))
 ROOM_CLEAN_SETTING_VALUE_TYPES = {
     "work_mode": WorkMode,
@@ -361,6 +366,11 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
 
     config_entry: ConfigEntry
 
+    # Class-level default: tests construct coordinators without running
+    # __init__, and a missing attribute would break the poll rather than the
+    # diagnostics refresh it guards.
+    _last_diagnostics_refresh: float = 0.0
+
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
         """Initialize the coordinator."""
         super().__init__(
@@ -403,6 +413,7 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
         self._map_fetch_pending = False
         self._last_display_map_resub: float = 0.0
         self._last_topic_subscribe: float = 0.0
+        self._last_diagnostics_refresh: float = 0.0
         self._consecutive_failures = 0
         self._max_failures = 5  # 5 * 60s = 5 minutes before entities go unavailable
         self._dock_status_refresh_failed = True
@@ -2556,6 +2567,17 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
         if self.client.state.map_data is not None:
             self._scope_pending_map_display_cache_snapshot()
             self._restore_pending_map_display_cache()
+
+        # Battery health / cycles / voltage / temperature. Best-effort: the
+        # topic is absent on some models, and a robot that declines it must not
+        # fail a poll that has already succeeded.
+        if (
+            time.monotonic() - self._last_diagnostics_refresh
+            > DIAGNOSTICS_REFRESH_AFTER
+        ):
+            self._last_diagnostics_refresh = time.monotonic()
+            with contextlib.suppress(Exception):
+                await self.client.get_robot_info()
 
         self._reconcile_map_display_after_status_refresh()
 
