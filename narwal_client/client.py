@@ -145,7 +145,11 @@ def _robot_work_blocks_generic_dock_stop(state: NarwalState) -> bool:
 
 
 def _robot_start_blocked(state: NarwalState) -> bool:
-    """Return true unless fresh state permits dispatching a robot start."""
+    """Return true unless fresh state permits dispatching a robot start.
+
+    Only meaningful when the robot's state actually tracks what it is doing.
+    See NarwalClient._start_blocked for models where it does not.
+    """
     return (
         state.has_error
         or state.working_status in (WorkingStatus.UNKNOWN, WorkingStatus.ERROR)
@@ -1290,7 +1294,7 @@ class NarwalClient:
         """
         if not self.connected:
             raise NarwalConnectionError("Not connected to vacuum")
-        if _robot_start_blocked(self.state):
+        if self._start_blocked():
             _LOGGER.warning(
                 "start: robot or dock task active (%s); not starting whole-house clean",
                 self.state.active_dock_task_keys or "unmapped",
@@ -1571,7 +1575,7 @@ class NarwalClient:
         if not room_ids:
             return CommandResponse(result_code=CommandResult.NOT_READY)
         async with self._robot_start_lock:
-            if _robot_start_blocked(self.state):
+            if self._start_blocked():
                 _LOGGER.warning(
                     "start_rooms: robot or dock guard active (%s); not starting room clean",
                     self.state.active_dock_task_keys or "private",
@@ -1607,7 +1611,7 @@ class NarwalClient:
             except ValueError as err:
                 _LOGGER.warning("start_rooms: %s", err)
                 return CommandResponse(result_code=CommandResult.NOT_APPLICABLE)
-            if _robot_start_blocked(self.state):
+            if self._start_blocked():
                 _LOGGER.warning(
                     "start_rooms: state changed before dispatch; not starting room clean"
                 )
@@ -1627,7 +1631,7 @@ class NarwalClient:
                     break
                 _LOGGER.info("start_rooms: robot docking/settling, retrying clean/start_clean")
                 await asyncio.sleep(3.0)
-                if _robot_start_blocked(self.state):
+                if self._start_blocked():
                     _LOGGER.warning(
                         "start_rooms: state changed before retry; not starting room clean"
                     )
@@ -1642,7 +1646,7 @@ class NarwalClient:
     async def start_easy_clean(self) -> CommandResponse:
         """Start quick/easy clean."""
         async with self._robot_start_lock:
-            if _robot_start_blocked(self.state):
+            if self._start_blocked():
                 _LOGGER.warning(
                     "start_easy_clean: robot or dock guard active (%s); not starting quick clean",
                     self.state.active_dock_task_keys or "private",
@@ -1815,6 +1819,28 @@ class NarwalClient:
                 ):
                     self.state.clear_dock_drying_task(active_task)
             return response
+
+    def _start_blocked(self) -> bool:
+        """Return true when local state proves a start must not be dispatched.
+
+        The guard reads `is_docked`, `_clean_session_context` and friends, all
+        of which assume state that tracks the robot. Models which never
+        broadcast lag badly enough to break that assumption: a Freo Z Ultra
+        (CX7, `hEA7OEshlx`, fw v01.13.11.02) sat at `working_status` 19
+        (TASK_COMPLETED) with a field-3 subtree of `{1: 19, 18: 1}` that did
+        not change across 40s while the robot physically drove back to its
+        dock. While it sits there `_clean_session_context` is true and every
+        start is refused before a frame is ever sent. It does clear eventually,
+        so the refusal is intermittent rather than permanent.
+
+        The robot arbitrates correctly on its own. Sent directly to that CX7
+        while the guard claimed a clean session was live, `clean/start_clean`
+        for one room in vacuum-only mode returned SUCCESS and
+        `clean/current_clean_task/get` read the task back unchanged. So on
+        these models let the robot answer, and surface its CONFLICT /
+        NOT_APPLICABLE / NOT_READY if it declines.
+        """
+        return self.supports_broadcasts and _robot_start_blocked(self.state)
 
     async def return_to_base(self, timeout: float = COMMAND_RESPONSE_TIMEOUT) -> CommandResponse:
         """Return to charging dock."""

@@ -331,6 +331,20 @@ Field 3 sub-fields:
 | 3.7 | `1` = returning to dock |
 | 3.10 | Dock sub-state (1 = docked, 2 = docking) |
 | 3.12 | Dock activity (2, 6 observed) |
+| 3.18 | Purpose unknown; `1` on CX7, where it is one of only two sub-fields present |
+
+**On the CX7 this message is close to useless as a state signal.** Field 3 is exactly
+`{1: 19, 18: 1}` — none of 3.2, 3.7, 3.10 or 3.12 exist — and it did not change across 40 s
+of polling while the robot physically drove back to its dock. It reported
+`19` (TASK_COMPLETED) while driving and `2` (DOCKED_V2) moments after a clean was accepted,
+and `is_docked` read `true` throughout, including while the robot was away from the dock.
+
+It does eventually settle (the same robot later read `1` / STANDBY), so this is a lag rather
+than a frozen field — which is worse to diagnose, because capabilities derived from it appear
+and disappear. Clients should not gate commands on this message for non-broadcasting models;
+send the command and let the robot refuse. Everything the predicates were blocking —
+`clean/start_clean` with a room-and-mode CleanTask, `supply/recall`, `task/force_end` —
+was accepted by the robot with `SUCCESS` in the same state.
 
 **`WorkingStatus` values are empirical and deliberately do not match the app's compiled
 `TaskType` enum**, whose numbering the field nominally uses. Trust live observation here:
