@@ -199,6 +199,76 @@ class TestNarwalClientInit:
             (1.25, 2.25),
         ]
         assert client.last_display_map_age < 1.0
+        assert client.last_display_map_received_at > 0
+
+    def test_clean_start_receive_time_is_latched_across_active_updates(self) -> None:
+        """Routine active updates cannot move the clean-start receive marker."""
+        client = NarwalClient("10.0.0.1")
+
+        def set_cleaning(_decoded: dict[str, object]) -> None:
+            client.state.working_status = WorkingStatus.CLEANING
+
+        with patch.object(
+            client.state,
+            "update_from_working_status",
+            side_effect=set_cleaning,
+        ), patch("narwal_client.client.time.monotonic", return_value=100.0):
+            client._update_from_working_status_broadcast({"3": 42})
+            clean_started_at = client.last_clean_start_received_at
+            client._update_from_working_status_broadcast({"3": 120})
+
+        assert clean_started_at > 0
+        assert client.last_clean_start_received_at == clean_started_at
+
+    def test_base_status_latches_clean_start_before_progress_packets(self) -> None:
+        """The normal base-status then progress ordering records one clean start."""
+        client = NarwalClient("10.0.0.1")
+
+        with patch("narwal_client.client.time.monotonic", return_value=100.0):
+            client._update_from_base_status_broadcast(
+                {"3": {"1": int(WorkingStatus.CLEANING), "3": 2}}
+            )
+        clean_started_at = client.last_clean_start_received_at
+        client._update_from_working_status_broadcast({"3": 120})
+
+        assert clean_started_at == 100.0
+        assert client.last_clean_start_received_at == clean_started_at
+
+    def test_off_dock_task_completed_keeps_clean_start_latched(self) -> None:
+        """A room handoff cannot relatch the start of one cleaning session."""
+        client = NarwalClient("10.0.0.1")
+        client._update_from_base_status_broadcast(
+            {"3": {"1": int(WorkingStatus.CLEANING), "3": 2}}
+        )
+        clean_started_at = client.last_clean_start_received_at
+
+        client._update_from_base_status_broadcast(
+            {"3": {"1": int(WorkingStatus.TASK_COMPLETED), "3": 2}}
+        )
+        client._update_from_base_status_broadcast(
+            {"3": {"1": int(WorkingStatus.CLEANING), "3": 2}}
+        )
+
+        assert clean_started_at > 0
+        assert client.last_clean_start_received_at == clean_started_at
+
+    def test_metric_only_clean_start_is_latched_with_stale_idle_enum(self) -> None:
+        """Fresh progress can start a clean while the base-status enum is stale."""
+        client = NarwalClient("10.0.0.1")
+        client.state.working_status = WorkingStatus.STANDBY
+
+        def confirm_metrics(_decoded: dict[str, object]) -> None:
+            client.state.last_active_working_status_time = 99.0
+
+        with patch.object(
+            client.state,
+            "update_from_working_status",
+            side_effect=confirm_metrics,
+        ), patch("narwal_client.client.time.monotonic", return_value=100.0):
+            client._update_from_working_status_broadcast({"3": 120})
+
+        assert client.state.working_status == WorkingStatus.STANDBY
+        assert client.last_clean_start_received_at == 100.0
 
     def test_unconfirmed_idle_base_status_preserves_active_metrics(self) -> None:
         """Stale idle base_status must not hide a fresh working_status task."""

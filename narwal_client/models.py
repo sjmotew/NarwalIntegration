@@ -1675,6 +1675,8 @@ class NarwalState:
             and not has_blocking_station_task
             and not has_terminal_robot_status
         ):
+            # A fresh metric packet retires the prior terminal episode.
+            self.last_terminal_working_status_time = 0.0
             if task_details_changed:
                 self.last_active_working_status_time = now
                 self.is_paused = False
