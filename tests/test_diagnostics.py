@@ -26,6 +26,19 @@ from custom_components.narwal.diagnostics import (  # noqa: E402
     _map_summary,
     async_get_config_entry_diagnostics,
 )
+from custom_components.narwal.narwal_client.client import _parse_robot_info  # noqa: E402
+from tests.test_robot_diagnostics import (  # noqa: E402
+    _battery_response,
+    _item,
+    _section,
+)
+
+
+def _with_wifi_frame() -> bytes:
+    """A get_robot_info response with the network block the CX7 really sends."""
+    network = _item("Wifi", "ssid:HomeNet\npsk:hunter2-secret")
+    return b"\x08\x01" + _section("网络信息", network) + _battery_response()[2:]
+
 
 REDACTED = "**REDACTED**"
 
@@ -67,6 +80,7 @@ def _make_state(**overrides):
     state.maintain_items = []
     state.replace_items = []
     state.raw_consumable_info = {}
+    state.diagnostics = None
     state.error_codes = []
     for key, value in overrides.items():
         setattr(state, key, value)
@@ -233,6 +247,47 @@ class TestFeatureList:
             diagnostics_module._FEATURE_LIST_TIMEOUT = original
 
         assert result["feature_list"] == {"available": False, "reason": "timed out"}
+
+
+class TestRobotInfo:
+    """developer/get_robot_info reaches the dump — minus the Wi-Fi PSK.
+
+    The robot returns its Wi-Fi credentials in that response, and this file is
+    attached to public issues. The PSK is discarded when the client parses the
+    frame, so the guarantee tested here is end to end: a frame carrying a
+    `psk:` value goes in, and neither the key nor the label comes out.
+    """
+
+    async def test_psk_from_a_captured_frame_never_reaches_the_download(self) -> None:
+        frame = _with_wifi_frame()
+        diagnostics = _parse_robot_info(frame)
+        assert diagnostics is not None
+        # Belt: the parsed object itself carries no trace of it.
+        for items in diagnostics.sections.values():
+            for label, value in items.items():
+                assert "psk" not in label.lower()
+                assert "psk" not in value.lower()
+                assert "hunter2-secret" not in value
+        entry = _make_entry()
+        _make_entry_with_runtime(entry, _make_state(diagnostics=diagnostics))
+
+        result = await async_get_config_entry_diagnostics(MagicMock(), entry)
+
+        # Braces: nor does the download, anywhere in it.
+        blob = repr(result)
+        assert "hunter2-secret" not in blob
+        assert "psk" not in blob.lower()
+        assert result["robot_info"]["battery_health"] == 89
+        assert result["robot_info"]["sections"]["电池信息"]["使用次数"] == "519"
+
+    async def test_models_without_the_topic_report_null(self) -> None:
+        """A robot that never answered get_robot_info is not an error."""
+        entry = _make_entry()
+        _make_entry_with_runtime(entry, _make_state(diagnostics=None))
+
+        result = await async_get_config_entry_diagnostics(MagicMock(), entry)
+
+        assert result["robot_info"] is None
 
 
 class TestRawPayloads:

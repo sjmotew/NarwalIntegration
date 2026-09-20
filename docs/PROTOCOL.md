@@ -34,6 +34,19 @@ start a clean, return it to the dock, reboot it, or read the floor plan of the h
 the robot's design, not this integration's. Treat port 9002 the way you'd treat any other
 unauthenticated LAN device and segment your network accordingly.
 
+**It will also hand out your Wi-Fi password.** `developer/get_robot_info` returns the network
+block as cleartext `ssid:<name>` / `psk:<pre-shared key>`, over that same unauthenticated
+socket. No pairing, no token — anything that can open a TCP connection to port 9002 can read
+the Wi-Fi credentials for the network it is sitting on. This raises the stakes on the
+segmentation advice above from good hygiene to something with a concrete consequence.
+
+It also constrains clients. This integration's diagnostics download already redacts the IP,
+device ID and account UUID, and users are asked to attach it to public GitHub issues — so any
+code that reads `developer/get_robot_info` **must** discard the PSK at parse time rather than
+relying on a redaction step downstream. The parser in `narwal_client/client.py` drops any
+label or value matching `psk` / `password` / `passwd` before the data reaches a
+`RobotDiagnostics`, and `tests/test_robot_diagnostics.py` pins that.
+
 **The robot accepts one connection per IP.** A second connection from the same address is
 refused with `connection with same ip, close old one`. In practice this means you must disable
 the Home Assistant config entry before running a diagnostic script from the same host.
@@ -315,7 +328,7 @@ Field names from the decompiled `BuilderInfo`; values live-validated where noted
 | 29 | Active mop humidity |
 | 35 | Station bag health %, float32 — *absent on AX12 v01.08.03.07* |
 | 36 | Station bag health reset time (Unix seconds) — **unverified** |
-| 38 | **Disputed** — `100` on every observation. Read as battery *design capacity* in one place and as curing-agent consumption % in another; see §11 |
+| 38 | `100` on every observation. **Not a battery-condition metric**: `developer/get_robot_info` reported health `89%` on a robot whose field 38 read `100` in the same session, so it cannot be tracking cell wear. Whether it is curing-agent consumption % remains open; see §11 |
 | 39 | Station bag state (enum) |
 | 41 | Detergent remaining % (`heavyDetergentRemainPercent`) — **unverified**, `100` on every observation; see §11 |
 | 47 | Charging status (enum) |
@@ -690,9 +703,12 @@ passes); we expose one control.
 **Consumables — several, tracked together in
 [#79](https://github.com/sjmotew/NarwalIntegration/issues/79).**
 
-- *What is `base_status` field 38?* It reads `100` on every observation, and this project
-  describes it as battery design capacity in one place and curing-agent consumption % in
-  another. Both survive the data; one is wrong.
+- *What is `base_status` field 38?* **Half answered.** It reads `100` on every observation, and
+  this project described it as battery design capacity in one place and curing-agent
+  consumption % in another. The battery reading is now ruled out: `developer/get_robot_info`
+  reported health `89%` on a robot whose field 38 read `100` in the same session, so field 38
+  is not tracking cell condition. Whether it is the curing agent is still untested — that needs
+  a capture taken with a visibly depleted cartridge.
 - *Is field 41 really detergent remaining?* The name `heavyDetergentRemainPercent` comes from
   the decompiled app. It has only ever been observed as `100`, on a robot whose battery also
   reads `100`. A capture taken side by side with a visibly low cartridge settles it.

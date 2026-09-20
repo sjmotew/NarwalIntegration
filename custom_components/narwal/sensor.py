@@ -11,7 +11,15 @@ from homeassistant.components.sensor import (
     SensorEntityDescription,
     SensorStateClass,
 )
-from homeassistant.const import PERCENTAGE, EntityCategory, UnitOfArea, UnitOfTime
+from homeassistant.const import (
+    PERCENTAGE,
+    EntityCategory,
+    UnitOfArea,
+    UnitOfElectricCurrent,
+    UnitOfElectricPotential,
+    UnitOfTemperature,
+    UnitOfTime,
+)
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
@@ -29,6 +37,12 @@ class NarwalSensorEntityDescription(SensorEntityDescription):
     value_fn: Callable[[NarwalState], float | int | str | None]
     available_fn: Callable[[NarwalState], bool] | None = None
     dock_device: bool = False
+
+
+def _diag(state: NarwalState, attr: str) -> float | int | None:
+    """Read one field from the polled developer/get_robot_info diagnostics."""
+    diagnostics = getattr(state, "diagnostics", None)
+    return getattr(diagnostics, attr, None) if diagnostics else None
 
 
 def _has_active_cleaning_metrics(state: NarwalState) -> bool:
@@ -123,6 +137,76 @@ SENSOR_DESCRIPTIONS: tuple[NarwalSensorEntityDescription, ...] = (
         options=list(TASK_RESULT_OPTIONS.values()),
         # base_status field 15 terminateReason (TaskResult) — why the last task ended.
         value_fn=lambda state: TASK_RESULT_OPTIONS.get(state.terminate_reason),
+    ),
+    # --- developer/get_robot_info -------------------------------------------
+    # Polled engineering data, absent from every broadcast. Confirmed on a
+    # Freo Z Ultra (CX7, fw v01.13.11.02). These also settle an open question
+    # in docs/PROTOCOL.md: base_status field 38 reads a constant 100 while true
+    # battery health here reads 89%, so field 38 is not battery health.
+    NarwalSensorEntityDescription(
+        key="battery_health",
+        translation_key="battery_health",
+        native_unit_of_measurement=PERCENTAGE,
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda state: _diag(state, "battery_health"),
+        available_fn=lambda state: _diag(state, "battery_health") is not None,
+    ),
+    NarwalSensorEntityDescription(
+        key="battery_cycles",
+        translation_key="battery_cycles",
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda state: _diag(state, "battery_cycles"),
+        available_fn=lambda state: _diag(state, "battery_cycles") is not None,
+    ),
+    NarwalSensorEntityDescription(
+        key="battery_voltage",
+        translation_key="battery_voltage",
+        device_class=SensorDeviceClass.VOLTAGE,
+        native_unit_of_measurement=UnitOfElectricPotential.VOLT,
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        suggested_display_precision=2,
+        value_fn=lambda state: _diag(state, "battery_voltage"),
+        available_fn=lambda state: _diag(state, "battery_voltage") is not None,
+    ),
+    NarwalSensorEntityDescription(
+        key="battery_current",
+        translation_key="battery_current",
+        device_class=SensorDeviceClass.CURRENT,
+        native_unit_of_measurement=UnitOfElectricCurrent.AMPERE,
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        suggested_display_precision=2,
+        # Signed, but the convention is not established: the reference CX7 was
+        # observed at -0.714 A and at +0.776 A on separate reads, both while
+        # docked and charging. Reported as-is rather than normalised.
+        value_fn=lambda state: _diag(state, "battery_current"),
+        available_fn=lambda state: _diag(state, "battery_current") is not None,
+    ),
+    NarwalSensorEntityDescription(
+        key="battery_temperature",
+        translation_key="battery_temperature",
+        device_class=SensorDeviceClass.TEMPERATURE,
+        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        suggested_display_precision=1,
+        value_fn=lambda state: _diag(state, "battery_temperature"),
+        available_fn=lambda state: _diag(state, "battery_temperature") is not None,
+    ),
+    NarwalSensorEntityDescription(
+        key="battery_real_level",
+        translation_key="battery_real_level",
+        native_unit_of_measurement=PERCENTAGE,
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        # The robot reports a "virtual" level (what the app shows, and what
+        # base_status field 2 carries) alongside the real cell charge. They
+        # differ: 98% virtual against 94% real on the reference CX7.
+        value_fn=lambda state: _diag(state, "battery_real_level"),
+        available_fn=lambda state: _diag(state, "battery_real_level") is not None,
     ),
 )
 
