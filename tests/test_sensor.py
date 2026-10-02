@@ -72,22 +72,24 @@ def test_cleaning_metrics_are_available_during_active_clean() -> None:
 
 
 @pytest.mark.parametrize(
-    ("model", "enabled_by_default"),
+    ("product_key", "enabled_by_default"),
     [
-        ("Narwal Flow", False),
-        ("Narwal Flow 2", False),
-        ("Narwal Freo Z10 Ultra", True),
+        (NARWAL_MODELS["Narwal Flow"], False),
+        (NARWAL_MODELS["Narwal Flow 2"], False),
+        ("iSuVlI1If2", False),  # Flow 2 alias key (#81)
+        ("mkbqaprvrb", False),  # Flow 2 alias key (#81)
+        (NARWAL_MODELS["Narwal Freo Z10 Ultra"], True),
     ],
 )
 async def test_detergent_sensor_disabled_by_default_without_detergent_tank(
-    model: str, enabled_by_default: bool
+    product_key: str, enabled_by_default: bool
 ) -> None:
     """Flow models have no detergent tank, so field 41 is created but disabled."""
     state = NarwalState()
     coordinator = _sensor("battery", state).coordinator
     entry = MagicMock()
     entry.runtime_data = coordinator
-    entry.data = {"device_id": "test_device", "product_key": NARWAL_MODELS[model]}
+    entry.data = {"device_id": "test_device", "product_key": product_key}
     added: list = []
 
     await async_setup_entry(MagicMock(), entry, added.extend)

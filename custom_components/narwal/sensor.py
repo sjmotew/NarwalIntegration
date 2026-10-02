@@ -16,13 +16,13 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import NarwalConfigEntry
-from .const import CONF_PRODUCT_KEY, NARWAL_MODELS, TASK_RESULT_OPTIONS
+from .const import CONF_PRODUCT_KEY, TASK_RESULT_OPTIONS, product_keys_for_model
 from .coordinator import NarwalCoordinator
 from .entity import NarwalDockEntity, NarwalEntity
 from .narwal_client import NarwalState
 
 # Product keys for models without an auto-detergent tank.
-_NO_DETERGENT_KEYS = {NARWAL_MODELS["Narwal Flow"], NARWAL_MODELS["Narwal Flow 2"]}
+_NO_DETERGENT_KEYS = product_keys_for_model("Narwal Flow") | product_keys_for_model("Narwal Flow 2")
 
 
 @dataclass(frozen=True, kw_only=True)
