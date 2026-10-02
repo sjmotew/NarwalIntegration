@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from homeassistant.components.sensor import (
     SensorDeviceClass,
@@ -16,10 +16,13 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import NarwalConfigEntry
-from .const import TASK_RESULT_OPTIONS
+from .const import CONF_PRODUCT_KEY, TASK_RESULT_OPTIONS, product_keys_for_model
 from .coordinator import NarwalCoordinator
 from .entity import NarwalDockEntity, NarwalEntity
 from .narwal_client import NarwalState
+
+# Product keys for models without an auto-detergent tank.
+_NO_DETERGENT_KEYS = product_keys_for_model("Narwal Flow") | product_keys_for_model("Narwal Flow 2")
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -134,16 +137,29 @@ async def async_setup_entry(
 ) -> None:
     """Set up Narwal sensor entities."""
     coordinator = entry.runtime_data
+    product_key = entry.data.get(CONF_PRODUCT_KEY, "")
     entities: list[SensorEntity] = [
         (
             NarwalDockSensor(coordinator, description)
             if description.dock_device
             else NarwalSensor(coordinator, description)
         )
-        for description in SENSOR_DESCRIPTIONS
+        for description in (
+            _description_for_model(description, product_key)
+            for description in SENSOR_DESCRIPTIONS
+        )
     ]
     entities.append(NarwalChargingStateSensor(coordinator))
     async_add_entities(entities)
+
+
+def _description_for_model(
+    description: NarwalSensorEntityDescription, product_key: str
+) -> NarwalSensorEntityDescription:
+    """Disable sensors by default on models that lack the underlying hardware."""
+    if description.key == "detergent_remaining" and product_key in _NO_DETERGENT_KEYS:
+        return replace(description, entity_registry_enabled_default=False)
+    return description
 
 
 class NarwalSensor(NarwalEntity, SensorEntity):
