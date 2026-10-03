@@ -407,7 +407,10 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
         self._prev_working_status = WorkingStatus.UNKNOWN
         self._clean_session_active = False
         self._map_fetch_pending = False
-        self._last_display_map_resub: float = 0.0
+        # None until the first dropout re-subscribe. time.monotonic() is system
+        # uptime on Linux, so a 0.0 start would hold back the first recovery on
+        # a host up for less than the cooldown.
+        self._last_display_map_resub: float | None = None
         self._last_topic_subscribe: float = 0.0
         self._consecutive_failures = 0
         self._max_failures = 5  # 5 * 60s = 5 minutes before entities go unavailable
@@ -2343,7 +2346,10 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
             )
             if (
                 display_age > 30.0
-                and now - self._last_display_map_resub > 45.0
+                and (
+                    self._last_display_map_resub is None
+                    or now - self._last_display_map_resub > 45.0
+                )
             ):
                 _LOGGER.info(
                     "display_map dropout (%.0fs) — re-subscribing to topics",

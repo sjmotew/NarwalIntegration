@@ -44,7 +44,7 @@ class TestCoordinatorMapRefresh:
         coordinator._fast_poll_remaining = 0
         coordinator._listen_task = None
         coordinator._map_fetch_pending = False
-        coordinator._last_display_map_resub = 0.0
+        coordinator._last_display_map_resub = None
         coordinator._last_status_resub = 0.0
         coordinator._prev_working_status = WorkingStatus.UNKNOWN
         coordinator.active_clean_work_mode = None
@@ -197,15 +197,18 @@ def _background_task_names(coordinator: NarwalCoordinator) -> list[str]:
 class TestDisplayMapDropout:
     """display_map dropout recovery must not fire on silence it caused itself."""
 
-    # A frozen clock. time.monotonic() is system uptime on Linux, and the
-    # recovery cooldown is measured from 0.0, so on a CI runner booted less
-    # than 45s ago the real clock would hold back even a genuine dropout.
+    # A frozen clock, so these tests don't depend on the host's uptime.
     FAKE_NOW = 1_000_000.0
 
-    def _update(self, coordinator: NarwalCoordinator, state: NarwalState) -> None:
+    def _update(
+        self,
+        coordinator: NarwalCoordinator,
+        state: NarwalState,
+        now: float = FAKE_NOW,
+    ) -> None:
         with patch(
             "custom_components.narwal.coordinator.time.monotonic",
-            return_value=self.FAKE_NOW,
+            return_value=now,
         ):
             coordinator._on_state_update(state)
 
@@ -248,3 +251,28 @@ class TestDisplayMapDropout:
         self._update(coordinator, self._cleaning_state())
 
         assert "narwal_resub" in _background_task_names(coordinator)
+
+    def test_first_dropout_resubscribes_on_a_freshly_booted_host(self) -> None:
+        """The cooldown must not depend on time.monotonic() being large.
+
+        time.monotonic() is system uptime on Linux. The cooldown timestamp used
+        to start at 0.0, so on a host up for less than 45s the first genuine
+        dropout was held back until uptime passed 45s.
+        """
+        coordinator = self._cleaning_coordinator()
+        coordinator.client.last_display_map_age = 48.0
+        coordinator.client.last_subscription_age = 300.0
+
+        self._update(coordinator, self._cleaning_state(), now=20.0)
+
+        assert "narwal_resub" in _background_task_names(coordinator)
+
+    def test_cooldown_still_holds_back_a_repeat(self) -> None:
+        coordinator = self._cleaning_coordinator()
+        coordinator.client.last_display_map_age = 48.0
+        coordinator.client.last_subscription_age = 300.0
+
+        self._update(coordinator, self._cleaning_state(), now=20.0)
+        self._update(coordinator, self._cleaning_state(), now=40.0)
+
+        assert _background_task_names(coordinator).count("narwal_resub") == 1
