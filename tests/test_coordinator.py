@@ -3034,7 +3034,7 @@ class TestCoordinatorResilience:
         coordinator._fast_poll_remaining = 0
         coordinator._listen_task = None
         coordinator._map_fetch_pending = False
-        coordinator._last_display_map_resub = 0.0
+        coordinator._last_display_map_resub = None
         # Fresh subscription so renewal does not fire in unrelated tests.
         coordinator._last_topic_subscribe = time.monotonic()
         coordinator._prev_working_status = MagicMock()
@@ -3931,7 +3931,7 @@ class TestTopicSubscriptionRenewal:
         c._map_fetch_pending = True
         c._pending_map_display_cache_snapshot = None
         c._pending_map_display_cache_restore = None
-        c._last_display_map_resub = 0.0
+        c._last_display_map_resub = None
         c._last_topic_subscribe = last_subscribe
         c._prev_working_status = MagicMock()
         c.active_clean_work_mode = None
