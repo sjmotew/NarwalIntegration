@@ -84,6 +84,24 @@
           "fully_charged": "Fully Charged",
           "not_charging": "Not Charging"
         }
+      },
+      "battery_health": {
+        "name": "Battery health"
+      },
+      "battery_cycles": {
+        "name": "Battery charge cycles"
+      },
+      "battery_voltage": {
+        "name": "Battery voltage"
+      },
+      "battery_current": {
+        "name": "Battery current"
+      },
+      "battery_temperature": {
+        "name": "Battery temperature"
+      },
+      "battery_real_level": {
+        "name": "Battery level (actual)"
       }
     },
     "binary_sensor": {
