@@ -7,7 +7,7 @@ import logging
 import math
 import struct
 import time
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -115,6 +115,7 @@ class TestNarwalClientInit:
         """display_map field 2 must not infer robot task state."""
         client = NarwalClient("10.0.0.1", device_id="device")
         frame = build_frame(client._full_topic("map/display_map"), b"payload")
+        client.on_display_map = MagicMock()
         client.state.working_status = WorkingStatus.CHARGED
         client.state.station_activity = 2
         client.state.dock_field11 = 3
@@ -143,6 +144,7 @@ class TestNarwalClientInit:
         assert client.state.is_docked
         assert client.state.is_station_active
         assert not hasattr(client.state, "last_map_robot_movement")
+        client.on_display_map.assert_called_once_with(client.state)
 
     @pytest.mark.asyncio
     async def test_display_map_non_finite_pair_preserves_trajectory_break(self) -> None:
@@ -174,6 +176,7 @@ class TestNarwalClientInit:
     async def test_wait_for_response_marks_display_map_fresh(self) -> None:
         """display_map packets consumed while waiting for an ack are fresh."""
         client = NarwalClient("10.0.0.1", device_id="device")
+        client.on_display_map = MagicMock()
         display_frame = build_frame(client._full_topic("map/display_map"), b"display")
         response_frame = bytearray(build_frame(client._full_topic("cmd/test"), b"ack"))
         response_frame[2] = PROTOBUF_FIELD5_TAG
@@ -200,6 +203,7 @@ class TestNarwalClientInit:
             (1.25, 2.25),
         ]
         assert client.last_display_map_age < 1.0
+        client.on_display_map.assert_called_once_with(client.state)
 
     def test_unconfirmed_idle_base_status_preserves_active_metrics(self) -> None:
         """Stale idle base_status must not hide a fresh working_status task."""
