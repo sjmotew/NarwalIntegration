@@ -407,10 +407,7 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
         self._prev_working_status = WorkingStatus.UNKNOWN
         self._clean_session_active = False
         self._map_fetch_pending = False
-        # None until the first dropout re-subscribe. time.monotonic() is system
-        # uptime on Linux, so a 0.0 start would hold back the first recovery on
-        # a host up for less than the cooldown.
-        self._last_display_map_resub: float | None = None
+        self._last_display_map_resub: float = 0.0
         self._last_topic_subscribe: float = 0.0
         self._consecutive_failures = 0
         self._max_failures = 5  # 5 * 60s = 5 minutes before entities go unavailable
@@ -661,6 +658,39 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
         if not selected:
             return list(room_ids)
         return [room_id for room_id in room_ids if room_id in selected]
+
+    def rooms_overriding_clean_setting(
+        self,
+        attr: str,
+        *,
+        map_id: str | None = None,
+    ) -> list[str]:
+        """Return names of next-clean rooms that override a whole-floor setting.
+
+        The whole-floor value is the fallback for every room in the next clean,
+        so this lists the rooms whose own profile wins over it instead. Only
+        rooms that will actually be cleaned next are considered: the selected
+        rooms when a selection exists, otherwise every room on the map.
+        """
+        state = self.data or self.client.state
+        map_data = getattr(state, "map_data", None) if state is not None else None
+        rooms = getattr(map_data, "rooms", None)
+        if not isinstance(rooms, (list, tuple)):
+            return []
+        map_key = (
+            map_id if map_id is not None else self.room_settings_map_id(map_data)
+        )
+        room_ids = [room.room_id for room in rooms if room.room_id > 0]
+        next_clean_ids = set(
+            self.selected_clean_room_ids_for(room_ids, map_id=map_key)
+        )
+        customized = getattr(self, "room_clean_settings_customized", {})
+        return sorted(
+            room.display_name
+            for room in rooms
+            if room.room_id in next_clean_ids
+            and attr in customized.get((map_key, room.room_id), set())
+        )
 
     def has_selected_clean_rooms(self, *, map_id: str | None = None) -> bool:
         """Return whether the current map has an explicit next-clean selection."""
@@ -2346,10 +2376,7 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
             )
             if (
                 display_age > 30.0
-                and (
-                    self._last_display_map_resub is None
-                    or now - self._last_display_map_resub > 45.0
-                )
+                and now - self._last_display_map_resub > 45.0
             ):
                 _LOGGER.info(
                     "display_map dropout (%.0fs) — re-subscribing to topics",

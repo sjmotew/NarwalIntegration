@@ -52,11 +52,23 @@ class NarwalPassesNumber(NarwalEntity, RestoreNumber):
 
     @property
     def available(self) -> bool:
-        """Return True when the pass count can be changed now."""
-        return (
-            can_edit_pending_clean_settings(self.coordinator.data)
-            and not self.coordinator.has_selected_clean_rooms()
-        )
+        """Return True when the pass count can be changed now.
+
+        Selecting rooms does not hide this control: the whole-floor pass count
+        is the fallback for every selected room without its own override.
+        """
+        return can_edit_pending_clean_settings(self.coordinator.data)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, list[str]]:
+        """Expose which next-clean rooms override the whole-floor pass count."""
+        lookup = getattr(self.coordinator, "rooms_overriding_clean_setting", None)
+        rooms = lookup("passes") if lookup is not None else []
+        return {
+            "overridden_by_rooms": list(rooms)
+            if isinstance(rooms, (list, tuple))
+            else [],
+        }
 
     @property
     def native_value(self) -> float:
@@ -65,10 +77,7 @@ class NarwalPassesNumber(NarwalEntity, RestoreNumber):
 
     async def async_set_native_value(self, value: float) -> None:
         """Store the pass count."""
-        if (
-            not can_edit_pending_clean_settings(self.coordinator.data)
-            or self.coordinator.has_selected_clean_rooms()
-        ):
+        if not can_edit_pending_clean_settings(self.coordinator.data):
             raise HomeAssistantError("Narwal pass count cannot be changed right now")
         try:
             passes = _validate_pass_count(value)

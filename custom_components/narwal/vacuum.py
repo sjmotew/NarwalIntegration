@@ -374,11 +374,12 @@ class NarwalVacuum(NarwalEntity, RestoreEntity, StateVacuumEntity):
         return [room.room_id for room in map_data.rooms if room.room_id > 0]
 
     def _fan_speed_available(self, state: Any) -> bool:
-        """Return True when HA should expose the native fan speed control."""
-        setup_available = (
-            can_edit_pending_clean_settings(state)
-            and not self.coordinator.has_selected_clean_rooms()
-        )
+        """Return True when HA should expose the native fan speed control.
+
+        A room selection does not hide it: the whole-floor suction is the
+        fallback for every selected room without its own profile override.
+        """
+        setup_available = can_edit_pending_clean_settings(state)
         live_available = super().available and is_live_clean_setting_available(state)
         setup_applies = clean_setting_applies_to_mode(
             "fan",
@@ -642,19 +643,16 @@ class NarwalVacuum(NarwalEntity, RestoreEntity, StateVacuumEntity):
     async def async_set_fan_speed(self, fan_speed: str, **kwargs) -> None:
         """Set the fan speed.
 
-        Stores it as whole-floor pending suction when no rooms are selected;
-        while cleaning, it also writes the active task live.
+        Stores it as the whole-floor pending suction (the fallback for any
+        selected room without its own override); while cleaning, it writes the
+        active task live instead.
         """
         fan_speed_map = fan_speed_map_for(self.coordinator.config_entry.data)
         level = fan_speed_map.get(fan_speed)
         if level is None:
             raise HomeAssistantError(f"Unsupported Narwal fan speed: {fan_speed}")
         state = self.coordinator.data
-        has_selected_rooms = self.coordinator.has_selected_clean_rooms()
-        setup_available = (
-            can_edit_pending_clean_settings(state)
-            and not has_selected_rooms
-        )
+        setup_available = can_edit_pending_clean_settings(state)
         live_available = super().available and is_live_clean_setting_available(state)
         setup_applies = clean_setting_applies_to_mode(
             "fan",
@@ -682,7 +680,9 @@ class NarwalVacuum(NarwalEntity, RestoreEntity, StateVacuumEntity):
             resp = await self.coordinator.client.set_fan_speed(live_level)
             _raise_if_command_failed(resp, "set fan speed")
             self.coordinator.set_active_clean_setting("fan", live_level)
-        if not has_selected_rooms:
+        # A live change during a selected-room job stays runtime-only: that job
+        # may be running on room profiles, so it must not rewrite the defaults.
+        if setup_available or not self.coordinator.has_selected_clean_rooms():
             self.coordinator.clean_settings.fan = level
         self.async_write_ha_state()
         self.coordinator.async_update_listeners()

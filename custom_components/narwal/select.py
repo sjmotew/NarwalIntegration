@@ -163,6 +163,23 @@ LEGACY_MOP_MODES = {"Mop", "Vacuum then mop", "Vacuum and mop"}
 LEGACY_VACUUM_MODES = {"Vacuum", "Vacuum then mop", "Vacuum and mop"}
 LEGACY_START_ONLY_SETTINGS = {"mode", "passes", "route", "scrub"}
 START_ONLY_CLEAN_SETTING_ATTRS = {"work_mode", "mop_strength"}
+LEGACY_SETTING_ATTRS: dict[str, str] = {
+    "mode": "work_mode",
+    "suction": "fan",
+    "water": "water",
+    "scrub": "mop_strength",
+    "route": "route",
+    "passes": "passes",
+}
+
+
+def _rooms_overriding(coordinator: NarwalCoordinator, attr: str) -> list[str]:
+    """Return next-clean room names whose profile overrides a whole-floor value."""
+    lookup = getattr(coordinator, "rooms_overriding_clean_setting", None)
+    if lookup is None:
+        return []
+    rooms = lookup(attr)
+    return list(rooms) if isinstance(rooms, (list, tuple)) else []
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -401,12 +418,14 @@ class NarwalSelect(NarwalEntity, RestoreEntity, SelectEntity):
 
     @property
     def available(self) -> bool:
-        """Return True when this clean parameter can be changed now."""
+        """Return True when this clean parameter can be changed now.
+
+        A room selection does not hide the whole-floor controls: their value is
+        the fallback for every selected room that has no profile override of
+        its own, so editing them is still meaningful.
+        """
         state = self.coordinator.data
-        setup_available = (
-            can_edit_pending_clean_settings(state)
-            and not self.coordinator.has_selected_clean_rooms()
-        )
+        setup_available = can_edit_pending_clean_settings(state)
         setup_applies = clean_setting_applies_to_mode(
             self.entity_description.attr,
             self.coordinator.clean_settings.work_mode,
@@ -425,6 +444,15 @@ class NarwalSelect(NarwalEntity, RestoreEntity, SelectEntity):
         )
 
     @property
+    def extra_state_attributes(self) -> dict[str, list[str]]:
+        """Expose which next-clean rooms override this whole-floor value."""
+        return {
+            "overridden_by_rooms": _rooms_overriding(
+                self.coordinator, self.entity_description.attr
+            ),
+        }
+
+    @property
     def current_option(self) -> str | None:
         """Return the stored option label."""
         value = self.coordinator.active_clean_setting(self.entity_description.attr)
@@ -440,11 +468,7 @@ class NarwalSelect(NarwalEntity, RestoreEntity, SelectEntity):
         if option not in self.entity_description.mapping:
             raise HomeAssistantError(f"Unsupported Narwal option: {option}")
         state = self.coordinator.data
-        has_selected_rooms = self.coordinator.has_selected_clean_rooms()
-        setup_available = (
-            can_edit_pending_clean_settings(state)
-            and not has_selected_rooms
-        )
+        setup_available = can_edit_pending_clean_settings(state)
         live_available = super().available and is_live_clean_setting_available(state)
         setup_applies = clean_setting_applies_to_mode(
             self.entity_description.attr,
@@ -499,7 +523,9 @@ class NarwalSelect(NarwalEntity, RestoreEntity, SelectEntity):
                 self.entity_description.attr,
                 value,
             )
-        if not has_selected_rooms:
+        # A live change during a selected-room job stays runtime-only: that job
+        # may be running on room profiles, so it must not rewrite the defaults.
+        if setup_available or not self.coordinator.has_selected_clean_rooms():
             setattr(self.coordinator.clean_settings, self.entity_description.attr, value)
         self.async_write_ha_state()
         self.coordinator.async_update_listeners()
@@ -889,6 +915,15 @@ class LegacyNarwalSettingSelect(NarwalEntity, RestoreEntity, SelectEntity):
         return list(self._attr_options or [])
 
     @property
+    def extra_state_attributes(self) -> dict[str, list[str]]:
+        """Expose which next-clean rooms override this whole-floor value."""
+        return {
+            "overridden_by_rooms": _rooms_overriding(
+                self.coordinator, LEGACY_SETTING_ATTRS[self.entity_description.setting_key]
+            ),
+        }
+
+    @property
     def current_option(self) -> str | None:
         """Return the current selected option."""
         return self._option_from_settings()
@@ -930,10 +965,9 @@ class LegacyNarwalSettingSelect(NarwalEntity, RestoreEntity, SelectEntity):
         """Return whether this setting is currently meaningful and actionable."""
         key = self.entity_description.setting_key
         state = self.coordinator.data
-        setup_available = (
-            can_edit_pending_clean_settings(state)
-            and not self.coordinator.has_selected_clean_rooms()
-        )
+        # Whole-floor values stay editable with rooms selected: they are the
+        # fallback for every selected room without its own profile override.
+        setup_available = can_edit_pending_clean_settings(state)
         live_available = super().available and is_live_clean_setting_available(state)
         setup_applies = self._setting_applies_to_mode(key)
         if key in LEGACY_START_ONLY_SETTINGS:
@@ -1072,11 +1106,7 @@ class LegacyNarwalSettingSelect(NarwalEntity, RestoreEntity, SelectEntity):
 
         key = self.entity_description.setting_key
         state = self.coordinator.data
-        has_selected_rooms = self.coordinator.has_selected_clean_rooms()
-        setup_available = (
-            can_edit_pending_clean_settings(state)
-            and not has_selected_rooms
-        )
+        setup_available = can_edit_pending_clean_settings(state)
         live_available = super().available and is_live_clean_setting_available(state)
         setup_applies = self._setting_applies_to_mode(key)
         live_applies = self._setting_applies_to_mode(key, live=True)
@@ -1126,7 +1156,9 @@ class LegacyNarwalSettingSelect(NarwalEntity, RestoreEntity, SelectEntity):
             attr = "fan" if key == "suction" else "water"
             self.coordinator.set_active_clean_setting(attr, live_value)
 
-        if not has_selected_rooms:
+        # A live change during a selected-room job stays runtime-only: that job
+        # may be running on room profiles, so it must not rewrite the defaults.
+        if setup_available or not self.coordinator.has_selected_clean_rooms():
             self._apply_option(option)
         self.async_write_ha_state()
         self.coordinator.async_update_listeners()
