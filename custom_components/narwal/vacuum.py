@@ -27,6 +27,7 @@ from .const import (
     fan_speed_label_map_for,
     fan_speed_list_for,
     fan_speed_map_for,
+    live_fan_speed_list_for,
     normalize_fan_level_for_model,
 )
 from .coordinator import (
@@ -45,10 +46,7 @@ from .coordinator import (
 from .dock_tasks import ROBOT_RETURN_COMPATIBLE_DOCK_TASKS
 from .entity import NarwalEntity
 from .narwal_client import CommandResult, FanLevel, WorkingStatus
-from .narwal_client.const import (
-    ACTIVE_CLEANING_STATUSES,
-    fan_level_for_live_command,
-)
+from .narwal_client.const import ACTIVE_CLEANING_STATUSES
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -226,8 +224,6 @@ class NarwalVacuum(NarwalEntity, RestoreEntity, StateVacuumEntity):
         """Initialize the vacuum entity."""
         super().__init__(coordinator)
         self._attr_unique_id = coordinator.config_entry.data["device_id"]
-        # Offered tiers are per-model: models whose app tops out at DEEP omit level 5.
-        self._attr_fan_speed_list = fan_speed_list_for(coordinator.config_entry.data)
         self._last_reported_segment_signature = None
 
     async def async_added_to_hass(self) -> None:
@@ -450,6 +446,29 @@ class NarwalVacuum(NarwalEntity, RestoreEntity, StateVacuumEntity):
         if fan is None:
             fan = self.coordinator.clean_settings.fan
         return fan_speed_label_map_for(self.coordinator.config_entry.data).get(fan)
+
+    @property
+    def fan_speed_list(self) -> list[str]:
+        """Return options supported by the current command path."""
+        options = fan_speed_list_for(self.coordinator.config_entry.data)
+        state = self.coordinator.data
+        if state is None or not is_live_clean_setting_available(state):
+            return options
+        return live_fan_speed_list_for(
+            self.coordinator.config_entry.data,
+            self._active_fan_level,
+        )
+
+    @property
+    def _active_fan_level(self) -> FanLevel | None:
+        """Return the active suction when the current task identifies it."""
+        active_fan = self.coordinator.active_clean_setting("fan")
+        if active_fan is not None:
+            try:
+                return FanLevel(active_fan)
+            except (TypeError, ValueError):
+                pass
+        return None
 
     @property
     def extra_state_attributes(self) -> dict[str, Any] | None:
@@ -678,10 +697,15 @@ class NarwalVacuum(NarwalEntity, RestoreEntity, StateVacuumEntity):
                 "Narwal fan speed is not available in mop-only mode"
             )
         if live_available:
-            live_level = fan_level_for_live_command(level)
-            resp = await self.coordinator.client.set_fan_speed(live_level)
+            if level == FanLevel.SUPER:
+                if level == self._active_fan_level:
+                    return
+                raise HomeAssistantError(
+                    "Ultra Powerful suction cannot be selected mid-clean"
+                )
+            resp = await self.coordinator.client.set_fan_speed(level)
             _raise_if_command_failed(resp, "set fan speed")
-            self.coordinator.set_active_clean_setting("fan", live_level)
+            self.coordinator.set_active_clean_setting("fan", level)
         if not has_selected_rooms:
             self.coordinator.clean_settings.fan = level
         self.async_write_ha_state()
