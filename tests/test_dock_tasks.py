@@ -19,6 +19,10 @@ from custom_components.narwal.dock_tasks import (  # noqa: E402
     can_stop_dock_task,
     dock_task_blocks_robot_return,
 )
+from custom_components.narwal.narwal_client import (  # noqa: E402
+    DockStatusFreshness,
+    NarwalConnectionError,
+)
 from custom_components.narwal.switch import (  # noqa: E402
     DOCK_TASK_SWITCHES,
     NarwalDockTaskSwitch,
@@ -299,6 +303,7 @@ async def test_stale_dock_bag_stop_does_not_force_wake_during_cleaning() -> None
     coordinator.client.stop_dock_task.assert_awaited_once_with(
         DOCK_TASK_DRY_DOCK_BAG
     )
+    coordinator.async_refresh_dock_status.assert_not_awaited()
 
 
 def test_unmapped_dock_activity_blocks_start_and_stop() -> None:
@@ -359,17 +364,22 @@ async def test_active_dry_dust_bin_switch_stops_with_scoped_command() -> None:
     )
     coordinator = _coordinator(state)
     coordinator.client.stop_dock_task = AsyncMock(
-        return_value=CommandResponse(result_code=CommandResult.SUCCESS)
+        return_value=CommandResponse(
+            result_code=CommandResult.SUCCESS,
+            dock_status_freshness=DockStatusFreshness.FRESH,
+        )
     )
     switch = NarwalDockTaskSwitch(coordinator, DOCK_TASK_SWITCHES[3])
 
     await switch.async_turn_off()
 
     coordinator.client.stop_dock_task.assert_awaited_once_with(DOCK_TASK_DRY_DUST_BIN)
+    coordinator.async_refresh_dock_status.assert_not_awaited()
+    coordinator.async_set_refreshed_dock_data.assert_called_once_with()
 
 
-async def test_switch_refreshes_before_stop_validation() -> None:
-    """A stale local status cannot reject a typed stop before refresh."""
+async def test_client_owns_stop_refresh_and_validation() -> None:
+    """The entity delegates the complete stop contract to the client."""
     state = _docked_state()
     state.working_status = WorkingStatus.UNKNOWN
     state.set_dock_drying_task(
@@ -380,20 +390,106 @@ async def test_switch_refreshes_before_stop_validation() -> None:
     )
     coordinator = _coordinator(state)
 
-    async def refresh_dock_status() -> bool:
-        state.working_status = WorkingStatus.DOCKED
-        return True
-
-    coordinator.async_refresh_dock_status = AsyncMock(side_effect=refresh_dock_status)
     coordinator.client.stop_dock_task = AsyncMock(
-        return_value=CommandResponse(result_code=CommandResult.SUCCESS)
+        return_value=CommandResponse(
+            result_code=CommandResult.SUCCESS,
+            dock_status_freshness=DockStatusFreshness.FRESH,
+        )
     )
     switch = NarwalDockTaskSwitch(coordinator, DOCK_TASK_SWITCHES[3])
 
     await switch.async_turn_off()
 
-    coordinator.async_refresh_dock_status.assert_awaited()
+    coordinator.async_refresh_dock_status.assert_not_awaited()
     coordinator.client.stop_dock_task.assert_awaited_once_with(DOCK_TASK_DRY_DUST_BIN)
+    coordinator.async_set_refreshed_dock_data.assert_called_once_with()
+
+
+async def test_partial_stop_refresh_does_not_mark_stale_dock_state_fresh() -> None:
+    """Working-state preservation cannot promote partial status to fresh dock data."""
+    state = _docked_state()
+    state.update_from_working_status({"3": int(WorkingStatus.CLEANING)})
+    state.set_dock_drying_task(
+        DOCK_TASK_DRY_DOCK_BAG,
+        elapsed=61,
+        target=180,
+        fields=("12", "13"),
+    )
+    coordinator = _coordinator(state)
+    coordinator.has_fresh_state = False
+    coordinator.client.stop_dock_task = AsyncMock(
+        return_value=CommandResponse(result_code=CommandResult.SUCCESS)
+    )
+    switch = NarwalDockTaskSwitch(coordinator, DOCK_TASK_SWITCHES[4])
+
+    await switch.async_turn_off()
+
+    coordinator.async_set_refreshed_dock_data.assert_not_called()
+    coordinator.async_set_updated_data.assert_called_once_with(state)
+
+
+async def test_failed_stop_preflight_marks_dock_state_stale() -> None:
+    """A failed client preflight preserves coordinator recovery bookkeeping."""
+    coordinator = _coordinator()
+    coordinator.client.stop_dock_task = AsyncMock(
+        return_value=CommandResponse(
+            result_code=CommandResult.NOT_READY,
+            dock_status_freshness=DockStatusFreshness.STALE,
+        )
+    )
+    switch = NarwalDockTaskSwitch(coordinator, DOCK_TASK_SWITCHES[4])
+
+    with pytest.raises(HomeAssistantError):
+        await switch.async_turn_off()
+
+    coordinator.async_set_stale_dock_data.assert_called_once_with()
+
+
+async def test_semantic_stop_rejection_publishes_refreshed_state() -> None:
+    """A validated rejection publishes its authoritative preflight state."""
+    coordinator = _coordinator()
+    coordinator.client.stop_dock_task = AsyncMock(
+        return_value=CommandResponse(
+            result_code=CommandResult.NOT_APPLICABLE,
+            dock_status_freshness=DockStatusFreshness.FRESH,
+        )
+    )
+    switch = NarwalDockTaskSwitch(coordinator, DOCK_TASK_SWITCHES[4])
+
+    with pytest.raises(HomeAssistantError):
+        await switch.async_turn_off()
+
+    coordinator.async_set_refreshed_dock_data.assert_called_once_with()
+
+
+async def test_accepted_unverified_stop_marks_dock_state_stale() -> None:
+    """An accepted command with failed verification cannot publish fresh state."""
+    coordinator = _coordinator()
+    coordinator.client.stop_dock_task = AsyncMock(
+        return_value=CommandResponse(
+            result_code=CommandResult.SUCCESS,
+            dock_status_freshness=DockStatusFreshness.STALE,
+        )
+    )
+    switch = NarwalDockTaskSwitch(coordinator, DOCK_TASK_SWITCHES[4])
+
+    await switch.async_turn_off()
+
+    coordinator.async_set_stale_dock_data.assert_called_once_with()
+
+
+async def test_stop_preflight_exception_marks_dock_state_stale() -> None:
+    """A transport failure preserves coordinator recovery bookkeeping."""
+    coordinator = _coordinator()
+    coordinator.client.stop_dock_task = AsyncMock(
+        side_effect=NarwalConnectionError("status timeout")
+    )
+    switch = NarwalDockTaskSwitch(coordinator, DOCK_TASK_SWITCHES[4])
+
+    with pytest.raises(NarwalConnectionError):
+        await switch.async_turn_off()
+
+    coordinator.async_set_stale_dock_data.assert_called_once_with()
 
 
 def test_multiple_tasks_only_allow_scoped_stop() -> None:

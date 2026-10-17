@@ -27,7 +27,13 @@ from .dock_tasks import (
     is_robot_work_context,
 )
 from .entity import NarwalDockEntity, NarwalEntity
-from .narwal_client import CommandResponse, CommandResult
+from .narwal_client import (
+    CommandResponse,
+    CommandResult,
+    DockStatusFreshness,
+    NarwalCommandError,
+    NarwalConnectionError,
+)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -247,17 +253,21 @@ class NarwalDockTaskSwitch(NarwalDockEntity, SwitchEntity):
             force_wake = stale_state and not is_robot_work_context(client.state)
             if not client.robot_awake or force_wake:
                 await client.wake(timeout=10.0, force=force_wake)
-            if not await self.coordinator.async_refresh_dock_status():
-                raise HomeAssistantError("Narwal dock status could not be refreshed")
-            if self.entity_description.key not in client.state.active_dock_task_keys:
-                return
-            if not can_stop_dock_task(client.state, self.entity_description.key):
-                raise HomeAssistantError("Narwal dock task cannot be stopped right now")
-
-            response = await client.stop_dock_task(self.entity_description.key)
+            # The client refreshes, validates, sends, and verifies the scoped
+            # stop atomically. Extra entity-layer refreshes only add network
+            # round trips and can briefly replace actionable push telemetry.
+            try:
+                response = await client.stop_dock_task(self.entity_description.key)
+            except (NarwalCommandError, NarwalConnectionError):
+                self.coordinator.async_set_stale_dock_data()
+                raise
+            if response.dock_status_freshness is DockStatusFreshness.STALE:
+                self.coordinator.async_set_stale_dock_data()
+            elif response.dock_status_freshness is DockStatusFreshness.FRESH:
+                self.coordinator.async_set_refreshed_dock_data()
+            else:
+                self.coordinator.async_set_updated_data(client.state)
             self._raise_if_command_failed(response, "stop")
-            self.coordinator.async_set_updated_data(client.state)
-            await self.coordinator.async_refresh_dock_status()
 
     def _raise_if_command_failed(self, response: CommandResponse, action: str) -> None:
         """Raise a Home Assistant service error for rejected dock commands."""
