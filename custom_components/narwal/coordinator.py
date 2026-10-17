@@ -52,6 +52,7 @@ FAST_POLL_MAX = 6  # up to 60s of fast polling before falling back to normal
 CONSUMABLE_POLL_EVERY = 30
 MAP_DISPLAY_CACHE_VERSION = 1
 ROOM_SELECTION_STORE_VERSION = 1
+ROOM_ORDER_STORE_VERSION = 1
 # Retained routes can reach roughly 0.5 MiB at the point cap. Persist session
 # boundaries immediately, but checkpoint point growth at a storage-safe cadence.
 MAP_DISPLAY_CACHE_SAVE_INTERVAL = 300.0
@@ -389,6 +390,7 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
         self.room_clean_settings: dict[tuple[str | None, int], RoomCleanSettings] = {}
         self.room_clean_settings_customized: dict[tuple[str | None, int], set[str]] = {}
         self.selected_clean_rooms: dict[str | None, set[int]] = {}
+        self.room_clean_orders: dict[str, list[int]] = {}
         self._room_selection_store = Store(
             hass,
             ROOM_SELECTION_STORE_VERSION,
@@ -399,6 +401,13 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
         self._room_profile_store_loaded = False
         self._room_selection_dirty_maps: set[str | None] = set()
         self._room_profile_pending_resolution: set[int] = set()
+        self._room_order_store = Store(
+            hass,
+            ROOM_ORDER_STORE_VERSION,
+            f"{DOMAIN}_room_order_{entry.entry_id}",
+        )
+        self._room_order_save_lock = asyncio.Lock()
+        self._room_order_store_loaded = False
         self.active_clean_work_mode: WorkMode | None = None
         self.active_room_clean_settings: dict[int, RoomCleanSettings] = {}
         self.active_clean_setting_overrides: dict[str, object] = {}
@@ -655,12 +664,76 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
         map_key = map_id if map_id is not None else self.room_settings_map_id()
         if map_key is not None:
             self._resolve_identified_room_state(map_key)
+        ordered_room_ids = NarwalCoordinator.ordered_clean_room_ids_for(
+            self, room_ids, map_id=map_key
+        )
         selected = self.selected_clean_rooms.get(map_key, set())
         if not selected and map_key is not None:
             selected = self.selected_clean_rooms.get(None, set())
         if not selected:
-            return list(room_ids)
-        return [room_id for room_id in room_ids if room_id in selected]
+            return ordered_room_ids
+        return [room_id for room_id in ordered_room_ids if room_id in selected]
+
+    def ordered_clean_room_ids_for(
+        self,
+        room_ids: list[int],
+        *,
+        map_id: str | None = None,
+    ) -> list[int]:
+        """Return current rooms in their persisted cleaning order."""
+        current = list(dict.fromkeys(room_ids))
+        if not getattr(self, "_room_order_store_loaded", True):
+            return current
+        map_key = map_id if map_id is not None else self.room_settings_map_id()
+        if map_key is None:
+            return current
+        orders = getattr(self, "room_clean_orders", {})
+        saved = orders.get(map_key, [])
+        current_set = set(current)
+        ordered = [room_id for room_id in saved if room_id in current_set]
+        ordered.extend(room_id for room_id in current if room_id not in ordered)
+        return ordered
+
+    def room_clean_order_for(
+        self,
+        room_id: int,
+        room_ids: list[int],
+        *,
+        map_id: str | None = None,
+    ) -> int | None:
+        """Return a room's one-based position in the current cleaning order."""
+        ordered = self.ordered_clean_room_ids_for(room_ids, map_id=map_id)
+        try:
+            return ordered.index(room_id) + 1
+        except ValueError:
+            return None
+
+    def set_room_clean_order(
+        self,
+        room_id: int,
+        position: int,
+        room_ids: list[int],
+        *,
+        map_id: str | None = None,
+    ) -> None:
+        """Move one room to a one-based position and persist the full order."""
+        if not getattr(self, "_room_order_store_loaded", True):
+            raise ValueError("Narwal room cleaning order is not restored yet")
+        ordered = self.ordered_clean_room_ids_for(room_ids, map_id=map_id)
+        if room_id not in ordered:
+            raise ValueError("Narwal room is not present on the current map")
+        if position < 1 or position > len(ordered):
+            raise ValueError(f"Narwal room cleaning order must be 1-{len(ordered)}")
+        ordered.remove(room_id)
+        ordered.insert(position - 1, room_id)
+        map_key = map_id if map_id is not None else self.room_settings_map_id()
+        if map_key is None:
+            raise ValueError("Narwal room map is not available")
+        if not hasattr(self, "room_clean_orders"):
+            self.room_clean_orders = {}
+        self.room_clean_orders[map_key] = ordered
+        self._schedule_room_order_save()
+        self.async_update_listeners()
 
     def has_selected_clean_rooms(self, *, map_id: str | None = None) -> bool:
         """Return whether the current map has an explicit next-clean selection."""
@@ -926,6 +999,84 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
         self._room_selection_dirty_maps = stored_dirty_maps | dirty_maps
         self._room_selection_store_loaded = True
         self._room_profile_store_loaded = True
+
+    async def _async_restore_room_orders(self) -> None:
+        """Restore map-scoped room cleaning orders."""
+        async with self._room_order_save_lock:
+            try:
+                payload = await self._room_order_store.async_load()
+            except Exception:
+                _LOGGER.debug("Could not restore room cleaning orders")
+                return
+            if payload is None:
+                self._room_order_store_loaded = True
+                return
+            if not isinstance(payload, Mapping) or not isinstance(
+                payload.get("maps"), list
+            ):
+                _LOGGER.warning("Ignoring invalid stored Narwal room cleaning order")
+                self.room_clean_orders = {}
+                self._room_order_store_loaded = True
+                return
+            restored: dict[str, list[int]] = {}
+            invalid = False
+            for item in payload["maps"]:
+                if not isinstance(item, Mapping):
+                    invalid = True
+                    continue
+                map_id = item.get("map_id")
+                room_ids = item.get("room_ids")
+                if (
+                    not isinstance(map_id, str)
+                    or not map_id
+                    or not isinstance(room_ids, list)
+                    or not room_ids
+                    or any(
+                        not isinstance(room_id, int)
+                        or isinstance(room_id, bool)
+                        or room_id <= 0
+                        for room_id in room_ids
+                    )
+                    or len(room_ids) != len(set(room_ids))
+                    or map_id in restored
+                ):
+                    invalid = True
+                    continue
+                restored[map_id] = list(room_ids)
+            if invalid:
+                _LOGGER.warning("Ignoring invalid stored Narwal room cleaning order")
+            self.room_clean_orders = restored
+            self._room_order_store_loaded = True
+
+    def _schedule_room_order_save(self) -> None:
+        """Persist room cleaning order after an entity changes it."""
+        if not hasattr(self, "_room_order_store"):
+            return
+        self.config_entry.async_create_background_task(
+            self.hass,
+            self._async_save_room_orders(),
+            f"{DOMAIN}_room_order_save",
+        )
+
+    async def _async_save_room_orders(self) -> None:
+        """Persist map-scoped room cleaning orders."""
+        async with self._room_order_save_lock:
+            if not self._room_order_store_loaded:
+                return
+            payload = {
+                "maps": [
+                    {"map_id": map_id, "room_ids": room_ids}
+                    for map_id, room_ids in sorted(
+                        self.room_clean_orders.items(),
+                        key=lambda item: item[0] or "",
+                    )
+                    if room_ids
+                ]
+            }
+            try:
+                await self._room_order_store.async_save(payload)
+            except Exception:
+                _LOGGER.debug("Could not save room cleaning orders")
 
     def _schedule_room_selection_save(self) -> None:
         """Persist explicit room selections after a switch changes."""
@@ -2199,6 +2350,8 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
         The listener's keepalive loop handles waking independently.
         """
         await self._async_restore_room_selections()
+        if hasattr(self, "_room_order_store"):
+            await self._async_restore_room_orders()
         await self.client.connect()
 
         # Fetch initial state BEFORE starting listener (no concurrent recv)
@@ -2550,6 +2703,8 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
                     or not self._room_profile_store_loaded
                 ):
                     await self._async_restore_room_selections()
+        if not getattr(self, "_room_order_store_loaded", True):
+            await self._async_restore_room_orders()
 
         try:
             if not self.client.connected:
@@ -2640,4 +2795,6 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
                 await self._listen_task
         await self._async_flush_map_display_cache()
         await self._async_save_room_selections()
+        if hasattr(self, "_room_order_store"):
+            await self._async_save_room_orders()
         await super().async_shutdown()

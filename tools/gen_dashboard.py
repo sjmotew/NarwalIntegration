@@ -1,9 +1,9 @@
 """Generate a room-picker dashboard section for the Narwal integration.
 
-v1.0.8 creates six profile selects and a selection switch for every room on
-the map — 168 entities for a 24-room house. Putting them all on a dashboard is
-unusable. This tool emits Lovelace YAML that shows ONE room at a time, chosen
-from a dropdown, so a dashboard carries seven tiles instead of 168.
+The integration creates six profile selects, a selection switch, and a cleaning
+order number for every room. Putting them all on a dashboard is unusable. This
+tool emits Lovelace YAML that shows ONE room at a time, chosen from a dropdown,
+so the dashboard only carries that room's controls.
 
 It reads Home Assistant's entity registry rather than the robot, because the
 registry is the only place that knows which entity_id belongs to which room:
@@ -37,7 +37,7 @@ from pathlib import Path
 
 import yaml
 
-ROOM_KEY = re.compile(r"_map_(?P<map>\w+?)_room_(?P<room>\d+)_(?P<key>mode|suction|water|scrub|route|passes|selected)$")
+ROOM_KEY = re.compile(r"_map_(?P<map>\w+?)_room_(?P<room>\d+)_(?P<key>mode|suction|water|scrub|route|passes|selected|clean_order)$")
 PROFILE_KEYS = ("mode", "suction", "water", "scrub", "route", "passes")
 GLOBAL_SUFFIXES = {
     "_mode": "mode",
@@ -75,7 +75,7 @@ def load_registry(path: Path) -> list[dict]:
 def room_name(entry: dict, key: str) -> str:
     """Prefer the user's override name, else strip the key suffix from the original."""
     name = entry.get("name") or entry.get("original_name") or entry["entity_id"]
-    suffix = " " + key
+    suffix = " cleaning order" if key == "clean_order" else " " + key
     return name[: -len(suffix)] if name.lower().endswith(suffix) else name
 
 
@@ -148,6 +148,14 @@ def rooms_section(rooms, globals_, vacuum, picker, script) -> dict:
     for room in rooms.values():
         ents = room["entities"]
         cards = [tile(ents["selected"], "Include in next start", "toggle")]
+        if "clean_order" in ents:
+            cards.append(
+                tile(
+                    ents["clean_order"],
+                    "Cleaning order",
+                    features=[{"type": "numeric-input", "style": "buttons"}],
+                )
+            )
         cards += [tile(ents[k], LABELS[k], "select-options") for k in PROFILE_KEYS if k in ents]
         cards.append(
             button(

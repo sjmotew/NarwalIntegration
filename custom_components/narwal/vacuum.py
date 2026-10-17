@@ -504,7 +504,6 @@ class NarwalVacuum(NarwalEntity, RestoreEntity, StateVacuumEntity):
                 return
             if getattr(self.coordinator, "_room_profile_store_loaded", True) is False:
                 raise HomeAssistantError("Narwal room profiles are not restored yet")
-
             # The HA vacuum start command uses integration-owned room selections:
             # selected rooms when any are on, otherwise all rooms.
             all_room_ids = await self._all_room_ids()
