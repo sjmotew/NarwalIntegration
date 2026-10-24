@@ -2836,6 +2836,12 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
             self._mark_dock_status_refresh_failed()
             _LOGGER.debug("Could not fetch initial status")
 
+        # Establish any terminal boundary before get_map can deliver its first
+        # display_map callback. Otherwise a startup route can be merged with a
+        # completed session before the transition handler sees that status.
+        if is_confirmed_terminal_clean_state(self.client.state):
+            self._handle_working_status_transition(self.client.state)
+
         try:
             await self.client.get_map()
         except Exception:
