@@ -277,6 +277,7 @@ class NarwalRoomSelectionSwitch(NarwalEntity, SwitchEntity):
 
     _attr_entity_registry_visible_default = False
     _attr_icon = "mdi:floor-plan"
+    _attr_translation_key = "room_selected"
 
     def __init__(
         self,
@@ -297,7 +298,7 @@ class NarwalRoomSelectionSwitch(NarwalEntity, SwitchEntity):
         self._attr_suggested_object_id = (
             f"{slugify(coordinator.config_entry.title)}_room_{slugify(room_name)}"
         )
-        self._attr_name = f"{room_name} selected"
+        self._attr_translation_placeholders = {"room_name": room_name}
 
     @callback
     def async_update_room_name(self, room_name: str) -> None:
@@ -305,7 +306,7 @@ class NarwalRoomSelectionSwitch(NarwalEntity, SwitchEntity):
         if room_name == self._room_name:
             return
         self._room_name = room_name
-        self._attr_name = f"{room_name} selected"
+        self._attr_translation_placeholders = {"room_name": room_name}
         self._attr_suggested_object_id = (
             f"{slugify(self.coordinator.config_entry.title)}_room_{slugify(room_name)}"
         )

@@ -971,7 +971,7 @@ class TestRoomNarwalSettingSelect:
             if isinstance(entity, RoomNarwalSettingSelect)
             and entity.entity_description.setting_key == "mode"
         )
-        assert room_mode._attr_name == "Kitchen mode"
+        assert room_mode._attr_translation_placeholders == {"room_name": "Kitchen"}
         assert room_mode.extra_state_attributes["room_name"] == "Kitchen"
 
         coord.client.state.map_data = MapData(
@@ -982,7 +982,7 @@ class TestRoomNarwalSettingSelect:
         assert len(added_entities) == len(SELECT_DESCRIPTIONS) + len(
             LEGACY_SELECT_DESCRIPTIONS
         ) + len(ROOM_SELECT_DESCRIPTIONS)
-        assert room_mode._attr_name == "Pantry mode"
+        assert room_mode._attr_translation_placeholders == {"room_name": "Pantry"}
         assert room_mode.extra_state_attributes["room_name"] == "Pantry"
 
 

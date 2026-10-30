@@ -1,0 +1,310 @@
+{
+  "config": {
+    "flow_title": "Narwal 로봇청소기 ({host})",
+    "step": {
+      "user": {
+        "title": "Narwal 로봇청소기 연결",
+        "description": "Narwal 로봇청소기의 IP 주소를 입력하고 모델을 선택하세요.",
+        "data": {
+          "host": "IP 주소",
+          "port": "포트",
+          "model": "모델"
+        }
+      },
+      "device_id": {
+        "title": "기기 ID 입력",
+        "description": "자동 감지를 사용할 수 없습니다. 클라우드에서 발급된 32자리 기기 ID를 입력하거나, 자동 감지를 다시 시도하려면 체크하세요. 처음 시도할 때 로봇이 절전 상태였다면 다시 시도하면 될 수 있습니다. 기기 ID 확인 방법은 통합구성요소 문서를 참고하세요.",
+        "data": {
+          "device_id": "기기 ID",
+          "retry_auto_detect": "자동 감지 다시 시도"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "로봇청소기에 연결할 수 없습니다. IP 주소가 맞는지, 로봇청소기 전원이 켜져 있는지 확인하세요.",
+      "unknown": "예기치 않은 오류가 발생했습니다.",
+      "device_id_required": "기기 ID를 입력하거나 “자동 감지 다시 시도”를 체크하세요."
+    },
+    "abort": {
+      "already_configured": "이미 설정된 로봇청소기입니다."
+    }
+  },
+  "entity": {
+    "vacuum": {
+      "vacuum": {
+        "name": "로봇청소기"
+      }
+    },
+    "sensor": {
+      "cleaning_area": {
+        "name": "청소 면적"
+      },
+      "cleaning_time": {
+        "name": "청소 시간"
+      },
+      "remaining_time": {
+        "name": "남은 시간"
+      },
+      "firmware_version": {
+        "name": "펌웨어 버전"
+      },
+      "dust_bag_health": {
+        "name": "먼지봉투 수명"
+      },
+      "detergent_remaining": {
+        "name": "세제 잔량"
+      },
+      "last_clean_result": {
+        "name": "마지막 청소 결과",
+        "state": {
+          "normal_end": "완료",
+          "user_force_end": "사용자가 중지함",
+          "shutdown_force_end": "종료됨 (전원 꺼짐)",
+          "low_battery_force_end": "종료됨 (배터리 부족)",
+          "overflow_force_end": "종료됨 (물통 넘침)",
+          "pause_too_long_force_end": "종료됨 (일시정지 시간 초과)",
+          "system_error_force_end": "종료됨 (시스템 오류)",
+          "user_force_end_on_station": "스테이션에서 중지함",
+          "user_force_end_on_app": "앱에서 중지함",
+          "recall_end": "도크로 복귀함",
+          "normal_end_replenish_map_fail": "완료 (지도 업데이트 실패)",
+          "map_unmatched_force_end": "종료됨 (지도 불일치)",
+          "relocation_fail_with_station_force_end": "종료됨 (위치 재인식 실패)",
+          "relocation_fail_without_station_force_end": "종료됨 (위치 재인식 실패, 스테이션 없음)",
+          "pretask_error_force_end": "종료됨 (작업 준비 오류)",
+          "schedule_task_force_end": "종료됨 (예약)",
+          "unexecuted": "실행 안 됨",
+          "not_find_pet": "반려동물을 찾지 못함"
+        }
+      },
+      "charging_state": {
+        "name": "충전",
+        "state": {
+          "charging": "충전 중",
+          "fully_charged": "완충",
+          "not_charging": "충전 안 함"
+        }
+      }
+    },
+    "binary_sensor": {
+      "docked": {
+        "name": "도킹",
+        "state": {
+          "on": "도킹됨",
+          "off": "도킹 해제됨"
+        }
+      },
+      "error": {
+        "name": "오류",
+        "state": {
+          "on": "문제 있음",
+          "off": "정상"
+        }
+      },
+      "clean_water_tank": {
+        "name": "청수통"
+      },
+      "sewage_tank": {
+        "name": "오수통"
+      },
+      "dust_box": {
+        "name": "먼지통"
+      },
+      "dust_bag": {
+        "name": "먼지봉투"
+      },
+      "station_bag": {
+        "name": "스테이션 먼지봉투"
+      },
+      "maintenance_required": {
+        "name": "점검 필요"
+      },
+      "replacement_required": {
+        "name": "교체 필요"
+      }
+    },
+    "select": {
+      "work_mode": {
+        "name": "청소 모드",
+        "state": {
+          "vacuum": "흡입",
+          "mop": "물걸레",
+          "vacuum_then_mop": "흡입 후 물걸레",
+          "vacuum_and_mop": "흡입과 물걸레 동시"
+        }
+      },
+      "water": {
+        "name": "물걸레 습도",
+        "state": {
+          "dry": "약간 건조",
+          "normal": "보통",
+          "wet": "약간 촉촉"
+        }
+      },
+      "mop_strength": {
+        "name": "걸레질 강도",
+        "state": {
+          "normal": "보통",
+          "high": "강하게"
+        }
+      },
+      "legacy_mode": {
+        "name": "모드"
+      },
+      "legacy_suction": {
+        "name": "흡입력"
+      },
+      "legacy_water": {
+        "name": "물 양"
+      },
+      "legacy_scrub": {
+        "name": "스크럽"
+      },
+      "legacy_route": {
+        "name": "청소 경로"
+      },
+      "legacy_passes": {
+        "name": "반복 횟수"
+      },
+      "room_mode": {
+        "name": "{room_name} 모드"
+      },
+      "room_suction": {
+        "name": "{room_name} 흡입력"
+      },
+      "room_water": {
+        "name": "{room_name} 물 양"
+      },
+      "room_scrub": {
+        "name": "{room_name} 스크럽"
+      },
+      "room_route": {
+        "name": "{room_name} 청소 경로"
+      },
+      "room_passes": {
+        "name": "{room_name} 반복 횟수"
+      }
+    },
+    "number": {
+      "passes": {
+        "name": "청소 횟수"
+      }
+    },
+    "light": {
+      "dock_light": {
+        "name": "도크 조명"
+      }
+    },
+    "switch": {
+      "empty_dustbin": {
+        "name": "먼지통 비우기"
+      },
+      "wash_mop": {
+        "name": "걸레 세척"
+      },
+      "dry_mop": {
+        "name": "걸레 건조"
+      },
+      "dry_dust_bin": {
+        "name": "먼지통 건조 및 살균"
+      },
+      "dry_dock_bag": {
+        "name": "도크 먼지봉투 건조 및 살균"
+      },
+      "show_room_labels": {
+        "name": "방 이름 표시"
+      },
+      "show_furniture": {
+        "name": "가구 표시"
+      },
+      "show_furniture_labels": {
+        "name": "가구 이름 표시"
+      },
+      "room_selected": {
+        "name": "{room_name} 선택"
+      }
+    },
+    "camera": {
+      "map": {
+        "name": "지도"
+      },
+      "carpet_map": {
+        "name": "카펫 지도"
+      }
+    }
+  },
+  "device": {
+    "dock": {
+      "name": "{name} 도크"
+    }
+  },
+  "selector": {
+    "clean_mode": {
+      "options": {
+        "vacuum": "흡입",
+        "mop": "물걸레",
+        "vacuum_then_mop": "흡입 후 물걸레",
+        "vacuum_and_mop": "흡입과 물걸레 동시"
+      }
+    },
+    "suction": {
+      "options": {
+        "ai": "AI",
+        "quiet": "저소음",
+        "standard": "표준",
+        "strong": "강력",
+        "super_powerful": "초강력",
+        "ultra_powerful": "울트라"
+      }
+    },
+    "water": {
+      "options": {
+        "dry": "약간 건조",
+        "normal": "보통",
+        "wet": "약간 촉촉"
+      }
+    },
+    "mop_strength": {
+      "options": {
+        "normal": "보통",
+        "high": "강하게"
+      }
+    },
+    "route": {
+      "options": {
+        "standard": "표준",
+        "meticulous": "꼼꼼하게"
+      }
+    }
+  },
+  "services": {
+    "clean_rooms": {
+      "name": "방 청소",
+      "description": "Narwal 로컬 clean/start_clean 명령으로 선택한 방을 청소합니다.",
+      "fields": {
+        "rooms": {
+          "name": "방",
+          "description": "청소할 Narwal 방 ID 목록(순서대로). 현재 지도의 모든 방을 청소하려면 \"all\"을 입력하세요."
+        },
+        "mode": {
+          "name": "모드"
+        },
+        "suction": {
+          "name": "흡입력"
+        },
+        "water": {
+          "name": "물 양"
+        },
+        "mop_strength": {
+          "name": "걸레질 강도"
+        },
+        "passes": {
+          "name": "반복 횟수"
+        },
+        "route": {
+          "name": "청소 경로"
+        }
+      }
+    }
+  }
+}
