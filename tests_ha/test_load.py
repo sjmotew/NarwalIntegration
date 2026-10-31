@@ -41,6 +41,21 @@ def test_module_imports_against_real_ha(module: str) -> None:
     importlib.import_module(f"custom_components.narwal.{module}")
 
 
+def test_map_card_attributes_stay_out_of_the_recorder() -> None:
+    """Real HA merges our unrecorded keys with the camera's own ones.
+
+    The stubs cannot show this: the union is built by ``Entity.__init_subclass__``.
+    Reading the name-mangled private ``_Entity__combined_unrecorded_attributes`` is
+    deliberate: that private union is exactly what this test checks, so keep it.
+    """
+    from custom_components.narwal.camera import _MAP_CARD_ATTRIBUTES, NarwalMapCamera
+
+    combined = NarwalMapCamera._Entity__combined_unrecorded_attributes
+    assert combined >= _MAP_CARD_ATTRIBUTES
+    assert "access_token" in combined
+    assert "render_count" not in combined
+
+
 async def test_user_flow_shows_form(hass: HomeAssistant) -> None:
     """The config flow at least renders its first step."""
     result = await hass.config_entries.flow.async_init(
