@@ -17,6 +17,7 @@ from narwal_client.map_renderer import (
     OBSTACLE_COLORS,
     _scaled_coord,
     _transform_point,
+    calibration_points,
     render_base_map,
     render_map_png,
     render_overlay,
@@ -335,3 +336,84 @@ class TestObstacleRendering:
         assert result_with is not None
         # Images should differ (obstacle drawn on one but not other)
         assert list(result_without.getdata()) != list(result_with.getdata())
+
+
+class TestCalibrationPoints:
+    """calibration_points() must describe where render_overlay really draws."""
+
+    @staticmethod
+    def _affine(points, grid_x: float, grid_y: float) -> tuple[float, float]:
+        """Map a grid point to image pixels the way a map card does."""
+        origin, right, up = (point["map"] for point in points)
+        width = points[1]["vacuum"]["x"]
+        height = points[2]["vacuum"]["y"]
+        return (
+            origin["x"] + (right["x"] - origin["x"]) * grid_x / width
+            + (up["x"] - origin["x"]) * grid_y / height,
+            origin["y"] + (right["y"] - origin["y"]) * grid_x / width
+            + (up["y"] - origin["y"]) * grid_y / height,
+        )
+
+    @staticmethod
+    def _drawn_robot_centre(png: bytes, base) -> tuple[float, float]:
+        """Return the centre of the pixels render_overlay changed."""
+        from PIL import Image, ImageChops
+
+        drawn = Image.open(io.BytesIO(png)).convert("RGB")
+        if drawn.size != base.size:
+            base = base.resize(drawn.size)
+        box = ImageChops.difference(drawn, base.convert("RGB")).getbbox()
+        assert box is not None, "robot was not drawn"
+        return ((box[0] + box[2] - 1) / 2, (box[1] + box[3] - 1) / 2)
+
+    def test_identity_view(self) -> None:
+        """Unrotated, unzoomed: grid origin sits in the bottom-left cell centre."""
+        points = calibration_points(40, 60 * MAP_RENDER_SCALE, 40 * MAP_RENDER_SCALE)
+
+        assert [point["vacuum"] for point in points] == [
+            {"x": 0.0, "y": 0.0},
+            {"x": 60.0, "y": 0.0},
+            {"x": 0.0, "y": 40.0},
+        ]
+        assert points[0]["map"] == {"x": 1.5, "y": 118.5}
+        assert points[1]["map"] == {"x": 181.5, "y": 118.5}
+        assert points[2]["map"] == {"x": 1.5, "y": -1.5}
+
+    def test_matches_drawn_robot_for_every_view(self) -> None:
+        """For each rotation and zoom the calibrated point is the drawn robot."""
+        from PIL import Image
+
+        width, height = 60, 40
+        grid_x, grid_y = 22.0, 14.0
+        for rotation in (0, 90, 180, 270):
+            for zoom in (1.0, 1.5):
+                base = Image.new(
+                    "RGB",
+                    (width * MAP_RENDER_SCALE, height * MAP_RENDER_SCALE),
+                    (100, 100, 100),
+                )
+                png = render_overlay(
+                    base, height=height, robot_x=grid_x, robot_y=grid_y,
+                    robot_heading=None, rotation_degrees=rotation, zoom=zoom,
+                )
+                rotated = base.rotate(-rotation, expand=True) if rotation else base
+                if zoom > 1.0:
+                    crop_w = int(rotated.width / zoom)
+                    crop_h = int(rotated.height / zoom)
+                    left = (rotated.width - crop_w) // 2
+                    top = (rotated.height - crop_h) // 2
+                    rotated = rotated.crop((left, top, left + crop_w, top + crop_h))
+                drawn = self._drawn_robot_centre(png, rotated)
+                expected = self._affine(
+                    calibration_points(height, base.width, base.height, rotation, zoom),
+                    grid_x,
+                    grid_y,
+                )
+                assert abs(drawn[0] - expected[0]) <= 1.5, (rotation, zoom, drawn, expected)
+                assert abs(drawn[1] - expected[1]) <= 1.5, (rotation, zoom, drawn, expected)
+
+    def test_empty_map_has_no_division_by_zero(self) -> None:
+        """A zero-height map still returns finite points."""
+        points = calibration_points(0, 0, 0)
+
+        assert len(points) == 3
