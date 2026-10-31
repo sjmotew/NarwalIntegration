@@ -44,7 +44,7 @@ port is open, [open an issue](https://github.com/sjmotew/NarwalIntegration/issue
 | **Per-room profiles** | Mode, suction, water, scrub, route and passes per room; room-selection switches; a `narwal.clean_rooms` service. Disabled by default; [`tools/gen_dashboard.py`](tools/gen_dashboard.py) builds a room-picker dashboard from the ones you enable |
 | **Sensors** | Battery, cleaning time and area, firmware, docked and charging state, last clean result, dust bag health, detergent; current room and task progress as vacuum attributes during a clean |
 | **Alerts** | Clean-water tank, sewage tank, dust box, dust bag, station bag, error; maintenance and replacement alerts with the affected parts as attributes |
-| **Live map** | Colour-coded floor plan with room labels, furniture overlay, dock marker and the robot's own live trail during cleaning; [map-card attributes](#map-card-attributes) with the robot position, dock, trail and calibration points; a carpet-map camera; toggles for labels and furniture |
+| **Live map** | Colour-coded floor plan with room labels, furniture overlay, dock marker and the robot's own live trail during cleaning; [map-card attributes](docs/MAP-CARD.md) with the robot position, dock, trail and calibration points; a carpet-map camera; toggles for labels and furniture |
 | **Dock** | Ambient light (off, fireplace, nightlight, purple) on models that have one; dock task switches: empty dustbin, wash mop, dry mop, dry dust bin, dry dock bag |
 | **Connectivity** | Push updates over WebSocket on broadcasting models, auto-reconnect with backoff, wake system plus keepalive heartbeat, 60-second polling fallback, mDNS / DHCP discovery |
 
@@ -87,23 +87,6 @@ mapping step. The editor hangs off the **entity** (cog icon → *Map vacuum segm
 not the integration or device page. [docs/ROOM-CLEANING.md](docs/ROOM-CLEANING.md) walks through
 it and includes a complete scheduled multi-room automation.
 
-### Map card attributes
-
-The map camera describes each rendered frame in its attributes, so a dashboard card can draw
-its own map or place markers on the camera image. All positions are map grid coordinates
-(x to the right, y up), the same units the robot reports.
-
-| Attribute | Shape | Meaning |
-|---|---|---|
-| `vacuum_position` | `{x, y, a}` | Robot position; `a` is the heading in degrees (0 = +x, 90 = +y) |
-| `charger` | `{x, y}` | Dock position |
-| `path` | `[[[x, y], …], …]` | Trail of the current clean as segments, decimated to at most 400 points with the newest kept dense |
-| `calibration_points` | `[{vacuum: {x, y}, map: {x, y}}, …]` | Three grid points and their pixels in the camera image, after rotation and zoom |
-
-`calibration_points` follows the format map cards such as
-[lovelace-xiaomi-vacuum-map-card](https://github.com/PiotrMachowski/lovelace-xiaomi-vacuum-map-card)
-read from a camera. These attributes change with every frame and are excluded from the recorder.
-
 ## Known limitations
 
 - **All cleaning requires the dock.** The robot returns `NOT_READY` otherwise, for `vacuum.start` as well as room cleans.
@@ -132,6 +115,7 @@ account UUID redacted. [What each section settles](docs/TROUBLESHOOTING.md#attac
 | [docs/MODELS.md](docs/MODELS.md) | Compatibility evidence per model: product keys, firmware, reporters |
 | [docs/SETUP.md](docs/SETUP.md) | Discovery internals, VLAN / SNAT, CX7 Device ID |
 | [docs/ROOM-CLEANING.md](docs/ROOM-CLEANING.md) | Area mapping, per-room profiles, dashboard generator, automation example |
+| [docs/MAP-CARD.md](docs/MAP-CARD.md) | Map camera attributes for dashboard cards: robot position, dock, trail, calibration points |
 | [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | Quick fixes, known limitations in detail, diagnostics |
 | [docs/PROTOCOL.md](docs/PROTOCOL.md) | The local WebSocket protocol: frames, topics, field maps, corrections, open questions |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | Next steps, parked features, captures that would settle open questions |

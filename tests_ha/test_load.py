@@ -45,6 +45,8 @@ def test_map_card_attributes_stay_out_of_the_recorder() -> None:
     """Real HA merges our unrecorded keys with the camera's own ones.
 
     The stubs cannot show this: the union is built by ``Entity.__init_subclass__``.
+    Reading the name-mangled private ``_Entity__combined_unrecorded_attributes`` is
+    deliberate: that private union is exactly what this test checks, so keep it.
     """
     from custom_components.narwal.camera import _MAP_CARD_ATTRIBUTES, NarwalMapCamera
 
