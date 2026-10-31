@@ -7,6 +7,7 @@ import contextlib
 import logging
 import math
 import time
+from typing import Any
 
 from homeassistant.components.camera import Camera
 from homeassistant.core import HomeAssistant, callback
@@ -43,6 +44,17 @@ _MIN_RENDER_INTERVAL = 2
 _NATIVE_TRAIL_MIN_GRID_DELTA = 0.25
 _NATIVE_TRAIL_MAX_POINTS = NATIVE_TRAJECTORY_MAX_POINTS
 _NATIVE_TRAIL_RECENT_TAIL_POINTS = NATIVE_TRAJECTORY_RECENT_TAIL_POINTS
+
+# The `path` attribute is sent to every frontend on each rendered frame, so it
+# carries a decimated copy of the drawn trail (newest points kept dense), not
+# the full native route.
+_PATH_ATTRIBUTE_MAX_POINTS = 400
+_PATH_ATTRIBUTE_TAIL_POINTS = 100
+
+# Map-card attributes change with every frame and are only useful live.
+_MAP_CARD_ATTRIBUTES = frozenset(
+    {"calibration_points", "vacuum_position", "charger", "path"}
+)
 
 async def async_setup_entry(
     hass: HomeAssistant,
@@ -99,6 +111,7 @@ class NarwalMapCamera(NarwalEntity, Camera):
     _attr_name = "Map"
     _attr_frame_interval = _MIN_RENDER_INTERVAL
     _attr_is_streaming = True
+    _unrecorded_attributes = _MAP_CARD_ATTRIBUTES
 
     def __init__(self, coordinator: NarwalCoordinator) -> None:
         """Initialize the map camera entity."""
@@ -121,11 +134,18 @@ class NarwalMapCamera(NarwalEntity, Camera):
             MAP_OPTION_DEFAULTS[CONF_SHOW_FURNITURE_LABELS],
         )
         self._room_label_points: list[tuple[str, float, float]] = []
+        self._map_attributes: dict[str, Any] = {}
 
     @property
-    def extra_state_attributes(self) -> dict[str, int]:
-        """Expose a changing value so HA publishes each rendered frame."""
-        return {"render_count": self._render_count}
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Expose the frame counter and the map-card data of the rendered frame.
+
+        ``render_count`` changes with every frame so HA publishes it. The other
+        keys describe the same frame for vacuum map cards: ``calibration_points``
+        (grid to image pixels), ``vacuum_position`` ({x, y, a}), ``charger``
+        ({x, y}) and ``path`` (segments of [x, y]), all in map grid coordinates.
+        """
+        return {"render_count": self._render_count, **self._map_attributes}
 
     def _map_option(self, key: str) -> bool:
         """Return a persisted map display option."""
@@ -192,12 +212,16 @@ class NarwalMapCamera(NarwalEntity, Camera):
     def _native_trajectory_grid_points(
         points: list[tuple[float, float]],
         static_map,
+        max_points: int = _NATIVE_TRAIL_MAX_POINTS,
+        tail_points: int = _NATIVE_TRAIL_RECENT_TAIL_POINTS,
     ) -> list[tuple[float, float]]:
         """Return in-bounds grid points from Narwal's native trajectory."""
         converted: list[tuple[float, float]] = []
         pending_break = False
 
-        for raw_x, raw_y in NarwalMapCamera._native_trajectory_render_points(points):
+        for raw_x, raw_y in NarwalMapCamera._native_trajectory_render_points(
+            points, max_points, tail_points,
+        ):
             if not math.isfinite(raw_x) or not math.isfinite(raw_y):
                 pending_break = bool(converted)
                 continue
@@ -236,17 +260,19 @@ class NarwalMapCamera(NarwalEntity, Camera):
     @staticmethod
     def _native_trajectory_render_points(
         points: list[tuple[float, float]],
+        max_points: int = _NATIVE_TRAIL_MAX_POINTS,
+        tail_points: int = _NATIVE_TRAIL_RECENT_TAIL_POINTS,
     ):
         """Yield render-capped trajectory points while preserving the latest tail."""
-        if len(points) <= _NATIVE_TRAIL_MAX_POINTS:
+        if len(points) <= max_points:
             yield from points
             return
 
-        tail_size = min(_NATIVE_TRAIL_RECENT_TAIL_POINTS, _NATIVE_TRAIL_MAX_POINTS)
+        tail_size = min(tail_points, max_points)
         tail_start = len(points) - tail_size
-        prefix_slots = _NATIVE_TRAIL_MAX_POINTS - tail_size
+        prefix_slots = max_points - tail_size
         if prefix_slots <= 0:
-            yield from points[-_NATIVE_TRAIL_MAX_POINTS:]
+            yield from points[-max_points:]
             return
 
         span = max(tail_start - 1, 0)
@@ -273,6 +299,132 @@ class NarwalMapCamera(NarwalEntity, Camera):
         return display.trajectory_signature
 
     @classmethod
+    def _map_card_attributes(
+        cls,
+        static_map,
+        display,
+        map_rotation: int,
+        map_zoom: float,
+        image_width: int,
+        image_height: int,
+        trail_points: list[tuple[float, float]] | None = None,
+    ) -> dict[str, Any]:
+        """Return the map-card attributes of a rendered frame (executor thread).
+
+        Positions use the same grid coordinates ``render_overlay`` draws from
+        (x right, y up); ``a`` is the heading in degrees (0 = +x, 90 = +y).
+        ``trail_points`` is the decoded native route when the caller already
+        has it, so a frame decodes the route only once.
+        """
+        from .narwal_client.map_renderer import calibration_points
+
+        attributes: dict[str, Any] = {}
+        calibration = calibration_points(
+            static_map.height, image_width, image_height, map_rotation, map_zoom,
+        )
+        if calibration:
+            attributes["calibration_points"] = calibration
+        if static_map.dock_x is not None and static_map.dock_y is not None:
+            attributes["charger"] = {
+                "x": round(static_map.dock_x, 1),
+                "y": round(static_map.dock_y, 1),
+            }
+        if not display:
+            return attributes
+
+        grid_pos = display.to_grid_coords(
+            static_map.resolution, static_map.origin_x, static_map.origin_y,
+        )
+        if (
+            grid_pos is not None
+            and 0 <= grid_pos[0] < static_map.width
+            and 0 <= grid_pos[1] < static_map.height
+        ):
+            # Same bounds render_overlay uses: no marker where the image has no robot.
+            attributes["vacuum_position"] = {
+                "x": round(grid_pos[0], 1),
+                "y": round(grid_pos[1], 1),
+                "a": round(display.robot_heading, 1),
+            }
+        if display.has_trajectory:
+            if trail_points is None:
+                trail_points = display.trajectory_render_points()
+            segments: list[list[list[float]]] = []
+            segment: list[list[float]] = []
+            for grid_x, grid_y in cls._native_trajectory_grid_points(
+                trail_points,
+                static_map,
+                _PATH_ATTRIBUTE_MAX_POINTS,
+                _PATH_ATTRIBUTE_TAIL_POINTS,
+            ):
+                if not math.isfinite(grid_x) or not math.isfinite(grid_y):
+                    if len(segment) > 1:
+                        segments.append(segment)
+                    segment = []
+                    continue
+                segment.append([round(grid_x, 1), round(grid_y, 1)])
+            if len(segment) > 1:
+                segments.append(segment)
+            # Decimation keeps every segment break, so a broken-up route can still
+            # exceed the cap: drop the oldest points until it fits.
+            budget = _PATH_ATTRIBUTE_MAX_POINTS
+            capped: list[list[list[float]]] = []
+            for seg in reversed(segments):
+                if budget < 2:
+                    break
+                capped.append(seg[-budget:])
+                budget -= len(capped[-1])
+            if capped:
+                attributes["path"] = capped[::-1]
+        return attributes
+
+    @classmethod
+    def _render_frame(
+        cls,
+        base_map_image,
+        static_map,
+        display,
+        map_rotation: int,
+        map_zoom: float,
+        room_label_points: list[tuple[str, float, float]],
+    ) -> tuple[bytes | None, dict[str, Any]]:
+        """Render a frame and describe it for map cards (executor thread).
+
+        The native route is decoded once for both. A failure in the attributes
+        never costs the frame.
+        """
+        trail_points = (
+            display.trajectory_render_points()
+            if display and display.has_trajectory
+            else None
+        )
+        png_bytes = cls._render_overlay_image(
+            base_map_image,
+            static_map,
+            display,
+            map_rotation,
+            map_zoom,
+            room_label_points,
+            trail_points,
+        )
+        if not png_bytes:
+            return png_bytes, {}
+        try:
+            attributes = cls._map_card_attributes(
+                static_map,
+                display,
+                map_rotation,
+                map_zoom,
+                base_map_image.width,
+                base_map_image.height,
+                trail_points,
+            )
+        except Exception:
+            _LOGGER.exception("Failed to build map card attributes")
+            attributes = {}
+        return png_bytes, attributes
+
+    @classmethod
     def _render_overlay_image(
         cls,
         base_map_image,
@@ -281,6 +433,7 @@ class NarwalMapCamera(NarwalEntity, Camera):
         map_rotation: int,
         map_zoom: float,
         room_label_points: list[tuple[str, float, float]],
+        trail_points: list[tuple[float, float]] | None = None,
     ) -> bytes | None:
         """Render dynamic map overlays in an executor thread."""
         from .narwal_client.map_renderer import render_overlay
@@ -288,7 +441,9 @@ class NarwalMapCamera(NarwalEntity, Camera):
         native_trail = None
         if display and display.has_trajectory:
             native_trail = cls._native_trajectory_grid_points(
-                display.trajectory_render_points(),
+                trail_points
+                if trail_points is not None
+                else display.trajectory_render_points(),
                 static_map,
             )
 
@@ -324,10 +479,14 @@ class NarwalMapCamera(NarwalEntity, Camera):
         display = state.map_display_data
 
         static_map = state.map_data
-        if not static_map or not static_map.compressed_map:
-            self.async_write_ha_state()
-            return
-        if static_map.width <= 0 or static_map.height <= 0:
+        if (
+            not static_map
+            or not static_map.compressed_map
+            or static_map.width <= 0
+            or static_map.height <= 0
+        ):
+            # No map, no frame: do not keep describing the previous one.
+            self._map_attributes = {}
             self.async_write_ha_state()
             return
 
@@ -473,8 +632,8 @@ class NarwalMapCamera(NarwalEntity, Camera):
                 return
 
         try:
-            png_bytes = await self.hass.async_add_executor_job(
-                self._render_overlay_image,
+            png_bytes, map_attributes = await self.hass.async_add_executor_job(
+                self._render_frame,
                 self._base_map_image,
                 static_map,
                 display,
@@ -488,6 +647,7 @@ class NarwalMapCamera(NarwalEntity, Camera):
                 self._cache_key = new_key
                 self._last_render_time = time.monotonic()
                 self._render_count += 1
+                self._map_attributes = map_attributes
 
         except Exception:
             _LOGGER.exception("Failed to render map overlay")

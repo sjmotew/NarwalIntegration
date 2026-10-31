@@ -132,9 +132,14 @@ def _load_font(image_font: object, size: int):
     return image_font.load_default()
 
 
+def _grid_to_pixel(value: float, scale: float) -> float:
+    """Return the unclamped image coordinate of a grid cell centre."""
+    return value * scale + (scale / 2)
+
+
 def _scaled_coord(value: float, scale: float, size: int) -> int:
     """Return a scaled grid coordinate centred in the rendered map cell."""
-    coordinate = int(round(value * scale + (scale / 2)))
+    coordinate = int(round(_grid_to_pixel(value, scale)))
     return max(0, min(coordinate, size - 1))
 
 
@@ -206,6 +211,52 @@ def _transform_point(
     left = max(0, (rotated_width - crop_width) // 2)
     top = max(0, (rotated_height - crop_height) // 2)
     return rx - left, ry - top
+
+
+def calibration_points(
+    height: int,
+    image_width: int,
+    image_height: int,
+    rotation_degrees: int = 0,
+    zoom: float = 1.0,
+) -> list[dict[str, dict[str, float]]]:
+    """Return three grid-to-image calibration points for a rendered map.
+
+    Vacuum map cards derive an affine transform from these points, so they can
+    place the robot, the dock or a path on the camera image. The ``vacuum``
+    side is in map grid coordinates (x right, y up, the units of the robot
+    position); the ``map`` side is in pixels of the final image, after the same
+    rotation and zoom ``render_overlay`` applies.
+
+    Args:
+        height: Map height in grid cells (for the Y-flip).
+        image_width: Width of the unrotated rendered base map in pixels.
+        image_height: Height of the unrotated rendered base map in pixels.
+        rotation_degrees: Clockwise map rotation in degrees.
+        zoom: Centre zoom factor.
+    """
+    scale = image_height / height if height > 0 else 1.0
+    width = image_width / scale if scale > 0 else image_width
+    points: list[dict[str, dict[str, float]]] = []
+    for grid_x, grid_y in ((0.0, 0.0), (float(width), 0.0), (0.0, float(height))):
+        point = _transform_point(
+            _grid_to_pixel(grid_x, scale),
+            _grid_to_pixel(height - 1 - grid_y, scale),
+            image_width,
+            image_height,
+            rotation_degrees,
+            zoom,
+        )
+        if point is None:
+            return []
+        map_x, map_y = point
+        points.append(
+            {
+                "vacuum": {"x": round(grid_x, 2), "y": round(grid_y, 2)},
+                "map": {"x": round(map_x, 2), "y": round(map_y, 2)},
+            }
+        )
+    return points
 
 
 def _rotated_heading(heading: float | None, rotation_degrees: int) -> float | None:
