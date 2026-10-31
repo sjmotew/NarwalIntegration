@@ -34,7 +34,7 @@ class TestCoordinatorMapRefresh:
             "product_key": "QoEsI5qYXO",
         }
 
-        coordinator = NarwalCoordinator.__new__(NarwalCoordinator)
+        coordinator = NarwalCoordinator(mock_hass, mock_entry)
         coordinator.hass = mock_hass
         coordinator.config_entry = mock_entry
         coordinator.client = MagicMock()
@@ -90,7 +90,7 @@ class TestCoordinatorMapRefresh:
         """When map_data exists, no map fetch is triggered."""
         coordinator = self._make_coordinator()
         state = NarwalState()
-        state.map_data = MagicMock()  # map exists
+        state.map_data = MapData()  # map exists
         state.working_status = WorkingStatus.STANDBY
 
         coordinator._on_state_update(state)
@@ -118,7 +118,7 @@ class TestCoordinatorMapRefresh:
         coordinator = self._make_coordinator()
         coordinator._prev_working_status = WorkingStatus.CLEANING
         state = NarwalState()
-        state.map_data = MagicMock()  # avoid map fetch
+        state.map_data = MapData()  # avoid map fetch
         state.working_status = WorkingStatus.STANDBY
 
         coordinator._on_state_update(state)
@@ -132,7 +132,7 @@ class TestCoordinatorMapRefresh:
         coordinator = self._make_coordinator()
         coordinator._prev_working_status = WorkingStatus.CLEANING_ALT
         state = NarwalState()
-        state.map_data = MagicMock()
+        state.map_data = MapData()
         state.working_status = WorkingStatus.STANDBY
 
         coordinator._on_state_update(state)
@@ -144,7 +144,7 @@ class TestCoordinatorMapRefresh:
         coordinator = self._make_coordinator()
         coordinator._prev_working_status = WorkingStatus.STANDBY
         state = NarwalState()
-        state.map_data = MagicMock()
+        state.map_data = MapData()
         state.working_status = WorkingStatus.CLEANING
 
         coordinator._on_state_update(state)
@@ -155,7 +155,7 @@ class TestCoordinatorMapRefresh:
         """_prev_working_status updates after each _on_state_update call."""
         coordinator = self._make_coordinator()
         state = NarwalState()
-        state.map_data = MagicMock()
+        state.map_data = MapData()
 
         # UNKNOWN -> CLEANING
         state.working_status = WorkingStatus.CLEANING
@@ -180,7 +180,7 @@ class TestCoordinatorMapRefresh:
         from custom_components.narwal.coordinator import POLL_INTERVAL
 
         state = NarwalState()
-        state.map_data = MagicMock()
+        state.map_data = MapData()
         state.working_status = WorkingStatus.STANDBY
 
         coordinator._on_state_update(state)
