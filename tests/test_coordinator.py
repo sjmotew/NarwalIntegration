@@ -2176,6 +2176,43 @@ async def test_restore_map_display_cache_rejects_missing_map_identity() -> None:
     assert not coordinator._map_display_cache_restored
 
 
+@pytest.mark.parametrize("refresh", ["async_setup", "_refresh_dock_status"])
+@pytest.mark.parametrize("full_update", [False, True])
+async def test_setup_and_transition_refresh_require_full_update_for_dock_freshness(
+    refresh: str, full_update: bool
+) -> None:
+    """Only the requested full refresh can clear stale dock state."""
+    coordinator = _new_coordinator()
+    coordinator.client.state = _docked_state()
+    coordinator._dock_status_refresh_failed = True
+    coordinator.last_update_success = True
+    coordinator.async_set_updated_data = MagicMock()
+    coordinator._async_restore_map_display_cache = AsyncMock()
+    for name in (
+        "connect", "get_device_info", "get_map", "get_consumable_info",
+        "subscribe_to_topics", "start_listening",
+    ):
+        setattr(coordinator.client, name, AsyncMock())
+
+    async def get_status(**_kwargs) -> CommandResponse:
+        # Telemetry freshness can change while the status request is in flight.
+        coordinator.client.state.last_active_working_status_time = (
+            1000.0 if full_update else 0.0
+        )
+        return CommandResponse(data={"2": {"3": {"1": int(WorkingStatus.DOCKED)}}})
+
+    coordinator.client.get_status = AsyncMock(side_effect=get_status)
+    coordinator.client.state.last_active_working_status_time = (
+        0.0 if full_update else 1000.0
+    )
+    with patch("custom_components.narwal.coordinator.time.monotonic", return_value=1000.0):
+        await getattr(coordinator, refresh)()
+
+    coordinator.client.get_status.assert_awaited_once_with(full_update=full_update)
+    assert coordinator._dock_status_refresh_failed is not full_update
+    assert coordinator.has_fresh_state is full_update
+
+
 async def test_setup_retains_trajectory_received_with_initial_map() -> None:
     """The first native window participates in later rolling-window merges."""
     coordinator = _new_coordinator()
@@ -3561,6 +3598,38 @@ class TestCoordinatorResilience:
         assert await coordinator.async_refresh_dock_status()
         assert seen == [True]
 
+    def test_set_refreshed_dock_data_marks_fresh_before_notifying(self) -> None:
+        """Client-owned dock refreshes clear stale state before notifying listeners."""
+        coordinator = self._make_coordinator()
+        coordinator._dock_status_refresh_failed = True
+        coordinator._reconcile_map_display_after_status_refresh = MagicMock()
+        seen: list[bool] = []
+
+        def capture_update(_state):
+            seen.append(coordinator.has_fresh_state)
+
+        coordinator.async_set_updated_data = MagicMock(side_effect=capture_update)
+
+        coordinator.async_set_refreshed_dock_data()
+
+        assert seen == [True]
+        coordinator._reconcile_map_display_after_status_refresh.assert_called_once_with()
+
+    def test_set_stale_dock_data_marks_stale_before_notifying(self) -> None:
+        """Client refresh failures mark dock data stale before notifying listeners."""
+        coordinator = self._make_coordinator()
+        coordinator._dock_status_refresh_failed = False
+        seen: list[bool] = []
+
+        def capture_update(_state):
+            seen.append(coordinator.has_fresh_state)
+
+        coordinator.async_set_updated_data = MagicMock(side_effect=capture_update)
+
+        coordinator.async_set_stale_dock_data()
+
+        assert seen == [False]
+
     async def test_refresh_dock_status_refreshes_queued_cache_metadata(self) -> None:
         """A direct terminal refresh replaces queued active route metadata."""
         coordinator = self._make_coordinator()
@@ -3881,6 +3950,20 @@ class TestCoordinatorResilience:
             coordinator.client.state
         )
         assert not coordinator._dock_status_refresh_failed
+
+    async def test_action_refresh_restores_fresh_dock_state(self) -> None:
+        """A successful full action refresh restores dock-state freshness."""
+        coordinator = self._make_coordinator()
+        coordinator.client.get_status = AsyncMock(
+            return_value=CommandResponse(
+                data={"2": {"3": {"1": int(WorkingStatus.DOCKED)}}}
+            )
+        )
+        coordinator.async_set_updated_data = MagicMock()
+
+        assert await coordinator.async_refresh_action_status()
+
+        assert coordinator.has_fresh_state
 
     async def test_action_refresh_requires_dock_payload_when_full_update_needed(self) -> None:
         """Without active task telemetry, action refresh needs real dock/base status."""

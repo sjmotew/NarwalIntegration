@@ -16,7 +16,15 @@ from .const import (
     WorkingStatus,
     WorkMode,
 )
-from .models import CommandResponse, DeviceInfo, MapData, MapDisplayData, NarwalState, RoomInfo
+from .models import (
+    CommandResponse,
+    DeviceInfo,
+    DockStatusFreshness,
+    MapData,
+    MapDisplayData,
+    NarwalState,
+    RoomInfo,
+)
 from .protocol import build_frame, parse_frame
 
 __all__ = [
@@ -29,6 +37,7 @@ __all__ = [
     "CommandResult",
     "CleaningRoute",
     "DeviceInfo",
+    "DockStatusFreshness",
     "AmbientLightCtrlType",
     "FanLevel",
     "MapData",
