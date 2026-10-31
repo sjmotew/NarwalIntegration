@@ -447,18 +447,47 @@ class TestLegacyNarwalSettingSelect:
         assert LegacyNarwalSettingSelect(coord, _LEGACY_DESCS["suction"]).available
         assert LegacyNarwalSettingSelect(coord, _LEGACY_DESCS["water"]).available
 
-    def test_suction_options_stay_stable_while_cleaning(self) -> None:
+    def test_suction_options_only_offer_live_levels_while_cleaning(self) -> None:
         coord = _coordinator(state=_state(WorkingStatus.CLEANING))
         sel = LegacyNarwalSettingSelect(coord, _LEGACY_DESCS["suction"])
+
+        assert sel.options == ["Quiet", "Standard", "Strong", "Super Powerful"]
+
+    def test_suction_options_keep_active_ai_while_cleaning(self) -> None:
+        coord = _coordinator(state=_state(WorkingStatus.CLEANING))
+        coord.active_clean_setting.return_value = FanLevel.UNSPECIFIED
+        sel = LegacyNarwalSettingSelect(coord, _LEGACY_DESCS["suction"])
+
         assert "AI" in sel.options
-        assert "Standard" in sel.options
+
+    def test_suction_options_keep_active_ultra_while_cleaning(self) -> None:
+        coord = _coordinator(state=_state(WorkingStatus.CLEANING))
+        coord.active_clean_setting.return_value = FanLevel.SUPER
+        sel = LegacyNarwalSettingSelect(coord, _LEGACY_DESCS["suction"])
+
+        assert "Ultra Powerful" in sel.options
+
+    @pytest.mark.parametrize("pending", [FanLevel.UNSPECIFIED, FanLevel.SUPER])
+    def test_unknown_active_suction_does_not_expose_ai_or_ultra_pending_values(
+        self, pending: FanLevel
+    ) -> None:
+        """Pending AI/Ultra settings cannot be presented as live state."""
+        coord = _coordinator(state=_state(WorkingStatus.CLEANING))
+        coord.clean_settings.fan = pending
+        coord.active_clean_work_mode = None
+        coord.active_clean_setting.return_value = None
+        select = LegacyNarwalSettingSelect(coord, _LEGACY_DESCS["suction"])
+
+        assert select.current_option is None
+        assert "AI" not in select.options
+        assert "Ultra Powerful" not in select.options
 
     def test_ax26_legacy_suction_omits_ultra(self) -> None:
         coord = _coordinator(product_key="qV6BujoYLz")
         sel = LegacyNarwalSettingSelect(coord, _LEGACY_DESCS["suction"])
 
         assert "Super Powerful" in sel.options
-        assert sel._normalise_option("Super") == "Super"
+        assert sel._normalise_option("Super") == "Super Powerful"
         assert "Ultra" not in sel.options
         assert sel._normalise_option("Ultra powerful") is None
 
@@ -533,19 +562,31 @@ class TestLegacyNarwalSettingSelect:
 
         coord.client.set_fan_speed.assert_not_awaited()
 
-    async def test_legacy_live_highest_suction_clamps_and_stays_pending(self) -> None:
+    async def test_legacy_live_ultra_suction_is_rejected(self) -> None:
         coord = _coordinator(state=_state(WorkingStatus.CLEANING))
         coord.active_clean_work_mode = WorkMode.VACUUM
-        coord.client.set_fan_speed = AsyncMock(
-            return_value=CommandResponse(result_code=0)
-        )
+        coord.client.set_fan_speed = AsyncMock()
         sel = LegacyNarwalSettingSelect(coord, _LEGACY_DESCS["suction"])
 
-        await sel.async_select_option("Ultra Powerful")
+        with pytest.raises(HomeAssistantError, match="Unsupported Narwal option"):
+            await sel.async_select_option("Ultra Powerful")
 
-        coord.client.set_fan_speed.assert_awaited_once_with(FanLevel.DEEP)
-        coord.set_active_clean_setting.assert_called_once_with("fan", FanLevel.DEEP)
-        assert coord.clean_settings.fan == FanLevel.SUPER
+        coord.client.set_fan_speed.assert_not_awaited()
+
+    async def test_pending_ultra_is_not_treated_as_active(self) -> None:
+        coord = _coordinator(state=_state(WorkingStatus.CLEANING))
+        coord.clean_settings.fan = FanLevel.SUPER
+        coord.active_clean_work_mode = WorkMode.VACUUM
+        coord.active_clean_setting.return_value = None
+        coord.client.set_fan_speed = AsyncMock()
+        sel = LegacyNarwalSettingSelect(coord, _LEGACY_DESCS["suction"])
+
+        assert "Ultra Powerful" not in sel.options
+        assert sel.current_option is None
+        with pytest.raises(HomeAssistantError, match="Unsupported Narwal option"):
+            await sel.async_select_option("Ultra Powerful")
+
+        coord.client.set_fan_speed.assert_not_awaited()
 
     def test_legacy_settings_are_config_entities(self) -> None:
         coord = _coordinator(state=_state())

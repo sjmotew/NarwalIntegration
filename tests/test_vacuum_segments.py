@@ -1163,7 +1163,34 @@ class TestVacuumFanSpeed:
             "value": int(FanLevel.DEEP),
         }
 
-    async def test_live_highest_fan_clamps_to_deep_and_stays_pending(self) -> None:
+    def test_live_fan_speed_list_only_offers_supported_levels(self) -> None:
+        vac = _make_vacuum(state=_active_clean_state())
+
+        assert vac.fan_speed_list == [
+            "Quiet",
+            "Standard",
+            "Strong",
+            "Super Powerful",
+        ]
+
+    def test_idle_fan_speed_list_keeps_start_only_ultra(self) -> None:
+        vac = _make_vacuum(state=_docked_state())
+
+        assert "Ultra Powerful" in vac.fan_speed_list
+
+    def test_live_fan_speed_list_keeps_active_ultra(self) -> None:
+        vac = _make_vacuum(state=_active_clean_state())
+        vac.coordinator.active_clean_setting.return_value = FanLevel.SUPER
+
+        assert vac.fan_speed_list == [
+            "Quiet",
+            "Standard",
+            "Strong",
+            "Super Powerful",
+            "Ultra Powerful",
+        ]
+
+    async def test_live_ultra_fan_is_clamped_for_legacy_service_call(self) -> None:
         state = _active_clean_state()
         vac = _make_vacuum(state=state)
         vac.coordinator.client.set_fan_speed = AsyncMock(
@@ -1176,6 +1203,41 @@ class TestVacuumFanSpeed:
         vac.coordinator.set_active_clean_setting.assert_called_once_with(
             "fan", FanLevel.DEEP
         )
+
+    async def test_reselecting_active_ultra_is_a_noop(self) -> None:
+        vac = _make_vacuum(state=_active_clean_state())
+        vac.coordinator.active_clean_setting.return_value = FanLevel.SUPER
+        vac.coordinator.client.set_fan_speed = AsyncMock()
+
+        await vac.async_set_fan_speed("Ultra Powerful")
+
+        vac.coordinator.client.set_fan_speed.assert_not_awaited()
+
+    async def test_pending_ultra_is_not_treated_as_active(self) -> None:
+        vac = _make_vacuum(state=_active_clean_state())
+        vac.coordinator.clean_settings.fan = FanLevel.SUPER
+        vac.coordinator.active_clean_setting.return_value = None
+        vac.coordinator.client.set_fan_speed = AsyncMock()
+
+        assert "Ultra Powerful" not in vac.fan_speed_list
+        vac.coordinator.client.set_fan_speed = AsyncMock(
+            return_value=CommandResponse(result_code=0)
+        )
+        await vac.async_set_fan_speed("Ultra Powerful")
+
+        vac.coordinator.client.set_fan_speed.assert_awaited_once_with(FanLevel.DEEP)
+        assert vac.coordinator.clean_settings.fan == FanLevel.SUPER
+
+    @pytest.mark.parametrize("alias", ["max", "Ultra", "Ultra Powerful"])
+    async def test_live_legacy_ultra_aliases_clamp_to_deep(self, alias: str) -> None:
+        vac = _make_vacuum(state=_active_clean_state())
+        vac.coordinator.client.set_fan_speed = AsyncMock(
+            return_value=CommandResponse(result_code=0)
+        )
+
+        await vac.async_set_fan_speed(alias)
+
+        vac.coordinator.client.set_fan_speed.assert_awaited_once_with(FanLevel.DEEP)
         assert vac.coordinator.clean_settings.fan == FanLevel.SUPER
 
     async def test_live_fan_change_applies_while_paused(self) -> None:
@@ -1294,6 +1356,17 @@ class TestVacuumFanSpeed:
             await vac.async_set_fan_speed("Strong")
 
         vac.coordinator.client.set_fan_speed.assert_not_awaited()
+
+    @pytest.mark.parametrize("pending", [FanLevel.UNSPECIFIED, FanLevel.SUPER])
+    def test_unknown_active_fan_does_not_report_ai_or_ultra_pending_value(
+        self, pending: FanLevel
+    ) -> None:
+        """Vacuum state stays unknown when only pending AI/Ultra is known."""
+        vac = _make_vacuum(state=_active_clean_state())
+        vac.coordinator.clean_settings.fan = pending
+        vac.coordinator.active_clean_setting.return_value = None
+
+        assert vac.fan_speed is None
 
     async def test_unknown_fan_speed_raises(self) -> None:
         """Unsupported suction labels must not silently no-op."""
