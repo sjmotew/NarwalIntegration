@@ -7,7 +7,7 @@ import logging
 import math
 import struct
 import time
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -115,6 +115,7 @@ class TestNarwalClientInit:
         """display_map field 2 must not infer robot task state."""
         client = NarwalClient("10.0.0.1", device_id="device")
         frame = build_frame(client._full_topic("map/display_map"), b"payload")
+        client.on_display_map = MagicMock()
         client.state.working_status = WorkingStatus.CHARGED
         client.state.station_activity = 2
         client.state.dock_field11 = 3
@@ -143,6 +144,39 @@ class TestNarwalClientInit:
         assert client.state.is_docked
         assert client.state.is_station_active
         assert not hasattr(client.state, "last_map_robot_movement")
+        client.on_display_map.assert_called_once_with(client.state)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "client_module",
+        ["narwal_client.client", "custom_components.narwal.narwal_client.client"],
+    )
+    async def test_display_callback_failure_does_not_stop_frame_processing(
+        self, client_module: str, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A bad callback is logged and later frames still reach listeners."""
+        from importlib import import_module
+
+        client = import_module(client_module).NarwalClient("10.0.0.1", device_id="device")
+        frame = build_frame(client._full_topic("map/display_map"), b"payload")
+        client.on_display_map = MagicMock(side_effect=[ValueError("bad trail"), None])
+        client.on_state_update = MagicMock()
+        with caplog.at_level(logging.ERROR), patch.object(
+            client, "_decode_protobuf", side_effect=[{"10": 1}, {"10": 2}]
+        ):
+            await client._handle_message(frame)
+            await client._handle_message(frame)
+
+        assert client.on_display_map.call_count == 2
+        assert client.on_state_update.call_count == 2
+        assert client.state.map_display_data.timestamp == 2
+        assert any(
+            "Error in display map callback" in record.message for record in caplog.records
+        )
+        assert any(
+            record.exc_info and isinstance(record.exc_info[1], ValueError)
+            for record in caplog.records
+        )
 
     @pytest.mark.asyncio
     async def test_display_map_non_finite_pair_preserves_trajectory_break(self) -> None:
@@ -174,6 +208,7 @@ class TestNarwalClientInit:
     async def test_wait_for_response_marks_display_map_fresh(self) -> None:
         """display_map packets consumed while waiting for an ack are fresh."""
         client = NarwalClient("10.0.0.1", device_id="device")
+        client.on_display_map = MagicMock()
         display_frame = build_frame(client._full_topic("map/display_map"), b"display")
         response_frame = bytearray(build_frame(client._full_topic("cmd/test"), b"ack"))
         response_frame[2] = PROTOBUF_FIELD5_TAG
@@ -200,6 +235,7 @@ class TestNarwalClientInit:
             (1.25, 2.25),
         ]
         assert client.last_display_map_age < 1.0
+        client.on_display_map.assert_called_once_with(client.state)
 
     def test_unconfirmed_idle_base_status_preserves_active_metrics(self) -> None:
         """Stale idle base_status must not hide a fresh working_status task."""

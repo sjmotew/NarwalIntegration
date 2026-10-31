@@ -461,7 +461,10 @@ class NarwalClient:
         self.state.map_display_data = display
         self._last_display_map_time = time.monotonic()
         if self.on_display_map:
-            self.on_display_map(self.state)
+            try:
+                self.on_display_map(self.state)
+            except Exception:
+                _LOGGER.exception("Error in display map callback")
         _LOGGER.debug(
             "display_map received: robot=(%.2f, %.2f) ts=%d",
             display.robot_x,
