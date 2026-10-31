@@ -25,6 +25,7 @@ from .const import (
     fan_speed_label_map_for,
     fan_speed_list_for,
     fan_speed_map_for,
+    live_fan_speed_list_for,
     normalize_fan_level_for_model,
 )
 from .coordinator import (
@@ -885,8 +886,33 @@ class LegacyNarwalSettingSelect(NarwalEntity, RestoreEntity, SelectEntity):
 
     @property
     def options(self) -> list[str]:
-        """Return the static option list for Home Assistant capabilities."""
-        return list(self._attr_options or [])
+        """Return options supported by the current command path."""
+        options = list(self._attr_options or [])
+        if self.entity_description.setting_key != "suction" or not self._is_cleaning_or_paused:
+            return options
+
+        active_fan = self._active_suction_level
+        options = [
+            "AI",
+            *live_fan_speed_list_for(
+                self.coordinator.config_entry.data,
+                active_fan,
+            ),
+        ]
+        if active_fan != FanLevel.UNSPECIFIED:
+            options.remove("AI")
+        return options
+
+    @property
+    def _active_suction_level(self) -> FanLevel | None:
+        """Return the active suction when the current task identifies it."""
+        active_fan = self.coordinator.active_clean_setting("fan")
+        if active_fan is not None:
+            try:
+                return FanLevel(active_fan)
+            except (TypeError, ValueError):
+                pass
+        return None
 
     @property
     def current_option(self) -> str | None:
@@ -1024,7 +1050,7 @@ class LegacyNarwalSettingSelect(NarwalEntity, RestoreEntity, SelectEntity):
         self.coordinator.async_update_listeners()
         return True
 
-    def _option_from_settings(self) -> str:
+    def _option_from_settings(self) -> str | None:
         """Return this legacy option from the shared clean settings."""
         key = self.entity_description.setting_key
         settings = self.coordinator.clean_settings
@@ -1032,6 +1058,8 @@ class LegacyNarwalSettingSelect(NarwalEntity, RestoreEntity, SelectEntity):
             option = LEGACY_MODE_LABELS.get(settings.work_mode)
         elif key == "suction":
             value = self.coordinator.active_clean_setting("fan")
+            if value is None and self._is_cleaning_or_paused:
+                return None
             option = self._suction_labels.get(
                 value if value is not None else settings.fan
             )
@@ -1099,8 +1127,10 @@ class LegacyNarwalSettingSelect(NarwalEntity, RestoreEntity, SelectEntity):
             raise HomeAssistantError("This Narwal setting cannot be changed right now")
         if key not in LEGACY_START_ONLY_SETTINGS and not setup_available and not live_available:
             raise HomeAssistantError("This Narwal setting cannot be changed right now")
-        if key == "suction" and option == "AI" and live_available and not setup_available:
-            raise HomeAssistantError("AI suction cannot be selected mid-clean")
+        if key == "suction" and live_available and not setup_available:
+            requested_fan = self._suction_map[option]
+            if requested_fan in {FanLevel.UNSPECIFIED, FanLevel.SUPER}:
+                return
         response = None
         live_value = None
         if live_available and live_applies and not setup_available:

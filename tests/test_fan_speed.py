@@ -73,30 +73,16 @@ def test_ultra_powerful_withheld_where_the_app_cannot_reach_it() -> None:
         "Quiet",
         "Standard",
         "Strong",
-        "Super",
         "Super Powerful",
     ]
 
 
 def test_other_models_keep_all_five_tiers() -> None:
-    """Five-tier models also advertise the previous level-5 service value."""
-    assert fan_speed_list_for({CONF_PRODUCT_KEY: FLOW_2}) == [
-        *FAN_SPEED_LIST[:-2],
-        "Super",
-        *FAN_SPEED_LIST[-2:-1],
-        "Ultra",
-        FAN_SPEED_LIST[-1],
-    ]
+    """Five-tier models advertise only the canonical labels."""
+    assert fan_speed_list_for({CONF_PRODUCT_KEY: FLOW_2}) == FAN_SPEED_LIST
 
 
 def test_unknown_or_missing_product_key_keeps_all_five_tiers() -> None:
     """Entries created before product_key persistence must not lose a tier."""
-    expected = [
-        *FAN_SPEED_LIST[:-2],
-        "Super",
-        *FAN_SPEED_LIST[-2:-1],
-        "Ultra",
-        FAN_SPEED_LIST[-1],
-    ]
-    assert fan_speed_list_for({}) == expected
-    assert fan_speed_list_for({CONF_PRODUCT_KEY: None}) == expected
+    assert fan_speed_list_for({}) == FAN_SPEED_LIST
+    assert fan_speed_list_for({CONF_PRODUCT_KEY: None}) == FAN_SPEED_LIST
