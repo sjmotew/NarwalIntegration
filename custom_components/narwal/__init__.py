@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from typing import TypeAlias
 
 import voluptuous as vol
@@ -29,10 +30,17 @@ from .const import (
     DOMAIN,
     PLATFORMS,
     SERVICE_CLEAN_ROOMS,
+    SERVICE_SET_PENDING_PROFILES,
     configured_model_name,
     fan_speed_map_for,
 )
-from .coordinator import NarwalCoordinator, can_prepare_clean_start
+from .coordinator import (
+    CleanSettings,
+    NarwalCoordinator,
+    can_apply_pending_profiles,
+    can_prepare_clean_start,
+    clean_setting_applies_to_mode,
+)
 from .narwal_client import (
     CleaningRoute,
     CommandResult,
@@ -117,6 +125,32 @@ CLEAN_ROOMS_SCHEMA = vol.Schema(
             value
         ),
         vol.Optional(FIELD_ROUTE): vol.In(ROUTE_OPTIONS),
+    }
+)
+
+_PENDING_PROFILE_FIELDS = {
+    vol.Required("mode"): vol.In(
+        ("Vacuum", "Mop", "Vacuum then mop", "Vacuum and mop")
+    ),
+    vol.Optional("suction"): str,
+    vol.Optional("water"): vol.In(("Dry", "Normal", "Wet")),
+    vol.Optional("scrub"): vol.In(("Normal", "High")),
+    vol.Optional("passes"): vol.In(("1", "2", "3")),
+    vol.Optional("route"): vol.In(("Standard", "Meticulous")),
+}
+SET_PENDING_PROFILES_SCHEMA = vol.Schema(
+    {
+        vol.Required(ATTR_ENTITY_ID): cv.comp_entity_ids,
+        vol.Required("global_profile"): vol.Schema(_PENDING_PROFILE_FIELDS),
+        vol.Required("room_profiles"): [
+            vol.Schema(
+                {
+                    vol.Required("entity_id"): str,
+                    vol.Required("profile"): vol.Schema(_PENDING_PROFILE_FIELDS),
+                }
+            )
+        ],
+        vol.Required("selected_room_entities"): [str],
     }
 )
 
@@ -371,7 +405,11 @@ async def _async_get_service_coordinators(
 
 def _async_register_services(hass: HomeAssistant) -> None:
     """Register Narwal domain services."""
-    if hass.services.has_service(DOMAIN, SERVICE_CLEAN_ROOMS):
+    register_clean_rooms = not hass.services.has_service(DOMAIN, SERVICE_CLEAN_ROOMS)
+    register_pending_profiles = not hass.services.has_service(
+        DOMAIN, SERVICE_SET_PENDING_PROFILES
+    )
+    if not register_clean_rooms and not register_pending_profiles:
         return
 
     async def _async_extract_entity_ids(call: ServiceCall) -> list[str]:
@@ -473,12 +511,182 @@ def _async_register_services(hass: HomeAssistant) -> None:
             await coordinator.async_clear_map_display_cache()
             coordinator.async_set_updated_data(client.state)
 
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_CLEAN_ROOMS,
-        async_clean_rooms,
-        schema=CLEAN_ROOMS_SCHEMA,
-    )
+    if register_clean_rooms:
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_CLEAN_ROOMS,
+            async_clean_rooms,
+            schema=CLEAN_ROOMS_SCHEMA,
+        )
+
+    async def _async_apply_pending_profiles(call: ServiceCall) -> None:
+        """Apply an idle-only pending profile and selection transaction."""
+        entity_ids = await _async_extract_entity_ids(call)
+        if len(entity_ids) != 1:
+            raise HomeAssistantError("Target exactly one Narwal vacuum")
+        entity_ids = await _async_validate_clean_rooms_targets(hass, call, entity_ids)
+        coordinators = await _async_get_service_coordinators(hass, entity_ids)
+        if len(coordinators) != 1:
+            raise HomeAssistantError("Target exactly one Narwal vacuum")
+        coordinator = coordinators[0]
+
+        # Reuse the option values exposed by the existing legacy selects, so
+        # model-specific fan labels and enum meanings remain in one place.
+        from .select import (
+            LEGACY_MODE_MAP,
+            LEGACY_ROUTE_MAP,
+            LEGACY_SCRUB_MAP,
+            LEGACY_WATER_MAP,
+            _legacy_suction_map_for,
+        )
+        state = coordinator.data
+        map_data = state.map_data if state is not None else None
+        current_map_id = coordinator.room_settings_map_id(map_data)
+        rooms = map_data.rooms if map_data is not None else None
+        if (
+            current_map_id is None
+            or not isinstance(rooms, (list, tuple))
+            or not rooms
+        ):
+            raise HomeAssistantError("Narwal current map is not positively identified")
+        if (
+            not coordinator._room_selection_store_loaded
+            or not coordinator._room_profile_store_loaded
+            or not can_apply_pending_profiles(coordinator.data)
+        ):
+            raise HomeAssistantError("Narwal pending profiles require a loaded idle docked robot")
+
+        room_ids = {room.room_id for room in rooms if room.room_id > 0}
+        requested = call.data["room_profiles"]
+        registry = er.async_get(hass)
+
+        def room_id_for_entity(entity_id: str) -> int:
+            """Resolve a loaded current-map Narwal room entity safely."""
+            registry_entry = registry.async_get(entity_id)
+            entity_state = hass.states.get(entity_id)
+            attributes = entity_state.attributes if entity_state is not None else None
+            if (
+                registry_entry is None
+                or registry_entry.platform != DOMAIN
+                or registry_entry.config_entry_id != coordinator.config_entry.entry_id
+                or entity_state is None
+                or entity_state.state not in {"on", "off"}
+                or not isinstance(attributes, Mapping)
+                or attributes.get("map_id") != current_map_id
+            ):
+                raise HomeAssistantError("Narwal room identity does not match the current map")
+            room_id = attributes.get("room_id")
+            if not isinstance(room_id, int) or isinstance(room_id, bool) or room_id <= 0:
+                raise HomeAssistantError("Narwal room identity is not positively loaded")
+            return room_id
+
+        requested_ids = [room_id_for_entity(item["entity_id"]) for item in requested]
+        selected_ids = [
+            room_id_for_entity(entity_id)
+            for entity_id in call.data["selected_room_entities"]
+        ]
+        if (
+            len(set(requested_ids)) != len(requested_ids)
+            or len(set(selected_ids)) != len(selected_ids)
+            or not set(selected_ids) <= room_ids
+            or set(requested_ids) != room_ids
+        ):
+            raise HomeAssistantError("Narwal room profiles do not match the current map")
+
+        fan_map = _legacy_suction_map_for(coordinator.config_entry.data)
+
+        def parse_profile(
+            raw: Mapping[str, object],
+        ) -> tuple[RoomCleanSettings, set[str]]:
+            mode = LEGACY_MODE_MAP[raw["mode"]]
+            settings = RoomCleanSettings(work_mode=mode)
+            attrs = {"work_mode"}
+            if clean_setting_applies_to_mode("fan", mode):
+                if "suction" not in raw:
+                    raise HomeAssistantError("Vacuum profile requires suction")
+                try:
+                    settings.fan = fan_map[raw["suction"]]
+                except KeyError as err:
+                    raise HomeAssistantError(
+                        "Suction is not supported by this Narwal model"
+                    ) from err
+                attrs.add("fan")
+            elif "suction" in raw:
+                raise HomeAssistantError(
+                    "Suction is not applicable to a mop-only profile"
+                )
+            if clean_setting_applies_to_mode("water", mode):
+                if "water" not in raw or "scrub" not in raw:
+                    raise HomeAssistantError("Mop profile requires water and scrub")
+                settings.water = LEGACY_WATER_MAP[raw["water"]]
+                settings.mop_strength = LEGACY_SCRUB_MAP[raw["scrub"]]
+                attrs.update({"water", "mop_strength"})
+            elif "water" in raw or "scrub" in raw:
+                raise HomeAssistantError(
+                    "Water and scrub are not applicable to a vacuum-only profile"
+                )
+            if "passes" not in raw or "route" not in raw:
+                raise HomeAssistantError("Profile requires passes and route")
+            settings.passes = int(raw["passes"])
+            settings.route = LEGACY_ROUTE_MAP[raw["route"]]
+            attrs.update({"passes", "route"})
+            return settings, attrs
+
+        global_profile, global_attrs = parse_profile(call.data["global_profile"])
+        parsed_profiles = {
+            room_id: parse_profile(item["profile"])
+            for room_id, item in zip(requested_ids, requested, strict=True)
+        }
+        clean_settings = CleanSettings(
+            work_mode=global_profile.work_mode,
+            fan=(
+                global_profile.fan
+                if "fan" in global_attrs
+                else coordinator.clean_settings.fan
+            ),
+            water=(
+                global_profile.water
+                if "water" in global_attrs
+                else coordinator.clean_settings.water
+            ),
+            mop_strength=(
+                global_profile.mop_strength
+                if "mop_strength" in global_attrs
+                else coordinator.clean_settings.mop_strength
+            ),
+            passes=global_profile.passes,
+            route=global_profile.route,
+        )
+        try:
+            async with coordinator.dock_action_lock:
+                coordinator.set_pending_profile_transaction(
+                    map_id=current_map_id,
+                    global_settings=clean_settings,
+                    room_profiles=parsed_profiles,
+                    selected_room_ids=set(selected_ids),
+                )
+        except ValueError as err:
+            raise HomeAssistantError(str(err)) from err
+
+    async def async_set_pending_profiles(call: ServiceCall) -> None:
+        """Log a visible warning and preserve a failed service result."""
+        try:
+            await _async_apply_pending_profiles(call)
+        except HomeAssistantError as err:
+            _LOGGER.warning(
+                "Pending profiles were not applied for %s: %s",
+                call.data.get(ATTR_ENTITY_ID),
+                err,
+            )
+            raise
+
+    if register_pending_profiles:
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_SET_PENDING_PROFILES,
+            async_set_pending_profiles,
+            schema=SET_PENDING_PROFILES_SCHEMA,
+        )
 
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:

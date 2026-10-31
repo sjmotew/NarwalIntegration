@@ -271,6 +271,24 @@ def can_edit_pending_clean_settings(state: NarwalState | None) -> bool:
     )
 
 
+def can_apply_pending_profiles(state: NarwalState | None) -> bool:
+    """Require a docked idle state before replacing the next-clean profile."""
+    return (
+        state is not None
+        and state.working_status in {
+            WorkingStatus.STANDBY,
+            WorkingStatus.DOCKED,
+            WorkingStatus.DOCKED_V2,
+            WorkingStatus.CHARGED,
+        }
+        and state.is_docked
+        and not state.is_paused
+        and not state.is_returning_to_dock
+        and not is_clean_session_context(state)
+        and can_edit_pending_clean_settings(state)
+    )
+
+
 def can_start_cleaning(state: NarwalState | None) -> bool:
     """Return True when a new robot clean command can be sent now."""
     if has_blocking_error(state) or state.working_status == WorkingStatus.UNKNOWN:
@@ -1197,6 +1215,76 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
         if key[0] is None:
             self._room_profile_pending_resolution.add(room_id)
         self._schedule_room_selection_save()
+
+    def set_pending_profile_transaction(
+        self,
+        *,
+        map_id: str,
+        global_settings: CleanSettings,
+        room_profiles: Mapping[int, tuple[RoomCleanSettings, set[str]]],
+        selected_room_ids: set[int],
+    ) -> None:
+        """Commit a validated local profile in memory before scheduling persistence."""
+        state = self.data
+        map_data = state.map_data if state is not None else None
+        rooms = map_data.rooms if map_data is not None else None
+        if (
+            not map_id
+            or self.room_settings_map_id(map_data) != map_id
+            or not isinstance(rooms, (list, tuple))
+            or not rooms
+            or not can_apply_pending_profiles(state)
+            or not self._room_selection_store_loaded
+            or not self._room_profile_store_loaded
+        ):
+            raise ValueError(
+                "Narwal pending profiles require a loaded idle docked robot "
+                "and unchanged map"
+            )
+
+        current_room_ids = {room.room_id for room in rooms if room.room_id > 0}
+        if (
+            not current_room_ids
+            or set(room_profiles) != current_room_ids
+            or not selected_room_ids <= current_room_ids
+        ):
+            raise ValueError("Narwal room profiles do not match the current map")
+        if any(
+            not fields
+            or not fields <= ROOM_CLEAN_SETTING_ATTRS
+            for _, fields in room_profiles.values()
+        ):
+            raise ValueError("Narwal room profile contains unsupported settings")
+
+        next_profiles = dict(self.room_clean_settings)
+        next_customized = {
+            key: set(fields)
+            for key, fields in self.room_clean_settings_customized.items()
+        }
+        for room_id, (profile, custom_fields) in room_profiles.items():
+            key = (map_id, room_id)
+            stored = next_profiles.get(key)
+            stored = RoomCleanSettings() if stored is None else replace(stored)
+            next_profiles[key] = stored
+            for attr in custom_fields:
+                setattr(stored, attr, getattr(profile, attr))
+            next_customized.setdefault(key, set()).update(custom_fields)
+
+        next_selections = dict(self.selected_clean_rooms)
+        if selected_room_ids:
+            next_selections[map_id] = set(selected_room_ids)
+        else:
+            next_selections.pop(map_id, None)
+        next_dirty_maps = set(self._room_selection_dirty_maps)
+        next_dirty_maps.add(map_id)
+
+        self.clean_settings = global_settings
+        self.room_clean_settings = next_profiles
+        self.room_clean_settings_customized = next_customized
+        self.selected_clean_rooms = next_selections
+        self._room_selection_dirty_maps = next_dirty_maps
+        self._schedule_room_selection_save()
+        self.async_update_listeners()
 
     def _map_display_cache_payload(
         self,
