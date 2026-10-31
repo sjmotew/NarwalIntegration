@@ -29,8 +29,9 @@ Confirmed with product key `hEA7OEshlx` on firmware `v01.13.11.02`, on two indep
 (one EU). This model **does not broadcast**, so it needs the cloud-assigned Device ID at setup
 (see [SETUP.md](SETUP.md#freo-z-ultra-cx7-device-id)). Base status, maps, consumables,
 room-selective cleaning and work-mode selection all work locally. Live cleaning position and
-progress are unavailable; see [TROUBLESHOOTING.md](TROUBLESHOOTING.md#cx7-freo-z-ultra) for what
-that means in practice.
+progress are unavailable (the robot sends them to Narwal's cloud only), and the reported state
+tracks cleaning on some units but sat at one static code on the first two measured; see
+[TROUBLESHOOTING.md](TROUBLESHOOTING.md#cx7-freo-z-ultra) for what that means in practice.
 
 Issue [#5](https://github.com/sjmotew/NarwalIntegration/issues/5) also contains reports of
 firmware `1.12.10.02` and a `BYWBPqSxeC` identity. That key remains in discovery coverage but
