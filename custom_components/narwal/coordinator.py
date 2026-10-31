@@ -170,9 +170,9 @@ def is_confirmed_terminal_clean_state(state: NarwalState) -> bool:
     if has_blocking_error(state):
         return True
     if state.working_status == WorkingStatus.TASK_COMPLETED:
-        # TASK_COMPLETED is also emitted while the robot is still off-dock
-        # between task phases and on its return leg.  Only dock telemetry makes
-        # that status a confirmed session boundary.
+        # A reported off-dock TASK_COMPLETED between room phases has not yet
+        # been corroborated by a capture. Treat it as a possible handoff until
+        # dock telemetry confirms a session boundary.
         return state.has_dock_presence_signal
     if _state_attr_is_true(state, "has_paused_clean_task_context"):
         return False
@@ -1266,13 +1266,13 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
         if display is None or not display.has_trajectory:
             return None
         static_map = state.map_data
-        confirmed_terminal = getattr(self, "_clean_session_terminal", False) or (
+        confirmed_terminal = self._clean_session_terminal or (
             is_confirmed_terminal_clean_state(state)
             and not self._stale_startup_dock_may_await_trajectory(state)
         )
         active_clean = not confirmed_terminal and (
             is_clean_session_context(state)
-            or getattr(self, "_map_display_cache_restored_from_active", False)
+            or self._map_display_cache_restored_from_active
         )
         return _MapDisplayCacheSnapshot(
             map_id=getattr(static_map, "map_id", 0) if static_map else 0,
@@ -2348,7 +2348,7 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
     def _has_clean_session_signal(self, state: NarwalState) -> bool:
         """Return true when current telemetry describes an active clean session."""
         if (
-            getattr(self, "_clean_session_terminal", False)
+            self._clean_session_terminal
             and state.working_status == WorkingStatus.TASK_COMPLETED
         ):
             return False
@@ -2363,7 +2363,7 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
                 state.working_status == WorkingStatus.TASK_COMPLETED
                 and not state.has_dock_presence_signal
                 and (
-                    getattr(self, "_clean_session_active", False)
+                    self._clean_session_active
                     or state.has_explicit_off_dock_signal
                 )
             )
@@ -2394,9 +2394,9 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
     def _is_restored_off_dock_handoff(self, state: NarwalState) -> bool:
         """Return true while restored history may continue off-dock."""
         return (
-            getattr(self, "_map_display_cache_restored", False)
-            and not getattr(self, "_map_display_cache_restored_from_active", False)
-            and not getattr(self, "_clean_session_terminal", False)
+            self._map_display_cache_restored
+            and not self._map_display_cache_restored_from_active
+            and not self._clean_session_terminal
             and state.working_status == WorkingStatus.TASK_COMPLETED
             and not state.has_dock_presence_signal
         )
@@ -2420,7 +2420,7 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
 
     def _cancel_pending_new_clean_map_display(self) -> None:
         """Cancel the grace callback when its staged route is consumed."""
-        handle = getattr(self, "_pending_new_clean_map_display_handle", None)
+        handle = self._pending_new_clean_map_display_handle
         if handle is not None:
             handle.cancel()
         self._pending_new_clean_map_display_handle = None
@@ -2466,13 +2466,13 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
             return
         if (
             (
-                getattr(self, "_map_display_cache_restored", False)
-                and not getattr(self, "_map_display_cache_restored_from_active", False)
-                and not getattr(self, "_clean_session_active", False)
+                self._map_display_cache_restored
+                and not self._map_display_cache_restored_from_active
+                and not self._clean_session_active
             )
             or (
-                getattr(self, "_clean_session_terminal", False)
-                and not getattr(self, "_clean_session_active", False)
+                self._clean_session_terminal
+                and not self._clean_session_active
                 and (
                     self._retained_map_display is not None
                     or self._has_clean_session_signal(state)
@@ -2531,7 +2531,7 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
 
     def _schedule_pending_new_clean_map_display_reconciliation(self) -> None:
         """Resolve an unconfirmed terminal route after the new-clean grace period."""
-        previous = getattr(self, "_pending_new_clean_map_display_handle", None)
+        previous = self._pending_new_clean_map_display_handle
         if previous is not None:
             previous.cancel()
         hass = getattr(self, "hass", None)
@@ -2599,8 +2599,8 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
         self, state: NarwalState
     ) -> MapDisplayData | None:
         """Take a recent route window owned by the current terminal generation."""
-        pending = getattr(self, "_pending_new_clean_map_display", None)
-        received_at = getattr(self, "_pending_new_clean_map_display_at", 0.0)
+        pending = self._pending_new_clean_map_display
+        received_at = self._pending_new_clean_map_display_at
         generation = getattr(
             self, "_pending_new_clean_terminal_generation", None
         )
@@ -2641,18 +2641,18 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
 
     def _map_display_awaits_new_clean_status(self, state: NarwalState) -> bool:
         """Return true while the current route window is staged, not retained."""
-        pending = getattr(self, "_pending_new_clean_map_display", None)
+        pending = self._pending_new_clean_map_display
         return bool(
             pending is not None
             and (
                 (
-                    getattr(self, "_map_display_cache_restored", False)
-                    and not getattr(self, "_map_display_cache_restored_from_active", False)
-                    and not getattr(self, "_clean_session_active", False)
+                    self._map_display_cache_restored
+                    and not self._map_display_cache_restored_from_active
+                    and not self._clean_session_active
                 )
                 or (
-                    getattr(self, "_clean_session_terminal", False)
-                    and not getattr(self, "_clean_session_active", False)
+                    self._clean_session_terminal
+                    and not self._clean_session_active
                 )
             )
         )
@@ -2674,7 +2674,7 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
         """Return true when state has entered a new robot cleaning session."""
         if not self._has_clean_session_signal(state):
             return False
-        if getattr(self, "_clean_session_active", False):
+        if self._clean_session_active:
             return False
         pending_restore = getattr(self, "_pending_map_display_cache_restore", None)
         if isinstance(pending_restore, Mapping) and pending_restore.get(
@@ -2682,16 +2682,16 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
         ) is True:
             return False
         if (
-            getattr(self, "_map_display_cache_restored", False)
-            and not getattr(self, "_map_display_cache_restored_from_active", False)
-            and not getattr(self, "_clean_session_terminal", False)
+            self._map_display_cache_restored
+            and not self._map_display_cache_restored_from_active
+            and not self._clean_session_terminal
             and (
                 (
                     state.working_status == WorkingStatus.TASK_COMPLETED
                     and not state.has_dock_presence_signal
                 )
                 or (
-                    getattr(self, "_previous_task_completed_off_dock", False)
+                    self._previous_task_completed_off_dock
                     and state.working_status in ACTIVE_CLEANING_STATUSES
                 )
             )
@@ -2701,15 +2701,15 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
             # clean rather than starting a new route.
             return False
         return not (
-            getattr(self, "_map_display_cache_restored", False)
-            and getattr(self, "_map_display_cache_restored_from_active", False)
+            self._map_display_cache_restored
+            and self._map_display_cache_restored_from_active
         )
 
     def _active_map_display_cache_awaits_validation(self) -> bool:
         """Return true while a restored active route awaits its first live window."""
         restored_at = getattr(self, "_map_display_cache_restored_at", 0.0)
         return bool(
-            getattr(self, "_map_display_cache_restored_from_active", False)
+            self._map_display_cache_restored_from_active
             and restored_at > 0
             and time.monotonic() - restored_at <= NATIVE_TRAJECTORY_RESTORE_GRACE
         )
@@ -2755,9 +2755,9 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
     ) -> None:
         """Apply transition side effects and record the latest working status."""
         if (
-            getattr(self, "_map_display_cache_restored", False)
-            and not getattr(self, "_map_display_cache_restored_from_active", False)
-            and getattr(self, "_previous_task_completed_off_dock", False)
+            self._map_display_cache_restored
+            and not self._map_display_cache_restored_from_active
+            and self._previous_task_completed_off_dock
             and state.working_status in ACTIVE_CLEANING_STATUSES
         ):
             self._promote_restored_handoff_trajectory(state)
@@ -2797,7 +2797,7 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
         self._previous_task_completed_off_dock = (
             state.working_status == WorkingStatus.TASK_COMPLETED
             and not state.has_dock_presence_signal
-            and not getattr(self, "_clean_session_terminal", False)
+            and not self._clean_session_terminal
         )
         self._prev_working_status = state.working_status
 
@@ -2853,7 +2853,7 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
             _LOGGER.debug("Could not restore display-map trajectory cache")
         has_unrestored_initial_trajectory = (
             self._has_current_map_display_trajectory()
-            and not getattr(self, "_map_display_cache_restored", False)
+            and not self._map_display_cache_restored
             and getattr(self, "_pending_map_display_cache_restore", None) is None
         )
         if (

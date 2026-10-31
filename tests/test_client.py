@@ -148,6 +148,38 @@ class TestNarwalClientInit:
         client.on_display_map.assert_called_once_with(client.state)
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "client_module",
+        ["narwal_client.client", "custom_components.narwal.narwal_client.client"],
+    )
+    async def test_display_callback_failure_does_not_stop_frame_processing(
+        self, client_module: str, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A bad callback is logged and later frames still reach listeners."""
+        from importlib import import_module
+
+        client = import_module(client_module).NarwalClient("10.0.0.1", device_id="device")
+        frame = build_frame(client._full_topic("map/display_map"), b"payload")
+        client.on_display_map = MagicMock(side_effect=[ValueError("bad trail"), None])
+        client.on_state_update = MagicMock()
+        with caplog.at_level(logging.ERROR), patch.object(
+            client, "_decode_protobuf", side_effect=[{"10": 1}, {"10": 2}]
+        ):
+            await client._handle_message(frame)
+            await client._handle_message(frame)
+
+        assert client.on_display_map.call_count == 2
+        assert client.on_state_update.call_count == 2
+        assert client.state.map_display_data.timestamp == 2
+        assert any(
+            "Error in display map callback" in record.message for record in caplog.records
+        )
+        assert any(
+            record.exc_info and isinstance(record.exc_info[1], ValueError)
+            for record in caplog.records
+        )
+
+    @pytest.mark.asyncio
     async def test_display_map_non_finite_pair_preserves_trajectory_break(self) -> None:
         """Invalid native coordinates must not join the surrounding route."""
         client = NarwalClient("10.0.0.1", device_id="device")
