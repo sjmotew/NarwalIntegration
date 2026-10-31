@@ -481,6 +481,25 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
         """Record that dock-control state came from a current base-status payload."""
         self._dock_status_refresh_failed = False
 
+    def async_set_refreshed_dock_data(self) -> None:
+        """Publish dock state that the client has already refreshed."""
+        self._mark_dock_status_refresh_succeeded()
+        self._reconcile_map_display_after_status_refresh()
+        self._sync_active_clean_context(self.client.state)
+        self.async_set_updated_data(self.client.state)
+
+    def async_set_partial_dock_data(self) -> None:
+        """Publish a partial dock refresh without promoting dock freshness."""
+        self._reconcile_map_display_after_status_refresh()
+        self._sync_active_clean_context(self.client.state)
+        self.async_set_updated_data(self.client.state)
+
+    def async_set_stale_dock_data(self) -> None:
+        """Publish client state while recording that dock telemetry is stale."""
+        self._mark_dock_status_refresh_failed()
+        self._sync_active_clean_context(self.client.state)
+        self.async_set_updated_data(self.client.state)
+
     def default_room_clean_settings(self) -> RoomCleanSettings:
         """Return a room-clean profile copied from the current global defaults."""
         return RoomCleanSettings(
@@ -2365,9 +2384,8 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
             _LOGGER.debug("Could not fetch device info at startup")
 
         try:
-            response = await self.client.get_status(
-                full_update=not self.client.state.has_recent_active_working_status
-            )
+            full_update = not self.client.state.has_recent_active_working_status
+            response = await self.client.get_status(full_update=full_update)
             if not getattr(response, "accepted", True):
                 raise NarwalConnectionError(
                     f"Status refresh failed with code {response.result_code}"
@@ -2376,7 +2394,8 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
                 raise NarwalConnectionError(
                     "Status refresh returned no dock-status payload"
                 )
-            self._mark_dock_status_refresh_succeeded()
+            if full_update:
+                self._mark_dock_status_refresh_succeeded()
         except Exception:
             self._mark_dock_status_refresh_failed()
             _LOGGER.debug("Could not fetch initial status")
@@ -2563,9 +2582,8 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
     async def _refresh_dock_status(self) -> None:
         """Immediate get_status() after return-to-dock to refresh dock fields."""
         try:
-            response = await self.client.get_status(
-                full_update=not self.client.state.has_recent_active_working_status
-            )
+            full_update = not self.client.state.has_recent_active_working_status
+            response = await self.client.get_status(full_update=full_update)
             if not getattr(response, "accepted", True):
                 raise NarwalConnectionError(
                     f"Status refresh failed with code {response.result_code}"
@@ -2574,7 +2592,8 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
                 raise NarwalConnectionError(
                     "Status refresh returned no dock-status payload"
                 )
-            self._mark_dock_status_refresh_succeeded()
+            if full_update:
+                self._mark_dock_status_refresh_succeeded()
             self._reconcile_map_display_after_status_refresh()
             self._sync_active_clean_context(self.client.state)
             self.async_set_updated_data(self.client.state)

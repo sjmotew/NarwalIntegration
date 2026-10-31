@@ -9,6 +9,7 @@ import struct
 import time
 import zlib
 from dataclasses import dataclass, field
+from enum import StrEnum
 from typing import Any, ClassVar
 
 from .const import (
@@ -54,6 +55,7 @@ _DOCK_DRYING_TASK_ORDER = (
     DOCK_TASK_DRY_DUST_BIN,
     DOCK_TASK_DRY_DOCK_BAG,
 )
+DOCK_DRYING_TASKS = frozenset(_DOCK_DRYING_TASK_ORDER)
 _DOCK_DRYING_TIMER_PAIRS: tuple[tuple[str, str, str], ...] = (
     (DOCK_TASK_DRY_MOP, "8", "9"),
     (DOCK_TASK_DRY_DUST_BIN, "10", "11"),
@@ -812,6 +814,14 @@ class Position:
     heading: float = 0.0
 
 
+class DockStatusFreshness(StrEnum):
+    """Authority level of dock state attached to a command response."""
+
+    FRESH = "fresh"
+    PARTIAL = "partial"
+    STALE = "stale"
+
+
 @dataclass
 class CommandResponse:
     """Response from a command sent to the robot."""
@@ -819,6 +829,7 @@ class CommandResponse:
     result_code: int = 0
     data: dict[str, Any] = field(default_factory=dict)
     raw_payload: bytes = b""
+    dock_status_freshness: DockStatusFreshness | None = None
 
     @property
     def success(self) -> bool:
@@ -920,10 +931,12 @@ class NarwalState:
 
     # Dock activity (field 3 sub-field 12: 2/6 observed when docked)
     dock_activity: int = 0
+    dock_activity_generation: int = 0
 
     # Station activity (field 3 sub-field 18).
     # Observed: 1 during dust gathering, 4 during dock dry/disinfection work.
     station_activity: int = 0
+    station_activity_generation: int = 0
 
     # Dock task timers from working_status fields 8..13.
     dock_drying_tasks: dict[str, DockTaskTimer] = field(default_factory=dict)
@@ -1955,12 +1968,14 @@ class NarwalState:
             if "12" in field3:
                 with contextlib.suppress(ValueError, TypeError):
                     self.dock_activity = int(field3["12"])
+                    self.dock_activity_generation += 1
             elif self.working_status not in ACTIVE_CLEANING_STATUSES:
                 self.dock_activity = 0
             self.station_activity = 0
             if "18" in field3:
                 with contextlib.suppress(ValueError, TypeError):
                     self.station_activity = int(field3["18"])
+                    self.station_activity_generation += 1
             if self.working_status in ACTIVE_CLEANING_STATUSES:
                 self.has_current_dock_presence_signal = False
                 self.clear_assumed_robot_clean()
