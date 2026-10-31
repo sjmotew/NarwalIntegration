@@ -146,3 +146,9 @@ from Narwal may break this integration at any time.
 ## License
 
 MIT
+
+### Reset next-clean profiles
+
+`narwal.set_pending_profiles` replaces one docked robot’s pending whole-floor profile, every current room profile and the final room selection as one in-memory update. Persistence is scheduled through the existing stores; it is not a crash-atomic disk transaction. It does not start, stop, wake or reconfigure a running clean. Requests are validated before any setting changes; an active task, unavailable map or unloaded profile store rejects the entire update.
+
+This is useful for a scheduled reset: separate select calls can otherwise leave a partial profile or reach live suction/water controls if a clean starts between calls. Per-room profiles may differ from the whole-floor profile. Room order and profiles belonging to other maps are preserved. Enable the room-selection switches first: the service resolves and validates the supplied room entities against the current map.

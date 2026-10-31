@@ -29,7 +29,11 @@ from custom_components.narwal import (  # noqa: E402
     _suction_for_coordinator,
     _validate_pass_count,
 )
-from custom_components.narwal.const import DOMAIN, SERVICE_CLEAN_ROOMS  # noqa: E402
+from custom_components.narwal.const import (  # noqa: E402
+    DOMAIN,
+    SERVICE_CLEAN_ROOMS,
+    SERVICE_SET_PENDING_PROFILES,
+)
 from custom_components.narwal.coordinator import (  # noqa: E402
     CleanSettings,
     NarwalCoordinator,
@@ -40,8 +44,10 @@ from custom_components.narwal.narwal_client import (  # noqa: E402
     CommandResult,
     FanLevel,
     MapData,
+    MopHumidity,
     NarwalCommandError,
     NarwalState,
+    RoomCleanSettings,
     RoomInfo,
     WorkingStatus,
     WorkMode,
@@ -66,13 +72,14 @@ def _coordinator(
     coordinator = NarwalCoordinator(hass, entry)
     coordinator.hass = hass
     coordinator.config_entry = entry
-    entry.async_create_background_task.side_effect = (
-        lambda _hass, coro, _name: (coro.close(), MagicMock())[1]
-    )
+    entry.async_create_background_task.side_effect = lambda _hass, coro, _name: (
+        coro.close(),
+        MagicMock(),
+    )[1]
     state = NarwalState()
     if docked:
         state.update_from_base_status({"3": {"1": 10, "10": 1}})
-    state.map_data = MapData(rooms=[RoomInfo(room_id=4), RoomInfo(room_id=7)])
+    state.map_data = MapData(map_id=77, rooms=[RoomInfo(room_id=4), RoomInfo(room_id=7)])
     coordinator.client = MagicMock()
     coordinator.client.robot_awake = True
     coordinator.client.state = state
@@ -98,6 +105,7 @@ def _coordinator(
     coordinator.active_clean_work_mode = None
     coordinator.data = state
     coordinator.async_set_updated_data = MagicMock()
+    coordinator.async_update_listeners = MagicMock()
     coordinator.async_clear_map_display_cache = AsyncMock()
     return coordinator
 
@@ -105,6 +113,7 @@ def _coordinator(
 def _register_clean_rooms_handler(coordinator: NarwalCoordinator):
     """Register the test service handler for a coordinator."""
     hass = MagicMock()
+    coordinator.config_entry.entry_id = "entry-1"
     hass.data = {DOMAIN: {"entry-1": coordinator}}
     hass.services.has_service.return_value = False
     handlers = {}
@@ -122,6 +131,68 @@ def _register_clean_rooms_handler(coordinator: NarwalCoordinator):
     return handlers[(DOMAIN, SERVICE_CLEAN_ROOMS)], registry
 
 
+def _register_pending_profiles_handler(coordinator: NarwalCoordinator):
+    """Register the pending mutation service against one real coordinator."""
+    hass = MagicMock()
+    coordinator.config_entry.entry_id = "entry-1"
+    hass.data = {DOMAIN: {"entry-1": coordinator}}
+    hass.services.has_service.return_value = False
+
+    def get_state(entity_id: str):
+        if entity_id.startswith("switch.room_"):
+            room_id = int(entity_id.rsplit("_", 1)[1])
+            return SimpleNamespace(
+                state="off",
+                attributes={"room_id": room_id, "map_id": "77"},
+            )
+        return object()
+
+    hass.states.get.side_effect = get_state
+    handlers = {}
+
+    def register_service(domain: str, service_name: str, handler, **kwargs) -> None:
+        handlers[(domain, service_name)] = handler
+
+    hass.services.async_register.side_effect = register_service
+    registry = MagicMock()
+    registry.async_get.return_value = SimpleNamespace(
+        config_entry_id="entry-1",
+        platform=DOMAIN,
+    )
+    _async_register_services(hass)
+    return handlers[(DOMAIN, SERVICE_SET_PENDING_PROFILES)], registry
+
+
+def _pending_profiles_call() -> SimpleNamespace:
+    """Build one complete two-room pending-only request."""
+    mop = {
+        "mode": "Vacuum and mop",
+        "suction": "Ultra Powerful",
+        "water": "Wet",
+        "scrub": "High",
+        "passes": "2",
+        "route": "Meticulous",
+    }
+    return SimpleNamespace(
+        context=SimpleNamespace(user_id=None),
+        data={
+            "entity_id": ["vacuum.downstairs_narwal_vacuum"],
+            "global_profile": mop,
+            "room_profiles": [
+                {
+                    "entity_id": "switch.room_4",
+                    "profile": dict(mop, mode="Vacuum then mop"),
+                },
+                {
+                    "entity_id": "switch.room_7",
+                    "profile": dict(mop, mode="Vacuum then mop"),
+                },
+            ],
+            "selected_room_entities": [],
+        },
+    )
+
+
 def _clean_rooms_call() -> SimpleNamespace:
     """Return a service call with non-default settings."""
     return SimpleNamespace(
@@ -136,6 +207,165 @@ def _clean_rooms_call() -> SimpleNamespace:
             FIELD_ROUTE: "standard",
         },
     )
+
+
+@pytest.mark.parametrize("initial_mode", [WorkMode.VACUUM, WorkMode.MOP])
+@pytest.mark.parametrize(
+    "status",
+    [WorkingStatus.STANDBY, WorkingStatus.DOCKED, WorkingStatus.DOCKED_V2, WorkingStatus.CHARGED],
+)
+async def test_pending_profile_service_commits_idle_profiles_without_client_commands(
+    initial_mode: WorkMode,
+    status: WorkingStatus,
+) -> None:
+    """The bulk service commits pending defaults from either starting mode."""
+    coordinator = _coordinator()
+    coordinator.data.working_status = status
+    coordinator.clean_settings.work_mode = initial_mode
+    coordinator.room_clean_settings[("other-map", 99)] = RoomCleanSettings(water=MopHumidity.DRY)
+    coordinator.room_clean_settings_customized[("other-map", 99)] = {"water"}
+    coordinator.room_clean_orders["other-map"] = [99, 98]
+    coordinator.selected_clean_rooms["other-map"] = {99}
+    coordinator.client.set_mop_humidity = AsyncMock()
+    coordinator.client.set_fan_speed = AsyncMock()
+    coordinator.client.start_rooms = AsyncMock()
+    coordinator.client.sent_vendor_commands = []
+    handler, registry = _register_pending_profiles_handler(coordinator)
+    call = _pending_profiles_call()
+
+    with (
+        patch(
+            "custom_components.narwal.service.async_extract_entity_ids",
+            new_callable=AsyncMock,
+            return_value=["vacuum.downstairs_narwal_vacuum"],
+        ),
+        patch("custom_components.narwal.er.async_get", return_value=registry),
+    ):
+        await handler(call)
+
+    assert coordinator.clean_settings.work_mode == WorkMode.VACUUM_AND_MOP
+    assert coordinator.clean_settings.fan == FanLevel.SUPER
+    assert coordinator.clean_settings.passes == 2
+    assert coordinator.room_clean_settings[("77", 4)].work_mode == WorkMode.VACUUM_THEN_MOP
+    assert coordinator.room_clean_settings_customized[("77", 4)] == {
+        "work_mode",
+        "fan",
+        "water",
+        "mop_strength",
+        "passes",
+        "route",
+    }
+    assert coordinator.room_clean_settings[("other-map", 99)].water == MopHumidity.DRY
+    assert coordinator.room_clean_settings_customized[("other-map", 99)] == {"water"}
+    assert coordinator.room_clean_orders["other-map"] == [99, 98]
+    assert coordinator.selected_clean_rooms["other-map"] == {99}
+    coordinator.config_entry.async_create_background_task.assert_called_once()
+    coordinator.async_update_listeners.assert_called_once_with()
+    coordinator.async_set_updated_data.assert_not_called()
+    assert coordinator.selected_clean_rooms.get("77") is None
+    coordinator.client.set_mop_humidity.assert_not_awaited()
+    coordinator.client.set_fan_speed.assert_not_awaited()
+    coordinator.client.start_rooms.assert_not_awaited()
+    assert coordinator.client.sent_vendor_commands == []
+
+
+@pytest.mark.parametrize("state_kind", ["active", "paused", "unknown", "transition"])
+async def test_pending_profile_service_rejects_nonidle_at_mutation_boundary(
+    state_kind: str,
+) -> None:
+    """A late active, paused, unknown, or transition state cannot reach setters."""
+    coordinator = _coordinator()
+    state = coordinator.data
+    if state_kind == "active":
+        state.working_status = WorkingStatus.CLEANING
+    elif state_kind == "paused":
+        state.is_paused = True
+    elif state_kind == "unknown":
+        state.working_status = WorkingStatus.UNKNOWN
+    else:
+        state.working_status = WorkingStatus.REMAPPING
+    coordinator.client.set_mop_humidity = AsyncMock()
+    coordinator.client.set_fan_speed = AsyncMock()
+    coordinator.client.sent_vendor_commands = []
+    before = coordinator.clean_settings
+    handler, registry = _register_pending_profiles_handler(coordinator)
+
+    with (
+        patch(
+            "custom_components.narwal.service.async_extract_entity_ids",
+            new_callable=AsyncMock,
+            return_value=["vacuum.downstairs_narwal_vacuum"],
+        ),
+        patch("custom_components.narwal.er.async_get", return_value=registry),
+        pytest.raises(HomeAssistantError, match="pending profiles|idle docked"),
+    ):
+        await handler(_pending_profiles_call())
+
+    assert coordinator.clean_settings is before
+    coordinator.client.set_mop_humidity.assert_not_awaited()
+    coordinator.client.set_fan_speed.assert_not_awaited()
+    assert coordinator.client.sent_vendor_commands == []
+
+
+async def test_pending_profile_service_rechecks_map_after_dispatch_wait() -> None:
+    """A map change during dispatch validation is rejected before local writes."""
+    coordinator = _coordinator()
+    before = coordinator.clean_settings
+    handler, registry = _register_pending_profiles_handler(coordinator)
+
+    async def change_map_then_extract(*_args):
+        coordinator.data.map_data = MapData(
+            map_id=88,
+            rooms=[RoomInfo(room_id=4), RoomInfo(room_id=7)],
+        )
+        return ["vacuum.downstairs_narwal_vacuum"]
+
+    with (
+        patch(
+            "custom_components.narwal.service.async_extract_entity_ids",
+            new_callable=AsyncMock,
+            side_effect=change_map_then_extract,
+        ),
+        patch("custom_components.narwal.er.async_get", return_value=registry),
+        pytest.raises(HomeAssistantError, match="current map"),
+    ):
+        await handler(_pending_profiles_call())
+
+    assert coordinator.clean_settings is before
+    assert coordinator.room_clean_settings == {}
+    assert coordinator.selected_clean_rooms == {}
+
+
+async def test_pending_profile_service_validation_failure_is_atomic() -> None:
+    """A bad later room profile cannot leave earlier pending values committed."""
+    coordinator = _coordinator()
+    coordinator.client.set_mop_humidity = AsyncMock()
+    coordinator.client.set_fan_speed = AsyncMock()
+    original_settings = coordinator.clean_settings
+    original_profiles = dict(coordinator.room_clean_settings)
+    original_customized = dict(coordinator.room_clean_settings_customized)
+    original_selections = dict(coordinator.selected_clean_rooms)
+    call = _pending_profiles_call()
+    call.data["room_profiles"][1]["profile"]["suction"] = "unsupported-tier"
+    handler, registry = _register_pending_profiles_handler(coordinator)
+
+    with (
+        patch(
+            "custom_components.narwal.service.async_extract_entity_ids",
+            new_callable=AsyncMock,
+            return_value=["vacuum.downstairs_narwal_vacuum"],
+        ),
+        patch("custom_components.narwal.er.async_get", return_value=registry),
+        pytest.raises(HomeAssistantError, match="Suction is not supported"),
+    ):
+        await handler(call)
+
+    assert coordinator.clean_settings is original_settings
+    assert coordinator.room_clean_settings == original_profiles
+    assert coordinator.room_clean_settings_customized == original_customized
+    assert coordinator.selected_clean_rooms == original_selections
+    coordinator.client.set_mop_humidity.assert_not_awaited()
+    coordinator.client.set_fan_speed.assert_not_awaited()
 
 
 def test_clean_rooms_schema_uses_all_capable_entity_validator() -> None:
