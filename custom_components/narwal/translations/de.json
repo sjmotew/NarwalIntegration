@@ -1,0 +1,189 @@
+{
+  "config": {
+    "flow_title": "Narwal-Saugroboter ({host})",
+    "step": {
+      "user": {
+        "title": "Mit Narwal-Saugroboter verbinden",
+        "description": "Gib die IP-Adresse deines Narwal-Saugroboters ein und wähle das Modell aus.",
+        "data": {
+          "host": "IP-Adresse",
+          "port": "Port",
+          "model": "Modell"
+        }
+      },
+      "device_id": {
+        "title": "Geräte-ID eingeben",
+        "description": "Die automatische Erkennung ist nicht verfügbar. Gib die 32-stellige Geräte-ID ein, die die Cloud dem Saugroboter zugewiesen hat, oder setze das Häkchen, um die automatische Erkennung erneut zu versuchen – hilfreich, wenn der Roboter beim ersten Versuch geschlafen hat. Wie du die ID findest, steht in der Dokumentation der Integration.",
+        "data": {
+          "device_id": "Geräte-ID",
+          "retry_auto_detect": "Automatische Erkennung erneut versuchen"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Keine Verbindung zum Saugroboter. Prüfe die IP-Adresse und ob der Saugroboter eingeschaltet ist.",
+      "unknown": "Ein unerwarteter Fehler ist aufgetreten.",
+      "device_id_required": "Gib eine Geräte-ID ein oder setze das Häkchen bei „Automatische Erkennung erneut versuchen“."
+    },
+    "abort": {
+      "already_configured": "Dieser Saugroboter ist bereits eingerichtet."
+    }
+  },
+  "entity": {
+    "vacuum": {
+      "vacuum": {
+        "name": "Saugroboter"
+      }
+    },
+    "sensor": {
+      "cleaning_area": {
+        "name": "Gereinigte Fläche"
+      },
+      "cleaning_time": {
+        "name": "Reinigungsdauer"
+      },
+      "remaining_time": {
+        "name": "Restzeit"
+      },
+      "firmware_version": {
+        "name": "Firmware-Version"
+      },
+      "dust_bag_health": {
+        "name": "Zustand des Staubbeutels"
+      },
+      "detergent_remaining": {
+        "name": "Verbleibendes Reinigungsmittel"
+      },
+      "last_clean_result": {
+        "name": "Ergebnis der letzten Reinigung",
+        "state": {
+          "normal_end": "Abgeschlossen",
+          "user_force_end": "Vom Benutzer gestoppt",
+          "shutdown_force_end": "Beendet (ausgeschaltet)",
+          "low_battery_force_end": "Beendet (Akku schwach)",
+          "overflow_force_end": "Beendet (Tank übergelaufen)",
+          "pause_too_long_force_end": "Beendet (zu lange pausiert)",
+          "system_error_force_end": "Beendet (Systemfehler)",
+          "user_force_end_on_station": "An der Station gestoppt",
+          "user_force_end_on_app": "In der App gestoppt",
+          "recall_end": "Zur Station zurückgerufen",
+          "normal_end_replenish_map_fail": "Abgeschlossen (Karte nicht aktualisiert)",
+          "map_unmatched_force_end": "Beendet (Karte passt nicht)",
+          "relocation_fail_with_station_force_end": "Beendet (Position nicht wiedergefunden)",
+          "relocation_fail_without_station_force_end": "Beendet (Position nicht wiedergefunden, keine Station)",
+          "pretask_error_force_end": "Beendet (Fehler vor dem Start)",
+          "schedule_task_force_end": "Beendet (Zeitplan)",
+          "unexecuted": "Nicht ausgeführt",
+          "not_find_pet": "Haustier nicht gefunden"
+        }
+      },
+      "charging_state": {
+        "name": "Ladestatus",
+        "state": {
+          "charging": "Lädt",
+          "fully_charged": "Voll geladen",
+          "not_charging": "Lädt nicht"
+        }
+      }
+    },
+    "binary_sensor": {
+      "docked": {
+        "name": "Angedockt",
+        "state": {
+          "on": "Angedockt",
+          "off": "Nicht angedockt"
+        }
+      },
+      "error": {
+        "name": "Fehler",
+        "state": {
+          "on": "Problem",
+          "off": "OK"
+        }
+      },
+      "clean_water_tank": {
+        "name": "Frischwassertank"
+      },
+      "sewage_tank": {
+        "name": "Schmutzwassertank"
+      },
+      "dust_box": {
+        "name": "Staubbehälter"
+      },
+      "dust_bag": {
+        "name": "Staubbeutel"
+      },
+      "station_bag": {
+        "name": "Staubbeutel der Station"
+      },
+      "maintenance_required": {
+        "name": "Wartung nötig"
+      },
+      "replacement_required": {
+        "name": "Austausch nötig"
+      }
+    },
+    "select": {
+      "work_mode": {
+        "name": "Reinigungsmodus",
+        "state": {
+          "vacuum": "Saugen",
+          "mop": "Wischen",
+          "vacuum_then_mop": "Erst saugen, dann wischen",
+          "vacuum_and_mop": "Saugen und wischen"
+        }
+      },
+      "water": {
+        "name": "Feuchtigkeit beim Wischen",
+        "state": {
+          "dry": "Etwas trockener",
+          "normal": "Normal",
+          "wet": "Etwas feuchter"
+        }
+      },
+      "mop_strength": {
+        "name": "Wischdruck",
+        "state": {
+          "normal": "Normal",
+          "high": "Hoch"
+        }
+      }
+    },
+    "number": {
+      "passes": {
+        "name": "Reinigungsdurchgänge"
+      }
+    },
+    "light": {
+      "dock_light": {
+        "name": "Licht der Station"
+      }
+    },
+    "switch": {
+      "empty_dustbin": {
+        "name": "Staubbehälter leeren"
+      },
+      "wash_mop": {
+        "name": "Mopp waschen"
+      },
+      "dry_mop": {
+        "name": "Mopp trocknen"
+      },
+      "dry_dust_bin": {
+        "name": "Staubbehälter trocknen und desinfizieren"
+      },
+      "dry_dock_bag": {
+        "name": "Stationsbeutel trocknen und desinfizieren"
+      },
+      "show_room_labels": {
+        "name": "Raumnamen anzeigen"
+      },
+      "show_furniture": {
+        "name": "Möbel anzeigen"
+      },
+      "show_furniture_labels": {
+        "name": "Möbelnamen anzeigen"
+      }
+    }
+  }
+}
