@@ -3,7 +3,7 @@
     "flow_title": "Narwal-Saugroboter ({host})",
     "step": {
       "user": {
-        "title": "Mit Narwal-Saugroboter verbinden",
+        "title": "Narwal-Saugroboter verbinden",
         "description": "Gib die IP-Adresse deines Narwal-Saugroboters ein und wähle das Modell aus.",
         "data": {
           "host": "IP-Adresse",
@@ -13,7 +13,7 @@
       },
       "device_id": {
         "title": "Geräte-ID eingeben",
-        "description": "Die automatische Erkennung ist nicht verfügbar. Gib die 32-stellige Geräte-ID ein, die die Cloud dem Saugroboter zugewiesen hat, oder setze das Häkchen, um die automatische Erkennung erneut zu versuchen – hilfreich, wenn der Roboter beim ersten Versuch geschlafen hat. Wie du die ID findest, steht in der Dokumentation der Integration.",
+        "description": "Die automatische Erkennung ist nicht verfügbar. Gib die 32-stellige Geräte-ID ein, die dein Saugroboter von der Cloud erhalten hat, oder setze das Häkchen, um die automatische Erkennung erneut zu versuchen – hilfreich, wenn der Roboter beim ersten Versuch im Ruhezustand war. Wie du die ID findest, steht in der Dokumentation der Integration.",
         "data": {
           "device_id": "Geräte-ID",
           "retry_auto_detect": "Automatische Erkennung erneut versuchen"
@@ -21,7 +21,7 @@
       }
     },
     "error": {
-      "cannot_connect": "Keine Verbindung zum Saugroboter. Prüfe die IP-Adresse und ob der Saugroboter eingeschaltet ist.",
+      "cannot_connect": "Verbindung zum Saugroboter fehlgeschlagen. Prüfe die IP-Adresse und stelle sicher, dass er eingeschaltet ist.",
       "unknown": "Ein unerwarteter Fehler ist aufgetreten.",
       "device_id_required": "Gib eine Geräte-ID ein oder setze das Häkchen bei „Automatische Erkennung erneut versuchen“."
     },
@@ -60,7 +60,7 @@
           "normal_end": "Abgeschlossen",
           "user_force_end": "Vom Benutzer gestoppt",
           "shutdown_force_end": "Beendet (ausgeschaltet)",
-          "low_battery_force_end": "Beendet (Akku schwach)",
+          "low_battery_force_end": "Beendet (Batterie schwach)",
           "overflow_force_end": "Beendet (Tank übergelaufen)",
           "pause_too_long_force_end": "Beendet (zu lange pausiert)",
           "system_error_force_end": "Beendet (Systemfehler)",
@@ -80,9 +80,9 @@
       "charging_state": {
         "name": "Ladestatus",
         "state": {
-          "charging": "Lädt",
+          "charging": "Wird geladen",
           "fully_charged": "Voll geladen",
-          "not_charging": "Lädt nicht"
+          "not_charging": "Wird nicht geladen"
         }
       }
     },
@@ -130,11 +130,11 @@
           "vacuum": "Saugen",
           "mop": "Wischen",
           "vacuum_then_mop": "Erst saugen, dann wischen",
-          "vacuum_and_mop": "Saugen und wischen"
+          "vacuum_and_mop": "Saugen und Wischen"
         }
       },
       "water": {
-        "name": "Feuchtigkeit beim Wischen",
+        "name": "Wischfeuchtigkeit",
         "state": {
           "dry": "Etwas trockener",
           "normal": "Normal",
@@ -142,7 +142,7 @@
         }
       },
       "mop_strength": {
-        "name": "Wischdruck",
+        "name": "Wischintensität",
         "state": {
           "normal": "Normal",
           "high": "Hoch"
@@ -173,7 +173,7 @@
         "name": "Staubbehälter trocknen und desinfizieren"
       },
       "dry_dock_bag": {
-        "name": "Stationsbeutel trocknen und desinfizieren"
+        "name": "Staubbeutel der Station trocknen und desinfizieren"
       },
       "show_room_labels": {
         "name": "Raumnamen anzeigen"
