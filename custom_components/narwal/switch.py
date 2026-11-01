@@ -307,6 +307,8 @@ class NarwalRoomSelectionSwitch(NarwalEntity, SwitchEntity):
             return
         self._room_name = room_name
         self._attr_translation_placeholders = {"room_name": room_name}
+        # `name` is a cached property and placeholders don't invalidate it.
+        self.__dict__.pop("name", None)
         self._attr_suggested_object_id = (
             f"{slugify(self.coordinator.config_entry.title)}_room_{slugify(room_name)}"
         )

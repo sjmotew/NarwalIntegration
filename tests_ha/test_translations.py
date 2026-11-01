@@ -16,6 +16,7 @@ from homeassistant.helpers import entity_registry as er
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.narwal.const import DOMAIN
+from custom_components.narwal.narwal_client.models import MapData, RoomInfo
 
 from .conftest import DEVICE_ID
 
@@ -61,3 +62,44 @@ async def test_names_follow_the_configured_language(
         state = hass.states.get(entity_id)
         assert state is not None
         assert state.attributes["friendly_name"] == f"Narwal Flow {expected[column]}"
+
+
+async def test_room_rename_updates_friendly_name(
+    hass: HomeAssistant,
+    flow_entry: MockConfigEntry,
+    silent_robot: dict,
+) -> None:
+    """Renaming a room in the app renames its per-room entities without a reload.
+
+    ``Entity.name`` is cached and new placeholders alone don't invalidate it, so
+    this guards the cache clear in both ``async_update_room_name()`` methods.
+    """
+    flow_entry.add_to_hass(hass)
+    registry = er.async_get(hass)
+    # Per-room selects are disabled by default; register one enabled so it has a state.
+    select_uid = f"{DEVICE_ID}_room_3_mode"
+    registry.async_get_or_create("select", DOMAIN, select_uid, config_entry=flow_entry)
+    assert await hass.config_entries.async_setup(flow_entry.entry_id)
+    await hass.async_block_till_done()
+    coordinator = flow_entry.runtime_data
+
+    async def show_room(name: str) -> None:
+        coordinator.client.state.map_data = MapData(rooms=[RoomInfo(room_id=3, name=name)])
+        coordinator.async_update_listeners()
+        await hass.async_block_till_done()
+
+    def friendly_name(domain: str, unique_id: str) -> str:
+        entity_id = registry.async_get_entity_id(domain, DOMAIN, unique_id)
+        assert entity_id is not None
+        state = hass.states.get(entity_id)
+        assert state is not None
+        return state.attributes["friendly_name"]
+
+    switch_uid = f"{DEVICE_ID}_room_3_selected"
+    await show_room("Kitchen")
+    assert friendly_name("switch", switch_uid) == "Narwal Flow Kitchen selected"
+    assert friendly_name("select", select_uid) == "Narwal Flow Kitchen mode"
+
+    await show_room("Pantry")
+    assert friendly_name("switch", switch_uid) == "Narwal Flow Pantry selected"
+    assert friendly_name("select", select_uid) == "Narwal Flow Pantry mode"

@@ -556,6 +556,8 @@ class RoomNarwalSettingSelect(NarwalEntity, RestoreEntity, SelectEntity):
             return
         self._room_name = room_name
         self._attr_translation_placeholders = {"room_name": room_name}
+        # `name` is a cached property and placeholders don't invalidate it.
+        self.__dict__.pop("name", None)
         if getattr(self, "hass", None) is not None:
             self.async_write_ha_state()
 
