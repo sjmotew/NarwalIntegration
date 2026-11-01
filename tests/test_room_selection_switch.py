@@ -182,7 +182,7 @@ async def test_room_selection_entities_update_name_after_map_rename() -> None:
         for entity in added_entities
         if isinstance(entity, NarwalRoomSelectionSwitch)
     )
-    assert room_switch._attr_name == "Kitchen selected"
+    assert room_switch._attr_translation_placeholders == {"room_name": "Kitchen"}
     assert room_switch.extra_state_attributes["room_name"] == "Kitchen"
 
     coordinator.client.state.map_data = MapData(
@@ -191,7 +191,7 @@ async def test_room_selection_entities_update_name_after_map_rename() -> None:
     )
     listeners[0]()
 
-    assert room_switch._attr_name == "Pantry selected"
+    assert room_switch._attr_translation_placeholders == {"room_name": "Pantry"}
     assert room_switch.extra_state_attributes["room_name"] == "Pantry"
 
 
