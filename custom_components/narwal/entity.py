@@ -29,7 +29,8 @@ def narwal_dock_device_info(coordinator: NarwalCoordinator) -> DeviceInfo:
         manufacturer=MANUFACTURER,
         model=f"{configured_model_name(coordinator.config_entry.data)} Dock",
         sw_version=coordinator.client.state.firmware_version or None,
-        name=f"{coordinator.config_entry.title} Dock",
+        translation_key="dock",
+        translation_placeholders={"name": coordinator.config_entry.title},
         via_device=(DOMAIN, device_id),
     )
 

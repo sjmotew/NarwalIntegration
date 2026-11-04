@@ -27,6 +27,7 @@ PLATFORM_DOMAINS = {
     "number": "number",
     "switch": "switch",
     "light": "light",
+    "camera": "camera",
 }
 
 

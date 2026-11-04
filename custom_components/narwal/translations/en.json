@@ -147,6 +147,42 @@
           "normal": "Normal",
           "high": "High"
         }
+      },
+      "legacy_mode": {
+        "name": "Mode"
+      },
+      "legacy_suction": {
+        "name": "Suction"
+      },
+      "legacy_water": {
+        "name": "Water"
+      },
+      "legacy_scrub": {
+        "name": "Scrub"
+      },
+      "legacy_route": {
+        "name": "Route"
+      },
+      "legacy_passes": {
+        "name": "Passes"
+      },
+      "room_mode": {
+        "name": "{room_name} mode"
+      },
+      "room_suction": {
+        "name": "{room_name} suction"
+      },
+      "room_water": {
+        "name": "{room_name} water"
+      },
+      "room_scrub": {
+        "name": "{room_name} scrub"
+      },
+      "room_route": {
+        "name": "{room_name} route"
+      },
+      "room_passes": {
+        "name": "{room_name} passes"
       }
     },
     "number": {
@@ -183,6 +219,91 @@
       },
       "show_furniture_labels": {
         "name": "Show furniture labels"
+      },
+      "room_selected": {
+        "name": "{room_name} selected"
+      }
+    },
+    "camera": {
+      "map": {
+        "name": "Map"
+      },
+      "carpet_map": {
+        "name": "Carpet map"
+      }
+    }
+  },
+  "device": {
+    "dock": {
+      "name": "{name} Dock"
+    }
+  },
+  "selector": {
+    "clean_mode": {
+      "options": {
+        "vacuum": "Vacuum",
+        "mop": "Mop",
+        "vacuum_then_mop": "Vacuum then mop",
+        "vacuum_and_mop": "Vacuum and mop"
+      }
+    },
+    "suction": {
+      "options": {
+        "ai": "AI",
+        "quiet": "Quiet",
+        "standard": "Standard",
+        "strong": "Strong",
+        "super_powerful": "Super Powerful",
+        "ultra_powerful": "Ultra Powerful"
+      }
+    },
+    "water": {
+      "options": {
+        "dry": "Dry",
+        "normal": "Normal",
+        "wet": "Wet"
+      }
+    },
+    "mop_strength": {
+      "options": {
+        "normal": "Normal",
+        "high": "High"
+      }
+    },
+    "route": {
+      "options": {
+        "standard": "Standard",
+        "meticulous": "Meticulous"
+      }
+    }
+  },
+  "services": {
+    "clean_rooms": {
+      "name": "Clean rooms",
+      "description": "Start a room clean using Narwal's local clean/start_clean command.",
+      "fields": {
+        "rooms": {
+          "name": "Rooms",
+          "description": "Narwal room IDs to clean, in order, or \"all\" for all current map rooms."
+        },
+        "mode": {
+          "name": "Mode"
+        },
+        "suction": {
+          "name": "Suction"
+        },
+        "water": {
+          "name": "Water"
+        },
+        "mop_strength": {
+          "name": "Mop strength"
+        },
+        "passes": {
+          "name": "Passes"
+        },
+        "route": {
+          "name": "Route"
+        }
       }
     }
   }

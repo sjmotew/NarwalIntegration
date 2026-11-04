@@ -179,6 +179,7 @@ class LegacyNarwalSelectEntityDescription(SelectEntityDescription):
 LEGACY_SELECT_DESCRIPTIONS: tuple[LegacyNarwalSelectEntityDescription, ...] = (
     LegacyNarwalSelectEntityDescription(
         key="mode",
+        translation_key="legacy_mode",
         setting_key="mode",
         name="Mode",
         setting_options=LEGACY_MODE_OPTIONS,
@@ -187,6 +188,7 @@ LEGACY_SELECT_DESCRIPTIONS: tuple[LegacyNarwalSelectEntityDescription, ...] = (
     ),
     LegacyNarwalSelectEntityDescription(
         key="runtime_suction",
+        translation_key="legacy_suction",
         setting_key="suction",
         name="Suction",
         setting_options=LEGACY_SUCTION_OPTIONS,
@@ -195,6 +197,7 @@ LEGACY_SELECT_DESCRIPTIONS: tuple[LegacyNarwalSelectEntityDescription, ...] = (
     ),
     LegacyNarwalSelectEntityDescription(
         key="runtime_water",
+        translation_key="legacy_water",
         setting_key="water",
         name="Water",
         setting_options=LEGACY_WATER_OPTIONS,
@@ -203,6 +206,7 @@ LEGACY_SELECT_DESCRIPTIONS: tuple[LegacyNarwalSelectEntityDescription, ...] = (
     ),
     LegacyNarwalSelectEntityDescription(
         key="scrub",
+        translation_key="legacy_scrub",
         setting_key="scrub",
         name="Scrub",
         setting_options=LEGACY_SCRUB_OPTIONS,
@@ -211,6 +215,7 @@ LEGACY_SELECT_DESCRIPTIONS: tuple[LegacyNarwalSelectEntityDescription, ...] = (
     ),
     LegacyNarwalSelectEntityDescription(
         key="route",
+        translation_key="legacy_route",
         setting_key="route",
         name="Route",
         setting_options=LEGACY_ROUTE_OPTIONS,
@@ -219,6 +224,7 @@ LEGACY_SELECT_DESCRIPTIONS: tuple[LegacyNarwalSelectEntityDescription, ...] = (
     ),
     LegacyNarwalSelectEntityDescription(
         key="passes",
+        translation_key="legacy_passes",
         setting_key="passes",
         name="Passes",
         setting_options=LEGACY_PASSES_OPTIONS,
@@ -241,6 +247,7 @@ class RoomNarwalSelectEntityDescription(SelectEntityDescription):
 ROOM_SELECT_DESCRIPTIONS: tuple[RoomNarwalSelectEntityDescription, ...] = (
     RoomNarwalSelectEntityDescription(
         key="room_mode",
+        translation_key="room_mode",
         setting_key="mode",
         attr="work_mode",
         name="mode",
@@ -249,6 +256,7 @@ ROOM_SELECT_DESCRIPTIONS: tuple[RoomNarwalSelectEntityDescription, ...] = (
     ),
     RoomNarwalSelectEntityDescription(
         key="room_suction",
+        translation_key="room_suction",
         setting_key="suction",
         attr="fan",
         name="suction",
@@ -257,6 +265,7 @@ ROOM_SELECT_DESCRIPTIONS: tuple[RoomNarwalSelectEntityDescription, ...] = (
     ),
     RoomNarwalSelectEntityDescription(
         key="room_water",
+        translation_key="room_water",
         setting_key="water",
         attr="water",
         name="water",
@@ -265,6 +274,7 @@ ROOM_SELECT_DESCRIPTIONS: tuple[RoomNarwalSelectEntityDescription, ...] = (
     ),
     RoomNarwalSelectEntityDescription(
         key="room_scrub",
+        translation_key="room_scrub",
         setting_key="scrub",
         attr="mop_strength",
         name="scrub",
@@ -273,6 +283,7 @@ ROOM_SELECT_DESCRIPTIONS: tuple[RoomNarwalSelectEntityDescription, ...] = (
     ),
     RoomNarwalSelectEntityDescription(
         key="room_route",
+        translation_key="room_route",
         setting_key="route",
         attr="route",
         name="route",
@@ -281,6 +292,7 @@ ROOM_SELECT_DESCRIPTIONS: tuple[RoomNarwalSelectEntityDescription, ...] = (
     ),
     RoomNarwalSelectEntityDescription(
         key="room_passes",
+        translation_key="room_passes",
         setting_key="passes",
         attr="passes",
         name="passes",
@@ -533,7 +545,7 @@ class RoomNarwalSettingSelect(NarwalEntity, RestoreEntity, SelectEntity):
         self._attr_unique_id = (
             f"{device_id}_{map_prefix}room_{room_id}_{description.setting_key}"
         )
-        self._attr_name = f"{room_name} {description.name}"
+        self._attr_translation_placeholders = {"room_name": room_name}
         self._attr_icon = description.icon
         self._attr_options = self._options_for_description(description)
         self._attr_entity_category = EntityCategory.CONFIG
@@ -544,7 +556,9 @@ class RoomNarwalSettingSelect(NarwalEntity, RestoreEntity, SelectEntity):
         if room_name == self._room_name:
             return
         self._room_name = room_name
-        self._attr_name = f"{room_name} {self.entity_description.name}"
+        self._attr_translation_placeholders = {"room_name": room_name}
+        # `name` is a cached property and placeholders don't invalidate it.
+        self.__dict__.pop("name", None)
         if getattr(self, "hass", None) is not None:
             self.async_write_ha_state()
 

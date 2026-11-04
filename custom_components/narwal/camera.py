@@ -62,7 +62,7 @@ class NarwalCarpetCamera(NarwalEntity, Camera):
     only polls in an active state and otherwise serves the last image.
     """
 
-    _attr_name = "Carpet map"
+    _attr_translation_key = "carpet_map"
 
     def __init__(self, coordinator: NarwalCoordinator) -> None:
         """Initialize the carpet debug camera entity."""
@@ -96,7 +96,7 @@ class NarwalCarpetCamera(NarwalEntity, Camera):
 class NarwalMapCamera(NarwalEntity, Camera):
     """Camera entity that streams the vacuum's map as MJPEG."""
 
-    _attr_name = "Map"
+    _attr_translation_key = "map"
     _attr_frame_interval = _MIN_RENDER_INTERVAL
     _attr_is_streaming = True
 

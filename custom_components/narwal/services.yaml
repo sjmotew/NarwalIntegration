@@ -17,6 +17,7 @@ clean_rooms:
       default: vacuum_and_mop
       selector:
         select:
+          translation_key: clean_mode
           options:
             - vacuum
             - mop
@@ -27,6 +28,7 @@ clean_rooms:
       default: standard
       selector:
         select:
+          translation_key: suction
           options:
             - ai
             - quiet
@@ -39,6 +41,7 @@ clean_rooms:
       default: normal
       selector:
         select:
+          translation_key: water
           options:
             - dry
             - normal
@@ -48,6 +51,7 @@ clean_rooms:
       default: normal
       selector:
         select:
+          translation_key: mop_strength
           options:
             - normal
             - high
@@ -63,6 +67,7 @@ clean_rooms:
       name: Route
       selector:
         select:
+          translation_key: route
           options:
             - standard
             - meticulous
