@@ -12,7 +12,9 @@ import tests.ha_stubs
 tests.ha_stubs.install()
 
 from custom_components.narwal.camera import (  # noqa: E402
+    _MAP_CARD_ATTRIBUTES,
     _NATIVE_TRAIL_MAX_POINTS,
+    _PATH_ATTRIBUTE_MAX_POINTS,
     NarwalMapCamera,
 )
 from narwal_client.const import WorkingStatus  # noqa: E402
@@ -46,6 +48,7 @@ def _camera(state: NarwalState) -> NarwalMapCamera:
     camera._base_map_ts = 0
     camera._base_map_options_key = (True, True, True)
     camera._room_label_points = []
+    camera._map_attributes = {}
     return camera
 
 
@@ -307,9 +310,11 @@ async def test_render_keeps_camera_access_token_stable() -> None:
 
     async def executor_job(fn, *args):
         if getattr(fn, "__name__", "") == "render_base_map":
-            return object()
+            return _BaseImage(300, 300)
         if getattr(fn, "__name__", "") == "room_label_points":
             return []
+        if getattr(fn, "__name__", "") == "_render_frame":
+            return fn(*args)
         return b"png"
 
     camera.hass.async_add_executor_job = AsyncMock(side_effect=executor_job)
@@ -318,6 +323,192 @@ async def test_render_keeps_camera_access_token_stable() -> None:
         await camera._async_render(MapDisplayData(robot_x=4.0, robot_y=6.0), ("key",))
 
     assert camera._cached_image == b"png"
-    assert camera.extra_state_attributes == {"render_count": 1}
+    attributes = camera.extra_state_attributes
+    assert attributes["render_count"] == 1
+    assert attributes["vacuum_position"] == {"x": 2.0, "y": 2.0, "a": 0.0}
+    assert len(attributes["calibration_points"]) == 3
     camera.async_update_token.assert_not_called()
     camera.async_write_ha_state.assert_called_once()
+
+
+class _BaseImage:
+    """Size-only stand-in for the cached PIL base map."""
+
+    def __init__(self, width: int, height: int) -> None:
+        self.width = width
+        self.height = height
+
+
+def _map_with_dock() -> MapData:
+    return MapData(
+        width=100,
+        height=80,
+        resolution=50,
+        origin_x=2,
+        origin_y=4,
+        created_at=123,
+        compressed_map=b"\x01",
+        dock_x=10.0,
+        dock_y=20.0,
+    )
+
+
+def test_map_card_attributes_describe_the_rendered_frame() -> None:
+    """Robot, heading, dock and trail come out in grid coordinates."""
+    display = MapDisplayData.from_broadcast(
+        {
+            "1": {"1": {"1": 4.0, "2": 6.0}, "2": math.pi / 2},
+            "2": {
+                "1": _float_stream(3.0, 4.0),
+                "2": _float_stream(5.0, 6.0),
+            },
+        }
+    )
+
+    attributes = NarwalMapCamera._map_card_attributes(
+        _map_with_dock(), display, 0, 1.0, 300, 240,
+    )
+
+    assert attributes["vacuum_position"] == {"x": 2.0, "y": 2.0, "a": 90.0}
+    assert attributes["charger"] == {"x": 10.0, "y": 20.0}
+    assert attributes["path"] == [[[1.0, 1.0], [2.0, 2.0]]]
+    assert [point["vacuum"] for point in attributes["calibration_points"]] == [
+        {"x": 0.0, "y": 0.0},
+        {"x": 100.0, "y": 0.0},
+        {"x": 0.0, "y": 80.0},
+    ]
+
+
+def test_map_card_attributes_without_live_data() -> None:
+    """Before the first display_map only the static map is described."""
+    attributes = NarwalMapCamera._map_card_attributes(
+        _map_with_dock(), None, 0, 1.0, 300, 240,
+    )
+
+    assert set(attributes) == {"calibration_points", "charger"}
+
+
+def test_map_card_attributes_skip_lost_position() -> None:
+    """A (0, 0) display_map means lost map context, not a robot at the origin."""
+    attributes = NarwalMapCamera._map_card_attributes(
+        _map_with_dock(), MapDisplayData(robot_x=0.0, robot_y=0.0), 0, 1.0, 300, 240,
+    )
+
+    assert "vacuum_position" not in attributes
+
+
+def test_path_attribute_splits_at_breaks_and_drops_single_points() -> None:
+    """Segment breaks start a new segment; a lone point is not a segment."""
+    display = MagicMock()
+    display.to_grid_coords.return_value = None
+    display.has_trajectory = True
+    nan = float("nan")
+    display.trajectory_render_points.return_value = [
+        (3.0, 5.0), (4.0, 6.0), (nan, nan), (12.0, 14.0), (nan, nan), (20.0, 20.0), (21.0, 21.0),
+    ]
+
+    attributes = NarwalMapCamera._map_card_attributes(
+        _map_with_dock(), display, 0, 1.0, 300, 240,
+    )
+
+    assert attributes["path"] == [
+        [[1.0, 1.0], [2.0, 2.0]],
+        [[18.0, 16.0], [19.0, 17.0]],
+    ]
+
+
+def test_path_attribute_is_capped_and_keeps_the_newest_points() -> None:
+    """A long route is decimated for the attribute; the latest point survives."""
+    display = MagicMock()
+    display.to_grid_coords.return_value = None
+    display.has_trajectory = True
+    display.trajectory_render_points.return_value = [
+        (2.0 + index * 0.05, 5.0 + (index % 2)) for index in range(1500)
+    ]
+
+    attributes = NarwalMapCamera._map_card_attributes(
+        _map_with_dock(), display, 0, 1.0, 300, 240,
+    )
+
+    points = [point for segment in attributes["path"] for point in segment]
+    assert len(points) <= _PATH_ATTRIBUTE_MAX_POINTS
+    assert points[-1] == [round(1499 * 0.05, 1), 2.0]
+
+
+def test_map_card_attributes_are_not_recorded() -> None:
+    """Live-only map-card data stays out of the recorder."""
+    assert NarwalMapCamera._unrecorded_attributes >= _MAP_CARD_ATTRIBUTES
+    assert "render_count" not in NarwalMapCamera._unrecorded_attributes
+
+
+async def test_attribute_failure_keeps_the_rendered_frame() -> None:
+    """A broken attribute build logs and leaves the image and counter intact."""
+    state = NarwalState()
+    state.map_data = _map_with_dock()
+    camera = _camera(state)
+    camera._async_render = NarwalMapCamera._async_render.__get__(
+        camera, NarwalMapCamera
+    )
+    camera._map_attributes = {"vacuum_position": {"x": 1.0, "y": 1.0, "a": 0.0}}
+
+    async def executor_job(fn, *args):
+        if getattr(fn, "__name__", "") == "render_base_map":
+            return _BaseImage(300, 240)
+        if getattr(fn, "__name__", "") == "room_label_points":
+            return []
+        if getattr(fn, "__name__", "") == "_render_frame":
+            return fn(*args)
+        return b"png"
+
+    camera.hass.async_add_executor_job = AsyncMock(side_effect=executor_job)
+
+    with (
+        patch.object(NarwalMapCamera, "_render_overlay_image", return_value=b"png"),
+        patch.object(
+            NarwalMapCamera, "_map_card_attributes", side_effect=ValueError("boom"),
+        ),
+    ):
+        await camera._async_render(MapDisplayData(robot_x=4.0, robot_y=6.0), ("key",))
+
+    assert camera._cached_image == b"png"
+    assert camera.extra_state_attributes == {"render_count": 1}
+
+
+def test_path_attribute_cap_holds_with_many_breaks() -> None:
+    """Kept segment breaks must not push the path past its cap; newest wins."""
+    display = MagicMock()
+    display.to_grid_coords.return_value = None
+    display.has_trajectory = True
+    nan = float("nan")
+    points: list[tuple[float, float]] = []
+    for index in range(600):
+        points += [(3.0 + index * 0.1, 5.0), (3.0 + index * 0.1, 6.0), (nan, nan)]
+    display.trajectory_render_points.return_value = points
+
+    attributes = NarwalMapCamera._map_card_attributes(
+        _map_with_dock(), display, 0, 1.0, 300, 240,
+    )
+
+    kept = [point for segment in attributes["path"] for point in segment]
+    assert len(kept) <= _PATH_ATTRIBUTE_MAX_POINTS
+    last_x = round(1.0 + 599 * 0.1, 1)
+    assert attributes["path"][-1] == [[last_x, 1.0], [last_x, 2.0]]
+
+
+def test_robot_outside_the_map_has_no_position() -> None:
+    """Where render_overlay draws no robot, no position is published."""
+    attributes = NarwalMapCamera._map_card_attributes(
+        _map_with_dock(), MapDisplayData(robot_x=500.0, robot_y=6.0), 0, 1.0, 300, 240,
+    )
+
+    assert "vacuum_position" not in attributes
+
+
+def test_lost_map_clears_the_map_card_attributes() -> None:
+    """Without a map there is no frame to describe."""
+    camera = _camera(NarwalState())
+    camera._map_attributes = {"vacuum_position": {"x": 1.0, "y": 1.0, "a": 0.0}}
+
+    camera._handle_coordinator_update()
+
+    assert camera.extra_state_attributes == {"render_count": 0}

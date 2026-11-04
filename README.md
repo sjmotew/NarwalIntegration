@@ -44,7 +44,7 @@ port is open, [open an issue](https://github.com/sjmotew/NarwalIntegration/issue
 | **Per-room profiles** | Mode, suction, water, scrub, route and passes per room; room-selection switches; a `narwal.clean_rooms` service. Disabled by default; [`tools/gen_dashboard.py`](tools/gen_dashboard.py) builds a room-picker dashboard from the ones you enable |
 | **Sensors** | Battery, cleaning time and area, firmware, docked and charging state, last clean result, dust bag health, detergent; current room and task progress as vacuum attributes during a clean |
 | **Alerts** | Clean-water tank, sewage tank, dust box, dust bag, station bag, error; maintenance and replacement alerts with the affected parts as attributes |
-| **Live map** | Colour-coded floor plan with room labels, furniture overlay, dock marker and the robot's own live trail during cleaning; a carpet-map camera; toggles for labels and furniture |
+| **Live map** | Colour-coded floor plan with room labels, furniture overlay, dock marker and the robot's own live trail during cleaning; [map-card attributes](docs/MAP-CARD.md) with the robot position, dock, trail and calibration points; a carpet-map camera; toggles for labels and furniture |
 | **Dock** | Ambient light (off, fireplace, nightlight, purple) on models that have one; dock task switches: empty dustbin, wash mop, dry mop, dry dust bin, dry dock bag |
 | **Connectivity** | Push updates over WebSocket on broadcasting models, auto-reconnect with backoff, wake system plus keepalive heartbeat, 60-second polling fallback, mDNS / DHCP discovery |
 
@@ -115,6 +115,7 @@ account UUID redacted. [What each section settles](docs/TROUBLESHOOTING.md#attac
 | [docs/MODELS.md](docs/MODELS.md) | Compatibility evidence per model: product keys, firmware, reporters |
 | [docs/SETUP.md](docs/SETUP.md) | Discovery internals, VLAN / SNAT, CX7 Device ID |
 | [docs/ROOM-CLEANING.md](docs/ROOM-CLEANING.md) | Area mapping, per-room profiles, dashboard generator, automation example |
+| [docs/MAP-CARD.md](docs/MAP-CARD.md) | Map camera attributes for dashboard cards: robot position, dock, trail, calibration points |
 | [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | Quick fixes, known limitations in detail, diagnostics |
 | [docs/PROTOCOL.md](docs/PROTOCOL.md) | The local WebSocket protocol: frames, topics, field maps, corrections, open questions |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | Next steps, parked features, captures that would settle open questions |
