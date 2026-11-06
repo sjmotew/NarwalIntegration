@@ -200,6 +200,13 @@ Working model:
   `developer/ping` also exist for this.
 - **Subscription** — `common/active_robot_publish` carries a duration (this integration uses
   600 s) after which broadcasts stop even if the socket is still open.
+  During a clean, a Flow on v01.09.06.07 broadcasts for only ~30 s (29.1-30.5 s measured)
+  after each `active_robot_publish`, whatever the duration; heartbeat, `set_fan_level` and
+  `get_device_base_status` do not restart broadcasts, but a re-subscribe does, including one
+  sent inside a live window. The integration therefore renews every 20 s while a clean is
+  active and leaves a docked robot alone
+  ([#148](https://github.com/sjmotew/NarwalIntegration/issues/148),
+  [#90](https://github.com/sjmotew/NarwalIntegration/issues/90)).
 
 A live socket is therefore *not* evidence of a live data stream. Track broadcast age
 separately from connection state.

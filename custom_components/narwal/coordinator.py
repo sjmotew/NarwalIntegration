@@ -69,6 +69,15 @@ NATIVE_TRAJECTORY_RESTORE_GRACE = 60.0
 # base_status-derived value, and the live map stops updating (#73).
 TOPIC_SUBSCRIPTION_TTL = 600.0
 TOPIC_RESUBSCRIBE_AFTER = 240.0
+# During a clean, a Flow on v01.09.06.07 broadcasts display_map, working_status
+# and robot_base_status for only 29.1-30.5 s after each active_robot_publish,
+# whatever the 600 s duration says. Heartbeat, set_fan_level and
+# get_device_base_status do not restart broadcasts; only a re-subscribe does, and
+# one sent inside a live window extends it by another ~30 s. Renewing at 20 s
+# keeps broadcasts continuous with about 8 s of margin (#148). This applies only
+# while a clean is active: docked broadcasts are stimulus-driven and must be
+# left alone (#90, #113).
+ACTIVE_CLEAN_RESUBSCRIBE_AFTER = 20.0
 ROOM_CLEAN_SETTING_ATTRS = frozenset(field.name for field in fields(RoomCleanSettings))
 ROOM_CLEAN_SETTING_VALUE_TYPES = {
     "work_mode": WorkMode,
@@ -439,6 +448,8 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
         # uptime on Linux, so a 0.0 start would hold back the first recovery on
         # a host up for less than the cooldown.
         self._last_display_map_resub: float | None = None
+        # Same reasoning: None until the first proactive active-clean renewal.
+        self._last_active_clean_resub: float | None = None
         self._last_topic_subscribe: float = 0.0
         self._consecutive_failures = 0
         self._max_failures = 5  # 5 * 60s = 5 minutes before entities go unavailable
@@ -2498,9 +2509,13 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
         self._retain_native_trajectory(state)
         self._schedule_map_display_cache_save(state)
 
-        # display_map dropout recovery: if cleaning but no display_map for
-        # 30s, re-send topic subscription. Only subscription — no wake burst
-        # (wake bursts during cleaning cause pause bouncing).
+        # Keep broadcasts continuous during a clean (#148): the robot stops
+        # broadcasting ~30s after each subscription, so renew proactively once
+        # the latest subscription is ACTIVE_CLEAN_RESUBSCRIBE_AFTER old. The
+        # display_map dropout recovery below stays as the fallback: if cleaning
+        # but no display_map for 30s, re-send topic subscription. Only
+        # subscription — no wake burst (wake bursts during cleaning cause
+        # pause bouncing).
         is_cleaning = (
             state.is_cleaning
             or state.has_recent_active_working_status
@@ -2520,6 +2535,7 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
                 self.client.last_display_map_age,
                 self.client.last_subscription_age,
             )
+            resubscribed = False
             if (
                 display_age > 30.0
                 and (
@@ -2532,10 +2548,36 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
                     display_age,
                 )
                 self._last_display_map_resub = now
+                self._last_active_clean_resub = now
+                resubscribed = True
                 self.config_entry.async_create_background_task(
                     self.hass,
                     self._resub_topics(),
                     f"{DOMAIN}_resub",
+                )
+            # The client stamps its subscription time only after the send
+            # completes and broadcasts arrive in bursts, so the in-flight
+            # guard keeps one renewal per interval rather than one per
+            # broadcast. Never a wake burst.
+            subscription_age = self.client.last_subscription_age
+            if (
+                not resubscribed
+                and subscription_age >= ACTIVE_CLEAN_RESUBSCRIBE_AFTER
+                and (
+                    self._last_active_clean_resub is None
+                    or now - self._last_active_clean_resub
+                    >= ACTIVE_CLEAN_RESUBSCRIBE_AFTER
+                )
+            ):
+                _LOGGER.debug(
+                    "Active clean: renewing topic subscription (%.0fs since last)",
+                    subscription_age,
+                )
+                self._last_active_clean_resub = now
+                self.config_entry.async_create_background_task(
+                    self.hass,
+                    self._resub_topics(),
+                    f"{DOMAIN}_active_clean_resub",
                 )
 
         self._sync_active_clean_context(state)
