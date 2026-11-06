@@ -147,6 +147,42 @@
           "normal": "Normal",
           "high": "Hoch"
         }
+      },
+      "legacy_mode": {
+        "name": "Modus"
+      },
+      "legacy_suction": {
+        "name": "Saugkraft"
+      },
+      "legacy_water": {
+        "name": "Wasser"
+      },
+      "legacy_scrub": {
+        "name": "Wischstufe"
+      },
+      "legacy_route": {
+        "name": "Route"
+      },
+      "legacy_passes": {
+        "name": "Durchgänge"
+      },
+      "room_mode": {
+        "name": "{room_name} Modus"
+      },
+      "room_suction": {
+        "name": "{room_name} Saugkraft"
+      },
+      "room_water": {
+        "name": "{room_name} Wasser"
+      },
+      "room_scrub": {
+        "name": "{room_name} Wischstufe"
+      },
+      "room_route": {
+        "name": "{room_name} Route"
+      },
+      "room_passes": {
+        "name": "{room_name} Durchgänge"
       }
     },
     "number": {
@@ -183,6 +219,91 @@
       },
       "show_furniture_labels": {
         "name": "Möbelnamen anzeigen"
+      },
+      "room_selected": {
+        "name": "{room_name} ausgewählt"
+      }
+    },
+    "camera": {
+      "map": {
+        "name": "Karte"
+      },
+      "carpet_map": {
+        "name": "Teppichkarte"
+      }
+    }
+  },
+  "device": {
+    "dock": {
+      "name": "{name} Station"
+    }
+  },
+  "selector": {
+    "clean_mode": {
+      "options": {
+        "vacuum": "Saugen",
+        "mop": "Wischen",
+        "vacuum_then_mop": "Erst saugen, dann wischen",
+        "vacuum_and_mop": "Saugen und Wischen"
+      }
+    },
+    "suction": {
+      "options": {
+        "ai": "KI",
+        "quiet": "Leise",
+        "standard": "Standard",
+        "strong": "Stark",
+        "super_powerful": "Sehr stark",
+        "ultra_powerful": "Maximal"
+      }
+    },
+    "water": {
+      "options": {
+        "dry": "Trocken",
+        "normal": "Normal",
+        "wet": "Nass"
+      }
+    },
+    "mop_strength": {
+      "options": {
+        "normal": "Normal",
+        "high": "Hoch"
+      }
+    },
+    "route": {
+      "options": {
+        "standard": "Standard",
+        "meticulous": "Gründlich"
+      }
+    }
+  },
+  "services": {
+    "clean_rooms": {
+      "name": "Räume reinigen",
+      "description": "Startet eine Raumreinigung über den lokalen Narwal-Befehl clean/start_clean.",
+      "fields": {
+        "rooms": {
+          "name": "Räume",
+          "description": "Narwal-Raum-IDs in der gewünschten Reihenfolge oder „all“ (englisch, genau so) für alle Räume der aktuellen Karte."
+        },
+        "mode": {
+          "name": "Modus"
+        },
+        "suction": {
+          "name": "Saugkraft"
+        },
+        "water": {
+          "name": "Wasser"
+        },
+        "mop_strength": {
+          "name": "Wischintensität"
+        },
+        "passes": {
+          "name": "Durchgänge"
+        },
+        "route": {
+          "name": "Route"
+        }
       }
     }
   }
