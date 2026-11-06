@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
 # Install HA stubs before any custom_components import
 import tests.ha_stubs  # noqa: E402
 
@@ -354,3 +356,133 @@ class TestActiveCleanRenewal:
         assert max_age <= ACTIVE_CLEAN_RESUBSCRIBE_AFTER
         assert "narwal_resub" not in names
         assert coordinator._last_topic_subscribe == self.FAKE_NOW + 120.0
+
+    def _run(
+        self,
+        coordinator: NarwalCoordinator,
+        state: NarwalState,
+        *,
+        sub_age: float,
+        map_age: float,
+        now: float = FAKE_NOW,
+    ) -> None:
+        coordinator.client.last_subscription_age = sub_age
+        coordinator.client.last_display_map_age = map_age
+        with patch(
+            "custom_components.narwal.coordinator.time.monotonic",
+            return_value=now,
+        ):
+            coordinator._on_state_update(state)
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            pytest.param(FLOW_CLEANING, id="flow-cleaning"),
+            pytest.param(
+                {"3": {"1": 5, "6": 1, "10": 2}, "11": 1, "47": 2},
+                id="flow-returning",
+            ),
+            pytest.param(
+                {"3": {"1": 5, "6": 4}, "11": 2, "47": 3},
+                id="flow-mop-wash-dock-visit",
+            ),
+        ],
+    )
+    def test_active_flow_states_renew(self, payload: dict) -> None:
+        coordinator = self._coordinator()
+        state = _flow_state(payload)
+        assert state.working_status == WorkingStatus.CLEANING_ALT
+        assert state.is_docked is False
+
+        self._run(coordinator, state, sub_age=21.0, map_age=1.0)
+
+        names = _background_task_names(coordinator)
+        assert names.count("narwal_active_clean_resub") == 1
+        assert "narwal_resub" not in names
+
+    def test_older_firmware_returning_renews(self) -> None:
+        coordinator = self._coordinator()
+        state = _flow_state({"3": {"1": 4, "7": 1, "10": 2}})
+        assert state.working_status == WorkingStatus.CLEANING
+        assert state.is_returning is True
+
+        self._run(coordinator, state, sub_age=21.0, map_age=1.0)
+
+        names = _background_task_names(coordinator)
+        assert names.count("narwal_active_clean_resub") == 1
+        assert "narwal_resub" not in names
+
+    def test_not_due_yet(self) -> None:
+        coordinator = self._coordinator()
+        state = _flow_state(FLOW_CLEANING)
+
+        self._run(coordinator, state, sub_age=10.0, map_age=1.0)
+
+        names = _background_task_names(coordinator)
+        assert "narwal_active_clean_resub" not in names
+        assert "narwal_resub" not in names
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            pytest.param({"3": {"1": 1, "3": 1}, "11": 3, "47": 1}, id="task-end"),
+            pytest.param({"3": {"1": 14}, "11": 3, "47": 1}, id="charged"),
+            pytest.param(
+                {"3": {"1": 14, "12": 4}, "11": 3, "12": 1, "47": 1}, id="drying"
+            ),
+        ],
+    )
+    def test_docked_states_never_renew(self, payload: dict) -> None:
+        coordinator = self._coordinator()
+        state = _flow_state(payload)
+        assert state.is_docked is True
+        assert state.is_cleaning is False
+
+        self._run(coordinator, state, sub_age=25.0, map_age=25.0)
+
+        names = _background_task_names(coordinator)
+        assert "narwal_active_clean_resub" not in names
+        assert "narwal_resub" not in names
+        coordinator.async_set_updated_data.assert_called_with(state)
+
+    def test_burst_schedules_one_renewal(self) -> None:
+        coordinator = self._coordinator()
+        state = _flow_state(FLOW_CLEANING)
+
+        for _ in range(5):
+            self._run(coordinator, state, sub_age=21.0, map_age=1.0)
+        assert (
+            _background_task_names(coordinator).count("narwal_active_clean_resub")
+            == 1
+        )
+
+        self._run(
+            coordinator,
+            state,
+            sub_age=21.0,
+            map_age=1.0,
+            now=self.FAKE_NOW + ACTIVE_CLEAN_RESUBSCRIBE_AFTER,
+        )
+        assert (
+            _background_task_names(coordinator).count("narwal_active_clean_resub")
+            == 2
+        )
+
+    def test_dropout_takes_precedence_without_double_send(self) -> None:
+        coordinator = self._coordinator()
+        state = _flow_state(FLOW_CLEANING)
+
+        self._run(coordinator, state, sub_age=300.0, map_age=48.0)
+        names = _background_task_names(coordinator)
+        assert names.count("narwal_resub") == 1
+        assert "narwal_active_clean_resub" not in names
+
+        self._run(
+            coordinator, state, sub_age=5.0, map_age=5.0, now=self.FAKE_NOW + 5.0
+        )
+        names = _background_task_names(coordinator)
+        assert names.count("narwal_resub") == 1
+        assert "narwal_active_clean_resub" not in names
+
+    def test_constant_bounds(self) -> None:
+        assert 10.0 <= ACTIVE_CLEAN_RESUBSCRIBE_AFTER <= 25.0
