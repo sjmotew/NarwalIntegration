@@ -15,7 +15,10 @@ import tests.ha_stubs  # noqa: E402
 
 tests.ha_stubs.install()
 
-from custom_components.narwal.coordinator import NarwalCoordinator  # noqa: E402
+from custom_components.narwal.coordinator import (  # noqa: E402
+    ACTIVE_CLEAN_RESUBSCRIBE_AFTER,
+    NarwalCoordinator,
+)
 from custom_components.narwal.narwal_client import MapData, NarwalState  # noqa: E402
 from custom_components.narwal.narwal_client.const import WorkingStatus  # noqa: E402
 
@@ -45,6 +48,7 @@ class TestCoordinatorMapRefresh:
         coordinator._listen_task = None
         coordinator._map_fetch_pending = False
         coordinator._last_display_map_resub = None
+        coordinator._last_active_clean_resub = None
         coordinator._last_status_resub = 0.0
         coordinator._prev_working_status = WorkingStatus.UNKNOWN
         coordinator.active_clean_work_mode = None
@@ -276,3 +280,77 @@ class TestDisplayMapDropout:
         self._update(coordinator, self._cleaning_state(), now=40.0)
 
         assert _background_task_names(coordinator).count("narwal_resub") == 1
+
+
+FLOW_CLEANING = {"3": {"1": 5, "6": 7}, "11": 1, "47": 2}
+
+
+def _flow_state(payload: dict) -> NarwalState:
+    state = NarwalState()
+    state.update_from_base_status(payload)
+    state.map_data = MapData()
+    return state
+
+
+class TestActiveCleanRenewal:
+    """While a clean is active the subscription is renewed every 20 s (#148)."""
+
+    FAKE_NOW = 1_000_000.0
+
+    def _coordinator(self) -> NarwalCoordinator:
+        coordinator = TestCoordinatorMapRefresh()._make_coordinator()
+        coordinator.client.state.map_data = MapData()
+        return coordinator
+
+    async def test_cadence_from_an_active_clean_state(self) -> None:
+        import asyncio
+
+        coordinator = self._coordinator()
+        state = _flow_state(FLOW_CLEANING)
+        assert state.working_status == WorkingStatus.CLEANING_ALT
+        assert state.is_docked is False
+
+        names: list[str] = []
+        pending: list = []
+
+        def _create(_hass: object, coro: object, name: str) -> None:
+            names.append(name)
+            if name in ("narwal_active_clean_resub", "narwal_resub"):
+                pending.append(coro)
+            else:
+                coro.close()  # type: ignore[attr-defined]
+
+        coordinator.config_entry.async_create_background_task = MagicMock(
+            side_effect=_create
+        )
+
+        clock = {"t": 0.0, "sub": 0.0}
+        renewals: list[float] = []
+
+        async def _subscribe() -> None:
+            clock["sub"] = clock["t"]
+            renewals.append(clock["t"])
+
+        coordinator.client.subscribe_to_topics = AsyncMock(side_effect=_subscribe)
+
+        max_age = 0.0
+        for i in range(0, 241):
+            t = i * 0.5
+            clock["t"] = t
+            age = t - clock["sub"]
+            coordinator.client.last_subscription_age = age
+            coordinator.client.last_display_map_age = 0.5
+            max_age = max(max_age, age)
+            with patch(
+                "custom_components.narwal.coordinator.time.monotonic",
+                return_value=self.FAKE_NOW + t,
+            ):
+                coordinator._on_state_update(state)
+                while pending:
+                    await asyncio.ensure_future(pending.pop(0))
+
+        assert renewals == [20.0, 40.0, 60.0, 80.0, 100.0, 120.0]
+        assert coordinator.client.subscribe_to_topics.await_count == len(renewals)
+        assert max_age <= ACTIVE_CLEAN_RESUBSCRIBE_AFTER
+        assert "narwal_resub" not in names
+        assert coordinator._last_topic_subscribe == self.FAKE_NOW + 120.0
