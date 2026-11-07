@@ -203,13 +203,14 @@ def is_clean_session_context(state: NarwalState | None) -> bool:
         or _state_attr_is_true(state, "has_assumed_robot_clean")
         or _state_attr_is_true(state, "has_recent_active_working_status")
         or _state_attr_is_true(state, "has_paused_clean_task_context")
+        or _state_attr_is_true(state, "has_paused_unclassified_task")
         or _state_attr_is_true(state, "is_returning")
     )
 
 
 def is_live_clean_setting_available(state: NarwalState | None) -> bool:
     """Return True when live clean settings can be changed during a task."""
-    if has_blocking_error(state):
+    if has_blocking_error(state) or _state_attr_is_true(state, "has_paused_unclassified_task"):
         return False
     if state.working_status in {WorkingStatus.REMAPPING, WorkingStatus.TASK_COMPLETED}:
         return False
@@ -345,7 +346,7 @@ def can_pause_cleaning(state: NarwalState | None) -> bool:
 
 def can_resume_cleaning(state: NarwalState | None) -> bool:
     """Return True when a paused robot clean can be resumed."""
-    if has_blocking_error(state):
+    if has_blocking_error(state) or _state_attr_is_true(state, "has_paused_unclassified_task"):
         return False
     return (
         (

@@ -804,3 +804,14 @@ Also valuable:
 
 Corrections to this document are welcome as issues or PRs. If something here contradicts what
 your hardware does, your hardware is right.
+
+### Paused unclassified task on Flow 2
+
+A captured v01.09.10.02 packet has field 3 `{1: 2, 2: 1, 4: 8}`,
+field 11 = 2 and field 47 = 3. The robot rejects a new start with CONFLICT;
+`task/cancel` returns NOT_APPLICABLE, while an intentional `task/force_end`
+succeeds and the next start is accepted. Preserve this paused task independently
+of dock location and cleaning metrics. Expose Stop, but do not infer a resumable
+clean, charging-to-resume, or runtime setting support from sub-field 4 = 8.
+A subsequent explicit idle/completed packet clears the context. No automatic
+force-end or retry is performed. Other sub-field values remain unchanged.
