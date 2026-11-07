@@ -106,6 +106,8 @@ def _task_status(state: Any) -> str:
     )
     if state.working_status == WorkingStatus.ERROR or getattr(state, "has_error", False):
         return "error"
+    if state.has_paused_unclassified_task:
+        return "paused"
     if state.is_paused and is_cleaning_state:
         return "paused"
     if state.working_status == WorkingStatus.REMAPPING:
@@ -183,6 +185,7 @@ def _has_live_robot_stop_context(state: Any) -> bool:
         or state.working_status == WorkingStatus.REMAPPING
         or state.has_assumed_robot_clean
         or state.has_paused_clean_task_context
+        or state.has_paused_unclassified_task
         or state.is_returning
     )
 
@@ -410,6 +413,8 @@ class NarwalVacuum(NarwalEntity, RestoreEntity, StateVacuumEntity):
         # is_paused (field 3.2) stays stale after docking — only trust
         # during cleaning states. Paused takes priority over returning
         # since the robot physically stops when paused mid-return.
+        if state.has_paused_unclassified_task:
+            return VacuumActivity.PAUSED
         if state.is_paused and is_cleaning_state:
             return VacuumActivity.PAUSED
         # Check returning before cleaning — robot keeps working_status=CLEANING
@@ -519,6 +524,11 @@ class NarwalVacuum(NarwalEntity, RestoreEntity, StateVacuumEntity):
             if not await self.coordinator.async_refresh_action_status():
                 raise HomeAssistantError("Narwal status could not be refreshed")
             state = self.coordinator.client.state
+            if state.has_paused_unclassified_task:
+                raise HomeAssistantError(
+                    "Narwal has a paused task of unknown type; end it with vacuum.stop "
+                    "before starting a new clean"
+                )
             if can_resume_cleaning(state):
                 resp = await self.coordinator.client.resume(timeout=self._ACTION_TIMEOUT)
                 _raise_if_command_failed(resp, "resume")
