@@ -58,6 +58,88 @@ on screen, plus a Whole-house panel for the defaults, Start / Clear-selection bu
 `script` that cleans exactly one room with its own profile, and a Dock-tasks section. Paste the
 YAML into any sections-view dashboard. Needs the `state-switch` card from HACS.
 
+## `narwal.clean_rooms`
+
+Start a room clean with stable service keys such as `vacuum_and_mop`, `wet`,
+`meticulous`, and `super_powerful`. `rooms` accepts robot room IDs or `"all"`.
+`passes` is a number from 1 to 3. This service sends a clean command; it does not
+use the saved per-room profiles. Use `vacuum.start` to apply those profiles and
+the saved room selection.
+
+## Reset next-clean profiles
+
+`narwal.set_pending_profiles` updates one docked robot's pending whole-floor
+profile, supplied room profiles and optional final room selection together.
+It sends no robot commands: it does not wake the robot, fetch a map or start a
+clean. A scheduled reset therefore cannot interleave a series of select calls
+with a starting clean or accidentally change live suction/water settings.
+Room switches and selects do not need to be enabled or present.
+
+```yaml
+action: narwal.set_pending_profiles
+target:
+  entity_id: vacuum.narwal_flow_vacuum
+data:
+  global_profile:
+    mode: vacuum_and_mop
+    suction: standard
+    water: normal
+    mop_strength: normal
+    passes: 1
+    route: meticulous
+  room_profiles:
+    "4":
+      mode: vacuum
+      suction: strong
+      passes: 2
+      route: standard
+    Kitchen:
+      mode: mop
+      water: wet
+      mop_strength: high
+      passes: 1
+      route: meticulous
+  selected_rooms: []
+```
+
+Use your vacuum entity and current-map room IDs or exact, case-sensitive display
+names (including spaces). Numeric strings mean IDs. Unknown rooms, ambiguous
+names, or two keys naming the same room reject the whole request. Use IDs if names
+are duplicated; the example assumes `Kitchen` is a different room from ID 4.
+
+- `global_profile` and `room_profiles` are required. Each supplied profile must
+  contain `mode`, integer `passes` (1, 2 or 3), and `route`.
+- `mode`: `vacuum`, `mop`, `vacuum_then_mop`, `vacuum_and_mop`.
+- Vacuum modes require `suction`: `ai`, `quiet`, `standard`, `strong`,
+  `super_powerful`, or `ultra_powerful` (where supported by the model).
+  The `clean_rooms` compatibility keys `normal`, `super`, `ultra`, and `max`
+  have the same meanings here. Mop-only profiles must omit suction.
+- Mop modes require `water` (`dry`, `normal`, `wet`) and `mop_strength`
+  (`normal`, `high`). Vacuum-only profiles must omit both.
+- `route`: `standard` or `meticulous`. Display labels such as `Wet`, `High`,
+  `Vacuum and mop`, and string passes such as `"2"` are not accepted.
+- Omitted rooms retain their stored profiles and overrides; `room_profiles: {}`
+  retains all of them. Fields that already inherit whole-floor defaults continue
+  to inherit them. Mode-inapplicable settings retain their stored values.
+- Omit `selected_rooms` to preserve the selection. `selected_rooms: []` clears
+  it, so the next `vacuum.start` uses the whole floor. A nonempty list replaces
+  the selection and may include rooms omitted from `room_profiles`.
+- Room order and other maps' profiles/selections are preserved. Selection order
+  does not change the saved room cleaning order.
+
+The profile stores and a positively identified current map must already be loaded.
+The robot must report idle dock presence; active, paused, returning, unknown or
+error states reject the request. All profiles are validated before any change.
+The service takes the same lock as clean starts, then rechecks state, map identity,
+room IDs and names, including omitted rooms. A changed map rejects the entire
+update. Updating local defaults preserves any existing telemetry failure; it does
+not make unavailable telemetry fresh.
+
+Atomicity is in memory. Persistence is scheduled through the existing stores and
+entity restoration; this is not a crash-atomic disk transaction. This service is
+proposed in [PR #140](https://github.com/sjmotew/NarwalIntegration/pull/140) for a
+release after v1.0.12; it is not part of the current release.
+
 ## Example: scheduled multi-room clean with settings
 
 Clean settings are read **at the moment the job is dispatched**, so an automation sets the
