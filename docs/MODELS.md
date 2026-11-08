@@ -1,7 +1,7 @@
 # Supported models
 
 This integration uses a **local WebSocket connection on port 9002**. Only models that expose
-that port are supported. The short table in the [README](../README.md#device-compatibility)
+that port are supported. The short table in the [README](../README.md#supported-models)
 is the summary; this page carries the evidence behind each row.
 
 **Other models?** Check with `nmap -p 9002 <your-vacuum-ip>`. If the port is open,

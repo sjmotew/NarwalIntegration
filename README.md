@@ -1,149 +1,94 @@
-# Narwal Robot Vacuum — Home Assistant Integration
+# Narwal Robot Vacuum for Home Assistant
 
 [![Latest release](https://img.shields.io/github/v/release/sjmotew/NarwalIntegration?label=release)](https://github.com/sjmotew/NarwalIntegration/releases/latest)
 [![CI](https://github.com/sjmotew/NarwalIntegration/actions/workflows/validate.yml/badge.svg)](https://github.com/sjmotew/NarwalIntegration/actions/workflows/validate.yml)
 [![HACS custom](https://img.shields.io/badge/HACS-custom%20repository-41BDF5)](#installation)
-[![License: MIT](https://img.shields.io/badge/license-MIT-green)](#license)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-A fully **local, cloud-independent** [Home Assistant](https://www.home-assistant.io/) custom
-integration for Narwal robot vacuums. It talks to the robot directly over your network via
-WebSocket on port 9002. No cloud account, no internet connection, no credentials.
+Local control of Narwal robot vacuums from [Home Assistant](https://www.home-assistant.io/).
+Talks to the robot directly over WebSocket on port 9002: no cloud account, no internet, no credentials.
 
-> **Current release: v1.0.11.** No breaking changes since v1.0.8. Every version is listed in the
-> [CHANGELOG](CHANGELOG.md) with its breaking changes flagged; long-form notes per release are
-> under [`docs/`](docs/). **Upgrading from v1.0.1 or earlier?** Read the
-> [v1.0.2 notes](docs/RELEASE-NOTES-v1.0.2.md) first: room names, suction tiers and
-> `vacuum.start` all changed.
+**Current release: v1.0.12.** What changed, and what might break an automation, is in the
+[CHANGELOG](CHANGELOG.md). Long-form notes per release are under [`docs/`](docs/).
 
-## Device compatibility
+## Supported models
 
-| Model | Status |
+| Status | Models |
 |---|---|
-| **Narwal Flow** (AX12) | **Working**, primary development target |
-| **Narwal Flow 2** | **Working** |
-| **Freo Z10 Ultra** (CX4) | **Working** |
-| **Freo Z10 Pro / Turbo** (AX26) | **Working** |
-| **Freo X10 Pro** (AX15) | **Working** |
-| **Narwal JX** | **Working** (connect and map confirmed; commands not yet exercised) |
-| **Narwal Freo 20** | **Working** |
-| **Narwal Freo 20 Edge** | **Working** |
-| **Freo Z Ultra** (CX7) | **Working on the tested variant**; needs its cloud Device ID, no live position |
-| **Freo Z10** (plain) | **Under investigation**: port 9002 refuses connections |
-| **Freo X Ultra**, **Freo X Plus**, **J1 / T10**, **J4** | **Not compatible**: different protocol or cloud-only |
+| **Working** | Flow, Flow 2, Freo Z10 Ultra, Freo Z10 Pro / Turbo, Freo X10 Pro, Freo 20, Freo 20 Edge, JX |
+| **Control only** | Freo Z Ultra (CX7): commands work, no live position; needs its cloud Device ID ([setup](docs/SETUP.md#freo-z-ultra-cx7-device-id)) |
+| **Investigating** | Freo Z10 (plain): port 9002 refuses connections ([#92](https://github.com/sjmotew/NarwalIntegration/issues/92)) |
+| **Not compatible** | Freo X Ultra, Freo X Plus, J1 / T10, J4 (different protocol or cloud-only) |
 
-Firmware versions, product keys, who confirmed what and the evidence for each row are in
-[**docs/MODELS.md**](docs/MODELS.md). **Other models?** Run `nmap -p 9002 <vacuum-ip>`; if the
-port is open, [open an issue](https://github.com/sjmotew/NarwalIntegration/issues/new/choose).
+Firmware, product keys and who confirmed each model: [docs/MODELS.md](docs/MODELS.md).
+Another model? Run `nmap -p 9002 <vacuum-ip>`; if the port is open, [open an issue](https://github.com/sjmotew/NarwalIntegration/issues/new/choose).
 
 ## Features
 
-| Area | What you get |
-|---|---|
-| **Vacuum control** | Start / Stop / Pause / Resume, Return to dock, Locate. Fan speed: Quiet, Standard, Strong, Super Powerful, Ultra Powerful (set-only). **Room-specific cleaning** via `vacuum.clean_area` (HA 2026.3+, one-time [area mapping](docs/ROOM-CLEANING.md)) |
-| **Clean settings** | Work mode (vacuum, mop, vacuum then mop, vacuum and mop), water level, mop strength, passes 1 to 3. Applied to room and whole-house cleans |
-| **Per-room profiles** | Mode, suction, water, scrub, route and passes per room; room-selection switches; a `narwal.clean_rooms` service. Disabled by default; [`tools/gen_dashboard.py`](tools/gen_dashboard.py) builds a room-picker dashboard from the ones you enable |
-| **Sensors** | Battery, cleaning time and area, firmware, docked and charging state, last clean result, dust bag health, detergent; current room and task progress as vacuum attributes during a clean |
-| **Alerts** | Clean-water tank, sewage tank, dust box, dust bag, station bag, error; maintenance and replacement alerts with the affected parts as attributes |
-| **Live map** | Colour-coded floor plan with room labels, furniture overlay, dock marker and the robot's own live trail during cleaning; [map-card attributes](docs/MAP-CARD.md) with the robot position, dock, trail and calibration points; a carpet-map camera; toggles for labels and furniture |
-| **Dock** | Ambient light (off, fireplace, nightlight, purple) on models that have one; dock task switches: empty dustbin, wash mop, dry mop, dry dust bin, dry dock bag |
-| **Connectivity** | Push updates over WebSocket on broadcasting models, auto-reconnect with backoff, wake system plus keepalive heartbeat, 60-second polling fallback, mDNS / DHCP discovery |
+- **Vacuum entity**: start, stop, pause, resume, return to dock, locate, fan speed; room cleaning through `vacuum.clean_area`
+- **Clean settings**: work mode, suction, water level, mop strength, passes, route; per-room profiles and a `narwal.clean_rooms` action
+- **Live map camera** with room labels, furniture, dock and trail; position, dock and trail attributes for map cards
+- **Sensors and alerts**: battery, cleaning time and area, current room, task progress, tanks, dust bag, consumables, errors
+- **Dock controls**: empty dustbin, wash mop, dry mop, dry dust bin, dry dock bag; ambient light on docks that have one
+- **Connectivity**: push updates, auto-reconnect, keepalive, mDNS and DHCP discovery, German, French and Korean translations
 
 ## Installation
 
-**Requirements:** Home Assistant 2025.1.0 or newer, and the robot on a network where port 9002
-is reachable from Home Assistant.
+Requires Home Assistant 2025.1 or newer and port 9002 reachable from Home Assistant to the robot.
 
-### HACS (recommended)
+**HACS:** HACS → ⋮ → **Custom repositories** → add `https://github.com/sjmotew/NarwalIntegration`
+as *Integration* → download **Narwal Flow Robot Vacuum** → restart Home Assistant.
 
-1. Open **HACS** > three-dot menu > **Custom repositories**
-2. Add `https://github.com/sjmotew/NarwalIntegration` (category: Integration)
-3. Find **Narwal Flow Robot Vacuum** and click **Download**
-4. **Restart Home Assistant**
+**Manual:** copy `custom_components/narwal/` into your `config/custom_components/` and restart.
 
-### Manual
+> Only one Narwal integration can be installed at a time; another project uses the same
+> `custom_components/narwal` folder. [Details](docs/SETUP.md#only-one-narwal-integration-at-a-time).
 
-Copy `custom_components/narwal/` into your HA `config/custom_components/` directory and restart
-Home Assistant.
+## Setup
 
-> **Only one Narwal integration at a time.** Another project also installs to
-> `custom_components/narwal`, so HACS cannot hold both. See
-> [docs/SETUP.md](docs/SETUP.md#only-one-narwal-integration-at-a-time).
+The robot is discovered on the local network and appears under **Settings → Devices & Services**.
+Click **Configure**, pick your model, done. To add one by hand: **Add Integration → Narwal**, enter the
+IP and model. Give the robot a static DHCP lease. The Freo Z Ultra also asks for its cloud Device ID.
 
-### Setup
+**Room cleaning** targets Home Assistant *areas*, so there is a one-time mapping step on the vacuum
+entity (⚙ → *Map vacuum segments to areas*). [docs/ROOM-CLEANING.md](docs/ROOM-CLEANING.md) walks
+through it, the per-room profiles and a scheduled multi-room automation.
 
-Home Assistant discovers Narwal robots on the local network, so in most cases the robot appears
-on its own under **Settings > Devices & Services**. Click **Configure**, pick your model, done.
-To add one by hand: **Add Integration** > search "Narwal" > enter the IP and select the model.
-A static DHCP lease for the robot avoids address changes.
+## Good to know
 
-The **Freo Z Ultra (CX7)** also needs its 32-character cloud Device ID, which the app does not
-show. [docs/SETUP.md](docs/SETUP.md) explains how to find it, how discovery matches each model,
-and the source-NAT fix when Home Assistant and the robot sit on different VLANs.
+- Cleaning can only start from the dock; the robot answers `NOT_READY` otherwise.
+- The robot accepts one client at a time, so close the Narwal app while Home Assistant is connected.
+- Only the rooms of the robot's active map are visible.
+- Fan speed is set-only; the robot does not report its current level.
 
-### Room cleaning
-
-`vacuum.clean_area` targets **Home Assistant areas**, not robot rooms, so there is a one-time
-mapping step. The editor hangs off the **entity** (cog icon → *Map vacuum segments to areas*),
-not the integration or device page. [docs/ROOM-CLEANING.md](docs/ROOM-CLEANING.md) walks through
-it and includes a complete scheduled multi-room automation.
-
-## Known limitations
-
-- **All cleaning requires the dock.** The robot returns `NOT_READY` otherwise, for `vacuum.start` as well as room cleans.
-- **Single connection.** Close the Narwal app before using HA; the robot allows one WebSocket client.
-- **Wake from deep sleep is unreliable** after long idle periods; opening the app briefly helps.
-- **Fan speed is set-only.** The robot does not broadcast its current level.
-- **One floor at a time.** Only the rooms of the robot's active map are visible ([#43](https://github.com/sjmotew/NarwalIntegration/issues/43)).
-- **CX7 has no live telemetry**; control works, position and progress do not, and on some units the reported state does not track cleaning ([details](docs/TROUBLESHOOTING.md#cx7-freo-z-ultra)).
-- **Flow 2 clean-water and detergent tanks are not reported while docked** ([#128](https://github.com/sjmotew/NarwalIntegration/issues/128)).
-
-The full list with the evidence, and a quick-fix table for the common setup problems, is in
-[**docs/TROUBLESHOOTING.md**](docs/TROUBLESHOOTING.md).
-
-## Reporting issues
-
-Use the [issue templates](https://github.com/sjmotew/NarwalIntegration/issues/new/choose) and
-attach the diagnostics download (**device page → ⋮ → Download diagnostics**). It carries the
-product key, firmware, connection state and raw status fields, with your IP, device ID and
-account UUID redacted. [What each section settles](docs/TROUBLESHOOTING.md#attach-diagnostics).
+The full list of limitations, quick fixes for common setup problems and how to attach diagnostics
+to a report: [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md).
 
 ## Documentation
 
 | Document | Contents |
 |---|---|
 | [CHANGELOG.md](CHANGELOG.md) | Every release, newest first, breaking changes flagged |
-| [docs/MODELS.md](docs/MODELS.md) | Compatibility evidence per model: product keys, firmware, reporters |
-| [docs/SETUP.md](docs/SETUP.md) | Discovery internals, VLAN / SNAT, CX7 Device ID |
-| [docs/ROOM-CLEANING.md](docs/ROOM-CLEANING.md) | Area mapping, per-room profiles, dashboard generator, automation example |
-| [docs/MAP-CARD.md](docs/MAP-CARD.md) | Map camera attributes for dashboard cards: robot position, dock, trail, calibration points |
-| [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | Quick fixes, known limitations in detail, diagnostics |
-| [docs/PROTOCOL.md](docs/PROTOCOL.md) | The local WebSocket protocol: frames, topics, field maps, corrections, open questions |
-| [docs/ROADMAP.md](docs/ROADMAP.md) | Next steps, parked features, captures that would settle open questions |
-| [docs/RELEASE-NOTES-*.md](docs/) | Long-form notes per release |
+| [docs/SETUP.md](docs/SETUP.md) | Discovery, VLANs, the CX7 Device ID |
+| [docs/ROOM-CLEANING.md](docs/ROOM-CLEANING.md) | Area mapping, per-room profiles, actions, automation example |
+| [docs/MAP-CARD.md](docs/MAP-CARD.md) | Map camera attributes for dashboard cards |
+| [docs/MODELS.md](docs/MODELS.md) | Compatibility evidence per model |
+| [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | Quick fixes, limitations, diagnostics |
+| [docs/PROTOCOL.md](docs/PROTOCOL.md) | The local WebSocket protocol, for contributors |
+| [docs/ROADMAP.md](docs/ROADMAP.md) | What is next and what is parked |
 
-## Project status
+## Issues and contributing
 
-Actively maintained. Each release is CI-tested, deployed to a live Home Assistant instance and
-verified against real hardware before it is tagged. Open pull requests and the work queued for
-the next version are on the [pull requests](https://github.com/sjmotew/NarwalIntegration/pulls)
-and [milestones](https://github.com/sjmotew/NarwalIntegration/milestones) pages.
+Use the [issue templates](https://github.com/sjmotew/NarwalIntegration/issues/new/choose) and attach
+the diagnostics download (device page → ⋮ → *Download diagnostics*; IP, device ID and account are
+redacted). Pull requests and test reports from owners of other models are welcome;
+[docs/PROTOCOL.md](docs/PROTOCOL.md#12-contributing-captures) explains how to take a useful capture.
+Tests: `py -m pytest -q`. `narwal_client/` and `custom_components/narwal/narwal_client/` must stay identical.
 
-## Contributing
+Every release is CI-tested, deployed to a live Home Assistant instance and verified on hardware before it is tagged.
 
-Contributions and testing reports are welcome, especially from owners of models other than the
-Flow. [docs/PROTOCOL.md](docs/PROTOCOL.md#12-contributing-captures) explains how to take a
-capture that answers a protocol question. Run the test suite with `py -m pytest -q` (or
-`python -m pytest -q`); `narwal_client/` and `custom_components/narwal/narwal_client/` must stay
-identical. A second suite in `tests_ha/` loads the integration in the genuine Home Assistant
-package (Linux only, pinned in `requirements-ha-test.txt`); CI runs it as the "Loads in HA" check.
+## Disclaimer and license
 
-## Disclaimer
-
-This is an **unofficial**, community-developed integration, not affiliated with or endorsed by
-Narwal. The local protocol was reverse-engineered from network traffic and the Narwal mobile
-application. Use at your own risk; no warranty. No data leaves your network. Firmware updates
-from Narwal may break this integration at any time.
-
-## License
-
-MIT
+Unofficial, community-developed, not affiliated with or endorsed by Narwal. The protocol was
+reverse-engineered from network traffic and the Narwal app; a firmware update may break it at any
+time. No data leaves your network. Use at your own risk. [MIT](LICENSE).

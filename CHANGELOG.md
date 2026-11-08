@@ -9,6 +9,23 @@ instance and verified on hardware before it was pushed.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). **Breaking** marks a
 change that can alter the behaviour of an existing automation or dashboard.
 
+## [v1.0.12] — unreleased
+
+*Room order sticks, the dock tells the truth, and the map is yours to draw.* **One breaking change.**
+[Notes](docs/RELEASE-NOTES-v1.0.12.md).
+
+- **Breaking:** the duplicate `Super` and `Ultra` suction select options are removed; use `Super Powerful` and `Ultra Powerful`. `vacuum.set_fan_speed` keeps its aliases. The live suction list offers only supported transitions and reads `unknown` rather than the next-clean default when the active level is unknown ([#122](https://github.com/sjmotew/NarwalIntegration/pull/122), closes [#139](https://github.com/sjmotew/NarwalIntegration/issues/139), @Sean-StarLabs).
+- **Added:** room cleaning order is saved per map and survives restarts; `rooms: all` cleans in ascending id when nothing is saved ([#120](https://github.com/sjmotew/NarwalIntegration/pull/120), @Sean-StarLabs).
+- **Added:** `narwal.set_pending_profiles` sets the whole-floor profile, room profiles and room selection in one validated call without sending anything to the robot ([#140](https://github.com/sjmotew/NarwalIntegration/pull/140), closes [#146](https://github.com/sjmotew/NarwalIntegration/issues/146), @Sean-StarLabs).
+- **Added:** map camera attributes `vacuum_position`, `charger`, `path` and `calibration_points` for dashboard map cards ([#141](https://github.com/sjmotew/NarwalIntegration/pull/141), @slackstarr; see [docs/MAP-CARD.md](docs/MAP-CARD.md)).
+- **Added:** Korean and German translations; the last hardcoded entity names now use translation keys, with no change for English users ([#134](https://github.com/sjmotew/NarwalIntegration/pull/134), @hyeok-yoo; [#145](https://github.com/sjmotew/NarwalIntegration/pull/145), [#147](https://github.com/sjmotew/NarwalIntegration/pull/147), @slackstarr).
+- **Fixed:** on the Flow, telemetry no longer drops out for 30 s of every minute during a clean; the broadcast subscription is renewed every 20 s while cleaning ([#149](https://github.com/sjmotew/NarwalIntegration/pull/149), closes [#148](https://github.com/sjmotew/NarwalIntegration/issues/148)).
+- **Fixed:** dock task switches no longer stay on after an accepted stop ([#121](https://github.com/sjmotew/NarwalIntegration/pull/121), closes [#138](https://github.com/sjmotew/NarwalIntegration/issues/138), @Sean-StarLabs).
+- **Fixed:** pending commands fail immediately when the connection is lost or replaced instead of waiting out their timeout ([#135](https://github.com/sjmotew/NarwalIntegration/pull/135), @mario-jerkovic).
+- **Fixed:** next-clean settings can be changed while the dock is drying ([#136](https://github.com/sjmotew/NarwalIntegration/pull/136), @mario-jerkovic).
+- **Fixed:** `vacuum.clean_area` on the Freo Z Ultra (CX7) reuses a known map instead of failing on a slow map refresh ([#137](https://github.com/sjmotew/NarwalIntegration/pull/137), @mario-jerkovic).
+- **Housekeeping:** a "Loads in HA" CI job sets the integration up in genuine Home Assistant on every PR ([#133](https://github.com/sjmotew/NarwalIntegration/pull/133)); README slimmed to a front page with history here and detail under `docs/` ([#131](https://github.com/sjmotew/NarwalIntegration/pull/131), [#132](https://github.com/sjmotew/NarwalIntegration/pull/132)); CX7 state notes are firmware-specific ([#144](https://github.com/sjmotew/NarwalIntegration/pull/144), refs [#125](https://github.com/sjmotew/NarwalIntegration/issues/125)).
+
 ## [v1.0.11] — 2026-10-25
 
 *A docked robot stays connected, and a cleaning robot says so.* No breaking changes.
@@ -124,6 +141,7 @@ change that can alter the behaviour of an existing automation or dashboard.
 `v0.5` and the unreleased development before it are described in the git history. Nothing
 earlier than v1.0.1 was published to HACS.
 
+[v1.0.12]: https://github.com/sjmotew/NarwalIntegration/releases/tag/v1.0.12
 [v1.0.11]: https://github.com/sjmotew/NarwalIntegration/releases/tag/v1.0.11
 [v1.0.10]: https://github.com/sjmotew/NarwalIntegration/releases/tag/v1.0.10
 [v1.0.9]: https://github.com/sjmotew/NarwalIntegration/releases/tag/v1.0.9
