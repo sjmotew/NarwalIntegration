@@ -3888,6 +3888,125 @@ def test_restored_active_trail_validation_grace_expires() -> None:
     assert not coordinator._map_display_cache_restored_from_active
 
 
+@pytest.mark.parametrize(
+    ("status", "paused", "docked", "terminal"),
+    (
+        (17, True, False, False),
+        (17, False, False, False),
+        (17, True, True, True),
+        (10, True, False, True),
+        (99, True, False, True),
+    ),
+)
+def test_only_active_off_dock_clean_fault_retains_session(
+    status: int, paused: bool, docked: bool, terminal: bool
+) -> None:
+    """A fault needs an active clean and positive off-dock evidence to retain history."""
+    state = NarwalState()
+    state.update_from_working_status({"3": 60, "6": 3})
+    state.update_from_base_status(
+        {
+            "1": {"1": 36765735, "2": 2},
+            "3": {"1": status, "2": int(paused), "17": 7},
+            "11": 2 if docked else 1,
+            "47": 3 if docked else 2,
+        }
+    )
+
+    assert is_confirmed_terminal_clean_state(state) is terminal
+    assert not is_live_clean_setting_available(state)
+    assert not can_prepare_clean_start(state)
+
+
+@pytest.mark.parametrize(
+    ("dock_fields", "nested_presence", "terminal"),
+    (
+        ({}, None, True),
+        ({"11": 1}, None, True),
+        ({"47": 2}, None, True),
+        ({}, 6, True),
+        ({"11": 2, "47": 3}, None, True),
+        ({"11": 1, "47": 2}, None, False),
+    ),
+)
+def test_fault_retention_requires_both_wire_dock_fields(
+    dock_fields: dict[str, int], nested_presence: int | None, terminal: bool
+) -> None:
+    """Inferred off-dock attributes cannot replace missing hardware evidence."""
+    state = NarwalState()
+    state.update_from_working_status({"3": 60, "6": 3})
+    task = {"1": 17, "2": 1, "17": 7}
+    if nested_presence is not None:
+        task["3"] = nested_presence
+    state.update_from_base_status({"1": {"1": 36765735, "2": 2}, "3": task, **dock_fields})
+
+    assert is_confirmed_terminal_clean_state(state) is terminal
+    assert not can_prepare_clean_start(state)
+
+
+def test_fault_recovery_return_keeps_current_trajectory() -> None:
+    """A wheel fault and return must not split the current task's trail."""
+    coordinator = _new_coordinator()
+    coordinator._prev_working_status = WorkingStatus.CUSTOM_CLEANING
+    coordinator._clean_session_active = True
+    coordinator._clean_session_terminal = False
+    coordinator._map_display_cache_restored = False
+    coordinator._map_display_cache_restored_from_active = False
+    coordinator._pending_map_display_cache_restore = None
+    coordinator._clear_map_display_cache_for_new_clean = MagicMock()
+    state = _trajectory_state()
+    state.update_from_working_status({"3": 60, "6": 3})
+    state.update_from_base_status(
+        {
+            "1": {"1": 36765735, "2": 2},
+            "3": {"1": 17, "2": 1, "14": 1, "17": 7},
+            "11": 1,
+            "47": 2,
+        }
+    )
+    assert state.has_error and state.has_paused_clean_task_context
+
+    coordinator._handle_working_status_transition(state)
+
+    assert coordinator._clean_session_active
+    assert not coordinator._clean_session_terminal
+    assert coordinator._map_display_cache_payload(state)["active_clean"] is True
+    assert not is_live_clean_setting_available(state)
+
+    state.update_from_base_status(
+        {
+            "1": {"1": 36765735, "2": 2},
+            "3": {"1": 17, "10": 1, "17": 1},
+            "11": 1,
+            "47": 2,
+        }
+    )
+    coordinator._handle_working_status_transition(state)
+
+    assert state.has_error and not state.is_paused
+    assert coordinator._clean_session_active
+    assert coordinator._map_display_cache_payload(state)["active_clean"] is True
+
+    state.update_from_base_status({"3": {"1": 17, "10": 1, "17": 1}, "11": 1, "47": 2})
+    coordinator._handle_working_status_transition(state)
+
+    assert not state.has_error
+    assert coordinator._clean_session_active
+    coordinator._clear_map_display_cache_for_new_clean.assert_not_called()
+
+    state.update_from_base_status({"3": {"1": 19, "18": 4}, "11": 3, "47": 1})
+    coordinator._handle_working_status_transition(state)
+
+    assert not coordinator._clean_session_active
+    assert coordinator._map_display_cache_payload(state)["active_clean"] is False
+    coordinator._clear_map_display_cache_for_new_clean.assert_not_called()
+
+    state.update_from_base_status({"3": {"1": 17, "17": 7}, "11": 1, "47": 2})
+    coordinator._handle_working_status_transition(state)
+
+    coordinator._clear_map_display_cache_for_new_clean.assert_called_once_with()
+
+
 def test_error_status_bypasses_active_trail_restore_grace() -> None:
     """A fault packet ends a restored session immediately."""
     coordinator = _new_coordinator()

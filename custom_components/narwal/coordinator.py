@@ -168,7 +168,11 @@ def has_blocking_error(state: NarwalState | None) -> bool:
 def is_confirmed_terminal_clean_state(state: NarwalState) -> bool:
     """Return True when reconciled telemetry confirms the clean has ended."""
     if has_blocking_error(state):
-        return True
+        return not (
+            state.working_status in ACTIVE_CLEANING_STATUSES
+            and state.raw_base_status.get("11") == 1
+            and state.raw_base_status.get("47") == 2
+        )
     if state.working_status == WorkingStatus.TASK_COMPLETED:
         # A reported off-dock TASK_COMPLETED between room phases has not yet
         # been corroborated by a capture. Treat it as a possible handoff until
