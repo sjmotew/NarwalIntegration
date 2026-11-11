@@ -161,7 +161,7 @@ async def test_drying_exception_preserves_task_and_error_locks(kind, blocked):
     elif blocked == "assumed_clean":
         state.assume_robot_clean()
     elif blocked == "charging_to_resume":
-        state.is_charging_to_resume = True
+        state.update_from_base_status({"3": {"1": 17, "17": 6, "11": 3}, "11": 3, "47": 1})
     elif blocked == "unmapped_dock_task":
         state.station_activity = 4
     elif blocked == "assumed_dock_task":

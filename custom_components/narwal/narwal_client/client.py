@@ -72,13 +72,14 @@ from .const import (
     WorkMode,
     fan_level_for_live_command,
 )
+from .lifecycle import clean_task_status, is_terminal_status
 from .models import (
+    DOCK_DRYING_TASKS,
     DOCK_TASK_DRY_DOCK_BAG,
     DOCK_TASK_DRY_DUST_BIN,
     DOCK_TASK_DRY_MOP,
     DOCK_TASK_EMPTY_DUSTBIN,
     DOCK_TASK_KEYS,
-    DOCK_DRYING_TASKS,
     DOCK_TASK_WASH_MOP,
     CommandResponse,
     DeviceInfo,
@@ -126,7 +127,8 @@ def _accepted_response(response: CommandResponse) -> bool:
 def _clean_session_context(state: NarwalState) -> bool:
     """Return true while robot-side work or its accepted-command guard is active."""
     return (
-        state.is_cleaning
+        state.has_native_clean_task
+        or state.is_cleaning
         or state.has_assumed_robot_clean
         or state.working_status in ACTIVE_CLEANING_STATUSES
         or (
@@ -142,7 +144,8 @@ def _clean_session_context(state: NarwalState) -> bool:
 def _robot_work_blocks_generic_dock_stop(state: NarwalState) -> bool:
     """Return true when generic force-end could target robot work, not dock work."""
     return (
-        state.is_cleaning
+        state.has_native_clean_task
+        or state.is_cleaning
         or state.has_assumed_robot_clean
         or state.working_status in ACTIVE_CLEANING_STATUSES
         or state.has_recent_active_working_status
@@ -367,6 +370,7 @@ class NarwalClient:
         self._should_reconnect = True
         self._listener_active = False  # True when start_listening() is running recv loop
         self._robot_awake = False  # True after a broadcast or addressed response
+        self.status_broadcast_generation = 0
         self._last_broadcast_time: float = 0.0  # monotonic time of last broadcast
         self._last_response_time: float = 0.0  # monotonic time of last addressed response
         self._last_display_map_time: float = 0.0  # monotonic time of last display_map
@@ -437,13 +441,17 @@ class NarwalClient:
 
     def _update_from_working_status_broadcast(self, decoded: dict[str, Any]) -> None:
         """Apply live task metrics from the working_status broadcast."""
+        self.status_broadcast_generation += 1
         self.state.update_from_working_status(decoded)
 
     def _update_from_base_status_broadcast(self, decoded: dict[str, Any]) -> None:
         """Apply a base-status broadcast without clobbering fresh task metrics."""
+        self.status_broadcast_generation += 1
         status = _base_status_working_status(decoded)
         if (
             self.state.has_recent_active_working_status
+            and clean_task_status(decoded) is None
+            and not (self.state.has_native_clean_task and is_terminal_status(decoded))
             and status in _STALE_DOCK_BASE_STATUSES
         ):
             terminal_dock_status = status in {
@@ -468,7 +476,7 @@ class NarwalClient:
             )
             return
 
-        self.state.update_from_base_status(decoded)
+        self.state.update_from_base_status(decoded, from_broadcast=True)
 
     def _update_from_display_map_broadcast(self, decoded: dict[str, Any]) -> None:
         """Apply a display-map broadcast and mark the trajectory as fresh."""
@@ -476,7 +484,10 @@ class NarwalClient:
         self.state.map_display_data = display
         self._last_display_map_time = time.monotonic()
         if self.on_display_map:
-            self.on_display_map(self.state)
+            try:
+                self.on_display_map(self.state)
+            except Exception:
+                _LOGGER.exception("Error in display map callback")
         _LOGGER.debug(
             "display_map received: robot=(%.2f, %.2f) ts=%d",
             display.robot_x,
@@ -1593,6 +1604,59 @@ class NarwalClient:
     # runtime-validated on Flow firmware v01.07.23.00.
     _CUSTOM_CLEAN_TASK_TYPE = 6
 
+    @classmethod
+    def room_settings_from_current_task(
+        cls, response: CommandResponse
+    ) -> tuple[int, dict[int, RoomCleanSettings]] | None:
+        """Decode a complete room task without substituting pending defaults."""
+        if not response.accepted:
+            return None
+        task = response.data.get("2")
+        if not isinstance(task, dict) or type(task.get("1")) is not int:
+            return None
+        items = task.get("2")
+        if isinstance(items, dict):
+            items = [items]
+        if not isinstance(items, list) or not items:
+            return None
+        modes = {value[0]: (mode, value[1]) for mode, value in cls._WORK_MODE_PARAM.items()}
+        settings = {}
+        try:
+            for item in items:
+                zone, param = item["1"], item["2"]
+                room_id = zone["2"]
+                if (
+                    zone.get("1") != 1
+                    or type(room_id) is not int
+                    or room_id <= 0
+                    or room_id in settings
+                ):
+                    return None
+                mode, pass_tags = modes[param["1"]]
+                required = (
+                    ("2",)
+                    if mode == WorkMode.VACUUM
+                    else ("3", "4") if mode == WorkMode.MOP else ("2", "3", "4")
+                )
+                if any(type(param.get(tag)) is not int for tag in required):
+                    return None
+                counts = [param[tag] for tag in pass_tags]
+                if any(type(count) is not int or not 1 <= count <= 3 for count in counts):
+                    return None
+                if len(set(counts)) != 1:
+                    return None
+                settings[room_id] = RoomCleanSettings(
+                    work_mode=mode,
+                    fan=FanLevel(param.get("2", 0)),
+                    mop_strength=MopStrengthLevel(param.get("3", 0)),
+                    water=MopHumidity(param.get("4", 0)),
+                    passes=counts[0],
+                    route=CleaningRoute(param["8"]) if "8" in param else None,
+                )
+        except (KeyError, TypeError, ValueError):
+            return None
+        return task["1"], settings
+
     def _clean_param_for_settings(self, settings: RoomCleanSettings) -> dict[str, int]:
         """Return a CleanParam protobuf dict for one room."""
         param_mode, pass_tags = self._WORK_MODE_PARAM[settings.work_mode]
@@ -2217,7 +2281,7 @@ class NarwalClient:
                 status_data.get("2") if isinstance(status_data, dict) else None,
                 status_data,
             )
-            if full_update:
+            if full_update and not self.state.has_broadcast_clean_task:
                 self.state.update_from_base_status(status_data)
             else:
                 self.state.update_battery_from_base_status(status_data)
@@ -2230,6 +2294,69 @@ class NarwalClient:
                     raw_payload=resp.raw_payload,
                 )
         return resp
+
+    async def get_clean_timeline(self) -> CommandResponse:
+        """Read the current or most recently completed task timeline."""
+        return await self.send_command("info/get_clean_time_line", timeout=8.0)
+
+    @staticmethod
+    def active_job_id_from_timeline(response: CommandResponse) -> str | None:
+        """Identify one unfinished native job without losing timestamp precision."""
+        if not response.accepted or not isinstance(response.data, dict):
+            return None
+        payload = response.data.get("2")
+        if not isinstance(payload, dict):
+            return None
+        events = payload.get("1")
+        if isinstance(events, dict):
+            events = [events]
+        if not isinstance(events, list) or not events:
+            return None
+        previous = 0
+        start = None
+        for index, event in enumerate(events):
+            if not isinstance(event, dict):
+                return None
+            timestamp, kind = event.get("1"), event.get("2")
+            if (
+                type(timestamp) is not int
+                or not previous < timestamp < 2**63
+                or type(kind) is not int
+                or kind <= 0
+                or kind == 6
+            ):
+                return None
+            if kind == 1:
+                if index != 0:
+                    return None
+                start = str(timestamp)
+            previous = timestamp
+        return start
+
+    @staticmethod
+    def ended_job_id_from_timeline(response: CommandResponse) -> str | None:
+        """Identify an ordered native timeline ending in the terminal event."""
+        if not response.accepted or not isinstance(response.data, dict):
+            return None
+        payload = response.data.get("2")
+        events = payload.get("1") if isinstance(payload, dict) else None
+        if not isinstance(events, list) or len(events) < 2:
+            return None
+        end = events[-1]
+        if not isinstance(end, dict) or type(end.get("2")) is not int or end["2"] != 6:
+            return None
+        timestamp = end.get("1")
+        previous = events[-2]
+        if (
+            type(timestamp) is not int
+            or not isinstance(previous, dict)
+            or type(previous.get("1")) is not int
+            or not previous["1"] < timestamp < 2**63
+        ):
+            return None
+        return NarwalClient.active_job_id_from_timeline(
+            CommandResponse(result_code=response.result_code, data={"2": {"1": events[:-1]}})
+        )
 
     async def get_current_task(self) -> CommandResponse:
         """Query the current clean task."""

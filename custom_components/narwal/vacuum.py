@@ -47,6 +47,7 @@ from .dock_tasks import ROBOT_RETURN_COMPATIBLE_DOCK_TASKS
 from .entity import NarwalEntity
 from .narwal_client import CommandResult, FanLevel, WorkingStatus
 from .narwal_client.const import ACTIVE_CLEANING_STATUSES, fan_level_for_live_command
+from .narwal_client.lifecycle import CleanPhase
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -99,7 +100,8 @@ def _raise_if_command_failed(response: Any, action: str) -> None:
 def _task_status(state: Any) -> str:
     """Return a compact active-task status for dashboards and automations."""
     is_cleaning_state = (
-        state.working_status in ACTIVE_CLEANING_STATUSES
+        state.has_native_clean_task
+        or state.working_status in ACTIVE_CLEANING_STATUSES
         or state.has_assumed_robot_clean
         or state.has_recent_active_working_status
         or state.has_paused_clean_task_context
@@ -108,6 +110,8 @@ def _task_status(state: Any) -> str:
         return "error"
     if state.is_paused and is_cleaning_state:
         return "paused"
+    if state.has_native_clean_task:
+        return state.clean_task_phase.value
     if state.working_status == WorkingStatus.REMAPPING:
         return "remapping"
     if state.is_returning or (
@@ -134,7 +138,8 @@ def _is_dock_side(state: Any) -> bool:
 def _has_active_cleaning_metrics(state: Any) -> bool:
     """Return true while live clean-progress details are current."""
     return (
-        state.is_cleaning
+        state.has_native_clean_task
+        or state.is_cleaning
         or state.has_assumed_robot_clean
         or state.has_recent_active_working_status
         or state.has_paused_clean_task_context
@@ -179,7 +184,8 @@ def _can_accept_return_home(state: Any) -> bool:
 def _has_live_robot_stop_context(state: Any) -> bool:
     """Return true when robot telemetry identifies live stoppable work."""
     return (
-        state.working_status in ACTIVE_CLEANING_STATUSES
+        getattr(state, "has_native_clean_task", False) is True
+        or state.working_status in ACTIVE_CLEANING_STATUSES
         or state.working_status == WorkingStatus.REMAPPING
         or state.has_assumed_robot_clean
         or state.has_paused_clean_task_context
@@ -190,6 +196,8 @@ def _has_live_robot_stop_context(state: Any) -> bool:
 def _status_summary(state: Any) -> str:
     """Return one concise status line for HA tile state content."""
     status = _task_status(state)
+    if state.has_native_clean_task and state.clean_task_phase != CleanPhase.CLEANING:
+        return status.replace("_", " ").title()
     if status in {"error", "paused", "remapping", "returning"}:
         return status.replace("_", " ").title()
     active_cleaning_metrics = _has_active_cleaning_metrics(state)
@@ -400,7 +408,8 @@ class NarwalVacuum(NarwalEntity, RestoreEntity, StateVacuumEntity):
         if state is None:
             return VacuumActivity.IDLE
         is_cleaning_state = (
-            state.working_status in ACTIVE_CLEANING_STATUSES
+            state.has_native_clean_task
+            or state.working_status in ACTIVE_CLEANING_STATUSES
             or state.has_assumed_robot_clean
             or state.has_recent_active_working_status
             or state.has_paused_clean_task_context
@@ -412,6 +421,12 @@ class NarwalVacuum(NarwalEntity, RestoreEntity, StateVacuumEntity):
         # since the robot physically stops when paused mid-return.
         if state.is_paused and is_cleaning_state:
             return VacuumActivity.PAUSED
+        if state.has_native_clean_task:
+            if state.is_returning:
+                return VacuumActivity.RETURNING
+            if state.is_cleaning:
+                return VacuumActivity.CLEANING
+            return VacuumActivity.DOCKED if state.is_docked else VacuumActivity.IDLE
         # Check returning before cleaning — robot keeps working_status=CLEANING
         # while navigating back to dock (field 3.7=1 indicates returning)
         if state.is_returning:
@@ -483,10 +498,14 @@ class NarwalVacuum(NarwalEntity, RestoreEntity, StateVacuumEntity):
             "task_status": _task_status(state),
             "status_summary": _status_summary(state),
         }
+        if state.has_native_clean_task:
+            attributes["charging_to_resume"] = state.is_charging_to_resume
         active_cleaning_metrics = _has_active_cleaning_metrics(state)
         if active_cleaning_metrics and state.task_progress_percent is not None:
             attributes["progress"] = state.task_progress_percent
-        if active_cleaning_metrics and state.current_room_name:
+        if active_cleaning_metrics and state.current_room_name and (
+            not state.has_native_clean_task or state.clean_task_phase == CleanPhase.CLEANING
+        ):
             attributes["current_room"] = state.current_room_name
         return attributes
 
