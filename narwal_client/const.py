@@ -258,11 +258,7 @@ ACTIVE_CLEANING_STATUSES = frozenset(
 
 
 class FanLevel(IntEnum):
-    """CleanParam suction level.
-
-    Live clean/set_fan_level carries a SweepFanLevel instead: identical ints
-    0-4, but it has no SUPER, so the app maps SUPER->STRONG on that path.
-    """
+    """Suction enum used by CleanParam and SetFanLevel."""
 
     UNSPECIFIED = 0
     MUTE = 1
@@ -273,9 +269,8 @@ class FanLevel(IntEnum):
 
 
 def fan_level_for_live_command(level: FanLevel | int) -> FanLevel:
-    """Return the closest level supported by clean/set_fan_level."""
-    requested = FanLevel(int(level))
-    return FanLevel.DEEP if requested is FanLevel.SUPER else requested
+    """Validate a live setting without silently changing the requested level."""
+    return FanLevel(int(level))
 
 
 class MopHumidity(IntEnum):

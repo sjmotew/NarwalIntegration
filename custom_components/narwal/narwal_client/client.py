@@ -462,6 +462,8 @@ class NarwalClient:
             self.state.update_dock_evidence_from_base_status(
                 decoded, include_activity=False
             )
+            if dock_evidence is False:
+                self.state.update_fan_from_base_status(decoded)
             _LOGGER.debug(
                 "Ignoring stale base_status=%s while working_status task metrics are fresh",
                 status.name if status else "unknown",
@@ -2064,10 +2066,10 @@ class NarwalClient:
         return await self.send_command(TOPIC_CMD_RECALL, timeout=timeout)
 
     async def set_fan_speed(self, level: FanLevel | int) -> CommandResponse:
-        """Set suction fan speed live (clean/set_fan_level, field 1 = SweepFanLevel).
+        """Set suction fan speed live (clean/set_fan_level, field 1 = FanLevel).
 
-        The live command's enum is SweepFanLevel, which has no SUPER. A SUPER request
-        is clamped to its highest supported tier, DEEP.
+        SetFanLevel uses the FanLevel enum. Device support is checked by callers;
+        an unsupported request must not silently select a different suction.
         """
         live = int(fan_level_for_live_command(level))
         payload = b"\x08" + bytes([live & 0x7F])

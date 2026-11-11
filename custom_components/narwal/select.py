@@ -32,6 +32,7 @@ from .coordinator import (
     NarwalCoordinator,
     can_edit_pending_clean_settings,
     clean_setting_applies_to_mode,
+    is_clean_session_context,
     is_live_clean_setting_available,
 )
 from .entity import NarwalEntity
@@ -1072,7 +1073,7 @@ class LegacyNarwalSettingSelect(NarwalEntity, RestoreEntity, SelectEntity):
             option = LEGACY_MODE_LABELS.get(settings.work_mode)
         elif key == "suction":
             value = self.coordinator.active_clean_setting("fan")
-            if value is None and self._is_cleaning_or_paused:
+            if value is None and is_clean_session_context(self.coordinator.data):
                 return None
             option = self._suction_labels.get(
                 value if value is not None else settings.fan
@@ -1143,7 +1144,13 @@ class LegacyNarwalSettingSelect(NarwalEntity, RestoreEntity, SelectEntity):
             raise HomeAssistantError("This Narwal setting cannot be changed right now")
         if key == "suction" and live_available and not setup_available:
             requested_fan = self._suction_map[option]
-            if requested_fan in {FanLevel.UNSPECIFIED, FanLevel.SUPER}:
+            if requested_fan == FanLevel.UNSPECIFIED or (
+                requested_fan == FanLevel.SUPER
+                and self.coordinator.active_clean_setting("fan") == FanLevel.SUPER
+                and "Ultra Powerful" not in live_fan_speed_list_for(
+                    self.coordinator.config_entry.data, None
+                )
+            ):
                 return
         response = None
         live_value = None

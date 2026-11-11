@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 import pytest
 
-from narwal_client.const import ACTIVE_CLEANING_STATUSES, WorkingStatus
+from narwal_client.const import ACTIVE_CLEANING_STATUSES, FanLevel, WorkingStatus
 from narwal_client.models import (
     DOCK_TASK_DRY_DOCK_BAG,
     DOCK_TASK_DRY_DUST_BIN,
@@ -36,6 +36,106 @@ class TestNarwalState:
         assert not state.is_cleaning
         assert not state.is_docked
         assert not state.is_returning
+
+    @pytest.mark.parametrize("level", (1, 2, 3, 4, 5))
+    def test_reported_fan_level(self, level: int) -> None:
+        state = NarwalState()
+        state.update_from_base_status({"26": level})
+
+        assert state.fan_level_reported
+        assert state.reported_fan_level == FanLevel(level)
+
+    @pytest.mark.parametrize("level", (0, 6, -1, True, "4", None, 4.0))
+    def test_unknown_fan_report_clears_previous_level(self, level: object) -> None:
+        state = NarwalState()
+        state.update_from_base_status({"26": 4})
+        state.update_from_base_status({"26": level})
+
+        assert state.fan_level_reported
+        assert state.reported_fan_level is None
+
+    def test_missing_fan_field_preserves_report(self) -> None:
+        state = NarwalState(working_status=WorkingStatus.CLEANING)
+        state.update_from_base_status({"26": 4})
+        state.update_from_base_status({"3": {"1": 4}})
+
+        assert state.reported_fan_level == FanLevel.DEEP
+        assert state.fan_level_reported
+
+    def test_new_clean_discards_previous_fan_report(self) -> None:
+        state = NarwalState()
+        state.update_from_base_status({"26": 4})
+        state.assume_robot_clean()
+
+        assert state.reported_fan_level is None
+        assert not state.fan_level_reported
+
+    @pytest.mark.parametrize("next_report", ({}, {"26": 2}, {"26": 5}, {"26": 99}))
+    def test_native_clean_does_not_inherit_idle_fan(self, next_report: dict) -> None:
+        state = NarwalState()
+        state.update_from_base_status({"3": {"1": 4}, "26": 4, "11": 1, "47": 2})
+        state.update_from_base_status({"3": {"1": 10}, "26": 1, "11": 2, "47": 3})
+        state.update_from_base_status({"26": 3})
+        state.update_from_base_status({"3": {"1": 4}, "11": 1, "47": 2, **next_report})
+
+        assert state.fan_level_reported is bool(next_report)
+        expected = next_report.get("26")
+        assert state.reported_fan_level == (FanLevel(expected) if expected in (2, 5) else None)
+
+    def test_pause_and_resume_keep_current_fan_report(self) -> None:
+        state = NarwalState()
+        state.update_from_base_status({"3": {"1": 4}, "26": 4, "11": 1, "47": 2})
+        state.update_from_base_status({"3": {"1": 4, "2": 1}, "11": 1, "47": 2})
+        assert state.reported_fan_level == FanLevel.DEEP
+
+        state.update_from_base_status({"3": {"1": 4}, "11": 1, "47": 2})
+        assert state.reported_fan_level == FanLevel.DEEP
+        assert state.fan_level_reported
+
+    @pytest.mark.parametrize("next_report", ({}, {"26": 2}, {"26": 5}, {"26": 0}, {"26": 99}))
+    def test_native_clean_discards_off_dock_standby_fan(self, next_report: dict) -> None:
+        state = NarwalState()
+        state.update_from_base_status({"3": {"1": 1}, "11": 1, "47": 2, "26": 3})
+        assert state.reported_fan_level == FanLevel.STRONG
+
+        state.update_from_base_status({"3": {"1": 4}, "11": 1, "47": 2, **next_report})
+
+        assert state.fan_level_reported is bool(next_report)
+        expected = next_report.get("26")
+        assert state.reported_fan_level == (FanLevel(expected) if expected in (2, 5) else None)
+
+    def test_paused_standby_resume_keeps_current_fan_report(self) -> None:
+        state = NarwalState()
+        state.update_from_base_status({"3": {"1": 4}, "11": 1, "47": 2, "26": 4})
+        state.update_from_working_status({"3": 30, "6": 3})
+        state.update_from_base_status({"3": {"1": 1, "2": 1}, "11": 1, "47": 2})
+        assert state.has_paused_clean_task_context
+        assert state.reported_fan_level == FanLevel.DEEP
+
+        state.update_from_base_status({"3": {"1": 4}, "11": 1, "47": 2})
+
+        assert state.reported_fan_level == FanLevel.DEEP
+        assert state.fan_level_reported
+
+    def test_metrics_confirmed_clean_discards_idle_fan(self) -> None:
+        state = NarwalState()
+        with patch("narwal_client.models.time.monotonic", return_value=100.0):
+            state.update_from_base_status({"3": {"1": 10}, "11": 2, "26": 4})
+        with patch("narwal_client.models.time.monotonic", return_value=101.0):
+            state.update_from_working_status({"3": 1, "6": 3})
+        with patch("narwal_client.models.time.monotonic", return_value=102.0):
+            state.update_from_working_status({"3": 2, "6": 3})
+            assert state.has_recent_active_working_status
+            assert not state.fan_level_reported
+            assert state.reported_fan_level is None
+
+    def test_handoff_keeps_same_packet_fan_report(self) -> None:
+        state = NarwalState()
+        state.update_from_base_status({"3": {"1": 4}, "26": 4, "11": 1, "47": 2})
+        state.update_from_base_status({"3": {"1": 19}, "26": 3, "11": 1, "47": 2})
+
+        assert state.reported_fan_level == FanLevel.STRONG
+        assert state.fan_level_reported
 
     def test_update_from_working_status(self) -> None:
         """working_status topic sets cleaning metrics without rewriting status."""

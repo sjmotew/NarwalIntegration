@@ -50,6 +50,100 @@ def _float_stream(*values: float) -> bytes:
     return b"".join(struct.pack("<f", value) for value in values)
 
 
+def _handoff_client(module: str):
+    import importlib
+
+    import tests.ha_stubs
+
+    tests.ha_stubs.install()
+    return importlib.import_module(f"{module}.client").NarwalClient("10.0.0.1")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("module", ["narwal_client", "custom_components.narwal.narwal_client"])
+@pytest.mark.parametrize(
+    "handoff_fan,expected", [(3, FanLevel.STRONG), (None, FanLevel.DEEP), (0, None)]
+)
+@pytest.mark.parametrize("partial_packets", [False, True])
+async def test_native_off_dock_handoff_retains_fan_on_next_packet(
+    module: str, handoff_fan: int | None, expected: FanLevel | None, partial_packets: bool
+) -> None:
+    client = _handoff_client(module)
+    updates = []
+    client.on_state_update = lambda state: updates.append(state.reported_fan_level)
+
+    async def base(payload):
+        await client._handle_message(build_frame(
+            client._full_topic("status/robot_base_status"), payload
+        ))
+
+    off_dock = b"\x58\x01\xf8\x02\x02"
+    await base(b"\x1a\x02\x08\x04" + off_dock + b"\xd0\x01\x04")
+    handoff = b"\x1a\x02\x08\x13" + off_dock
+    if handoff_fan is not None:
+        handoff += b"\xd0\x01" + bytes([handoff_fan])
+    await base(handoff)
+    assert client.state.reported_fan_level == expected
+    if partial_packets:
+        await base(b"\x10\x50")  # battery-only cannot revoke proven handoff
+        await client._handle_message(build_frame(
+            client._full_topic("status/working_status"), b"\x18\x79"
+        ))
+    await base(b"\x1a\x02\x08\x04" + off_dock)
+
+    assert updates[-1] == expected
+    assert client.state.reported_fan_level == expected
+    assert client.state.fan_level_reported
+    assert client.state.working_status == WorkingStatus.CLEANING
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("module", ["narwal_client", "custom_components.narwal.narwal_client"])
+@pytest.mark.parametrize(
+    "dock_fields", [b"", b"\x58\x01", b"\xf8\x02\x02", b"\x58\x02\xf8\x02\x03"]
+)
+async def test_handoff_requires_both_native_off_dock_fields(
+    module: str, dock_fields: bytes
+) -> None:
+    client = _handoff_client(module)
+    for payload in (
+        b"\x1a\x02\x08\x04\x58\x01\xf8\x02\x02\xd0\x01\x04",
+        b"\x1a\x02\x08\x13" + dock_fields + b"\xd0\x01\x03",
+        b"\x1a\x02\x08\x04\x58\x01\xf8\x02\x02",
+    ):
+        await client._handle_message(build_frame(
+            client._full_topic("status/robot_base_status"), payload
+        ))
+    assert client.state.reported_fan_level is None
+    assert not client.state.fan_level_reported
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("module", ["narwal_client", "custom_components.narwal.narwal_client"])
+@pytest.mark.parametrize("boundary", ["new_start", "dock", "completed_dock", "dock_fields_only"])
+async def test_confirmed_boundary_clears_handoff_fan(module: str, boundary: str) -> None:
+    client = _handoff_client(module)
+
+    async def base(payload):
+        await client._handle_message(build_frame(
+            client._full_topic("status/robot_base_status"), payload
+        ))
+
+    await base(b"\x1a\x02\x08\x04\x58\x01\xf8\x02\x02\xd0\x01\x04")
+    await base(b"\x1a\x02\x08\x13\x58\x01\xf8\x02\x02\xd0\x01\x03")
+    if boundary == "new_start":
+        client.state.assume_robot_clean()
+    else:
+        status = {"dock": b"\x1a\x02\x08\x0a", "completed_dock": b"\x1a\x02\x08\x13",
+                  "dock_fields_only": b""}[boundary]
+        await base(status + b"\x58\x02\xf8\x02\x03")
+    assert client.state.reported_fan_level is None
+    assert not client.state.fan_level_reported
+    await base(b"\x1a\x02\x08\x04\x58\x01\xf8\x02\x02")
+    assert client.state.reported_fan_level is None
+    assert not client.state.fan_level_reported
+
+
 class TestNarwalClientInit:
     """Tests for NarwalClient initialization."""
 
@@ -214,6 +308,72 @@ class TestNarwalClientInit:
         assert client.state.working_status == WorkingStatus.UNKNOWN
         assert client.state.battery_level == 87
         assert client.state.is_cleaning
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("paused", [False, True])
+    @pytest.mark.parametrize(
+        ("fan", "expected"),
+        [(4, FanLevel.DEEP), (5, FanLevel.SUPER), (0, None), (None, FanLevel.NORMAL)],
+    )
+    async def test_suppressed_base_status_frame_keeps_native_fan(
+        self, fan: int | None, expected: FanLevel | None, paused: bool
+    ) -> None:
+        """Fresh fan26 survives suppression of raw task2/4=3 after working metrics."""
+        client = NarwalClient("10.0.0.1")
+        client.state.update_from_base_status({"3": {"1": 4}, "26": 2})
+        await client._handle_message(build_frame(
+            client._full_topic("status/working_status"), b"\x18\x78\x30\x05"
+        ))
+        client.state.is_paused = paused
+        updates = []
+        client.on_state_update = lambda state: updates.append(state.reported_fan_level)
+        # Native composite: field3={1:2,4:3,14:1}, off-dock11=1/47=2.
+        payload = b"\x1a\x06\x08\x02\x20\x03\x70\x01\x58\x01\xf8\x02\x02"
+        if fan is not None:
+            payload += b"\xd0\x01" + bytes([fan])
+        await client._handle_message(build_frame(
+            client._full_topic("status/robot_base_status"), payload
+        ))
+
+        assert updates == [expected]
+        assert client.state.fan_level_reported
+        assert client.state.reported_fan_level == expected
+        assert client.state.working_status == WorkingStatus.CLEANING
+        assert client.state.cleaning_time == 120
+        assert client.state.current_room_id == 5
+        assert client.state.is_paused is paused
+        assert client.state.has_recent_active_working_status
+
+    @pytest.mark.parametrize("dock_fields", [{"11": 2, "47": 3}, {}])
+    def test_stale_dock_fan_cannot_replace_live_fan(self, dock_fields: dict) -> None:
+        client = NarwalClient("127.0.0.1")
+        client.state.update_from_base_status({"3": {"1": 4}, "26": 5})
+        client._update_from_working_status_broadcast({"3": 120, "6": 5})
+
+        client._update_from_base_status_broadcast(
+            {"3": {"1": 1}, "26": 2, **dock_fields}
+        )
+
+        assert client.state.reported_fan_level == FanLevel.SUPER
+        assert client.state.current_room_id == 5
+
+    @pytest.mark.asyncio
+    async def test_partial_status_rpc_cannot_replace_native_fan(self) -> None:
+        client = NarwalClient("10.0.0.1")
+        await client._handle_message(build_frame(
+            client._full_topic("status/working_status"), b"\x18\x78\x30\x05"
+        ))
+        await client._handle_message(build_frame(
+            client._full_topic("status/robot_base_status"),
+            b"\x1a\x06\x08\x02\x20\x03\x70\x01\x58\x01\xf8\x02\x02\xd0\x01\x05",
+        ))
+        response = CommandResponse(data={"2": {"3": {"1": 2}, "26": 2}})
+        with patch.object(client, "send_command", AsyncMock(return_value=response)):
+            await client.get_status(full_update=False)
+
+        assert client.state.reported_fan_level == FanLevel.SUPER
+        assert client.state.fan_level_reported
+        assert client.state.cleaning_time == 120
 
     def test_confirmed_dock_base_status_waits_for_active_metrics_to_expire(self) -> None:
         """Dock indicators win after fresh task-metric activity expires."""
@@ -747,7 +907,7 @@ class TestNarwalClientInit:
         )
 
     @pytest.mark.asyncio
-    async def test_set_fan_speed_clamps_super_to_deep(self) -> None:
+    async def test_set_fan_speed_preserves_super(self) -> None:
         client = NarwalClient("10.0.0.1")
         accepted = CommandResponse(result_code=CommandResult.SUCCESS)
 
@@ -760,7 +920,7 @@ class TestNarwalClientInit:
         assert result is accepted
         mock_send.assert_awaited_once_with(
             TOPIC_CMD_SET_FAN_LEVEL,
-            b"\x08\x04",
+            b"\x08\x05",
         )
 
     @pytest.mark.asyncio
@@ -3422,3 +3582,42 @@ class TestConnectionUrl:
             with pytest.raises(NarwalConnectionError):
                 await client.connect()
         assert not client.connected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("module", ["narwal_client", "custom_components.narwal.narwal_client"])
+@pytest.mark.parametrize(
+    "partial",
+    [b"", b"\x58\x01", b"\xf8\x02\x02", b"\x5a\x01x", b"\x58\x00\xf8\x02\x00"],
+)
+async def test_repeated_handoff_keeps_proven_fan(module: str, partial: bytes) -> None:
+    client = _handoff_client(module)
+    for payload in (
+        b"\x1a\x02\x08\x04\x58\x01\xf8\x02\x02\xd0\x01\x04",
+        b"\x1a\x02\x08\x13\x58\x01\xf8\x02\x02\xd0\x01\x03",
+        b"\x1a\x02\x08\x13" + partial,
+        b"\x1a\x02\x08\x04\x58\x01\xf8\x02\x02",
+    ):
+        await client._handle_message(build_frame(
+            client._full_topic("status/robot_base_status"), payload
+        ))
+    assert client.state.reported_fan_level == FanLevel.STRONG
+    assert client.state.fan_level_reported
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("module", ["narwal_client", "custom_components.narwal.narwal_client"])
+@pytest.mark.parametrize("dock", [b"\x58\x02", b"\x58\x03", b"\xf8\x02\x01", b"\xf8\x02\x03"])
+async def test_partial_dock_revokes_handoff_fan(module: str, dock: bytes) -> None:
+    client = _handoff_client(module)
+    for payload in (
+        b"\x1a\x02\x08\x04\x58\x01\xf8\x02\x02\xd0\x01\x04",
+        b"\x1a\x02\x08\x13\x58\x01\xf8\x02\x02\xd0\x01\x03",
+        b"\x1a\x02\x08\x13" + dock,
+        b"\x1a\x02\x08\x04\x58\x01\xf8\x02\x02",
+    ):
+        await client._handle_message(build_frame(
+            client._full_topic("status/robot_base_status"), payload
+        ))
+    assert client.state.reported_fan_level is None
+    assert not client.state.fan_level_reported

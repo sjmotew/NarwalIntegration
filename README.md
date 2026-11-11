@@ -92,7 +92,7 @@ it and includes a complete scheduled multi-room automation.
 - **All cleaning requires the dock.** The robot returns `NOT_READY` otherwise, for `vacuum.start` as well as room cleans.
 - **Single connection.** Close the Narwal app before using HA; the robot allows one WebSocket client.
 - **Wake from deep sleep is unreliable** after long idle periods; opening the app briefly helps.
-- **Fan speed is set-only.** The robot does not broadcast its current level.
+- **Fan speed readback varies by firmware.** Fixed suction uses the reported level once received for a clean; before that it uses the requested setting. Invalid reports remain unknown. AI remains an automatic-policy selection.
 - **One floor at a time.** Only the rooms of the robot's active map are visible ([#43](https://github.com/sjmotew/NarwalIntegration/issues/43)).
 - **CX7 has no live telemetry**; control works, position and progress do not, and on some units the reported state does not track cleaning ([details](docs/TROUBLESHOOTING.md#cx7-freo-z-ultra)).
 - **Flow 2 clean-water and detergent tanks are not reported while docked** ([#128](https://github.com/sjmotew/NarwalIntegration/issues/128)).

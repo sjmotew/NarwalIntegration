@@ -41,6 +41,7 @@ from .coordinator import (
     can_start_cleaning,
     can_stop_cleaning,
     clean_setting_applies_to_mode,
+    is_clean_session_context,
     is_live_clean_setting_available,
 )
 from .dock_tasks import ROBOT_RETURN_COMPATIBLE_DOCK_TASKS
@@ -436,14 +437,9 @@ class NarwalVacuum(NarwalEntity, RestoreEntity, StateVacuumEntity):
 
     @property
     def fan_speed(self) -> str | None:
-        """Return the selected fan speed.
-
-        The robot does not broadcast the active fan level, so this reflects the
-        pending value held in coordinator.clean_settings (applied at the next clean
-        and, while cleaning, written live via set_fan_speed).
-        """
+        """Return current task suction, or pending suction while idle."""
         fan = self.coordinator.active_clean_setting("fan")
-        if fan is None and is_live_clean_setting_available(self.coordinator.data):
+        if fan is None and is_clean_session_context(self.coordinator.data):
             return None
         if fan is None:
             fan = self.coordinator.clean_settings.fan
@@ -700,8 +696,17 @@ class NarwalVacuum(NarwalEntity, RestoreEntity, StateVacuumEntity):
         pending_level = level
         if live_available:
             if level == FanLevel.SUPER:
-                if level == self._active_fan_level:
+                if (
+                    level == self._active_fan_level
+                    and "Ultra Powerful" not in live_fan_speed_list_for(
+                        self.coordinator.config_entry.data, None
+                    )
+                ):
                     return
+                if "Ultra Powerful" not in live_fan_speed_list_for(
+                    self.coordinator.config_entry.data, self._active_fan_level
+                ):
+                    raise HomeAssistantError("This suction level is not supported live")
                 level = fan_level_for_live_command(level)
             resp = await self.coordinator.client.set_fan_speed(level)
             _raise_if_command_failed(resp, "set fan speed")

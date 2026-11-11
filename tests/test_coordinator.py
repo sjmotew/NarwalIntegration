@@ -794,6 +794,175 @@ def test_selected_clean_room_presence_is_map_scoped() -> None:
     assert not coordinator.has_selected_clean_rooms(map_id="downstairs")
 
 
+@pytest.mark.parametrize(
+    ("requested", "reported", "expected"),
+    (
+        (FanLevel.SUPER, 4, FanLevel.DEEP),
+        (FanLevel.SUPER, 5, FanLevel.SUPER),
+        (FanLevel.STRONG, 1, FanLevel.MUTE),
+        (FanLevel.UNSPECIFIED, 4, FanLevel.UNSPECIFIED),
+        (FanLevel.SUPER, 0, None),
+        (FanLevel.SUPER, 99, None),
+    ),
+)
+def test_active_suction_uses_robot_readback(
+    requested: FanLevel, reported: int, expected: FanLevel | None
+) -> None:
+    coordinator = _new_coordinator()
+    state = NarwalState(working_status=WorkingStatus.CLEANING)
+    state.current_room_id = 5
+    state.update_from_base_status({"26": reported})
+    coordinator.client = MagicMock()
+    coordinator.client.state = state
+    coordinator.data = state
+    coordinator.clean_settings.fan = FanLevel.SUPER
+    coordinator.record_accepted_clean_start({5: RoomCleanSettings(fan=requested)})
+
+    assert coordinator.active_clean_setting("fan") == expected
+    assert coordinator.clean_settings.fan == FanLevel.SUPER
+    assert coordinator.active_room_clean_settings[5].fan == requested
+
+
+def test_live_suction_waits_for_robot_confirmation() -> None:
+    coordinator = _new_coordinator()
+    state = NarwalState(working_status=WorkingStatus.CLEANING)
+    state.update_from_base_status({"26": 4})
+    coordinator.client = MagicMock()
+    coordinator.client.state = state
+    coordinator.data = state
+    coordinator.record_accepted_clean_start({5: RoomCleanSettings(fan=FanLevel.SUPER)})
+
+    coordinator.set_active_clean_setting("fan", FanLevel.NORMAL)
+    assert coordinator.active_clean_setting("fan") == FanLevel.DEEP
+
+    state.update_from_base_status({"26": 2})
+    assert coordinator.active_clean_setting("fan") == FanLevel.NORMAL
+
+
+@pytest.mark.asyncio
+async def test_suppressed_base_broadcast_updates_suction_entities() -> None:
+    """Exercise the bundled client frames and callback, not direct model parsing."""
+    from custom_components.narwal.narwal_client.protocol import build_frame
+    from custom_components.narwal.select import (
+        LEGACY_SELECT_DESCRIPTIONS,
+        LegacyNarwalSettingSelect,
+    )
+    from custom_components.narwal.vacuum import NarwalVacuum
+
+    coordinator = _new_coordinator()
+    client = coordinator.client
+    coordinator.data = client.state
+    client.state.update_from_base_status({"3": {"1": 4}, "26": 2})
+    coordinator.record_accepted_clean_start(
+        {5: RoomCleanSettings(work_mode=WorkMode.VACUUM, fan=FanLevel.SUPER)}
+    )
+    vacuum = NarwalVacuum(coordinator)
+    description = next(d for d in LEGACY_SELECT_DESCRIPTIONS if d.setting_key == "suction")
+    select = LegacyNarwalSettingSelect(coordinator, description)
+    updates = []
+
+    def on_update(state):
+        coordinator.data = state
+        updates.append((vacuum.fan_speed, select.current_option))
+
+    client.on_state_update = on_update
+    await client._handle_message(build_frame(
+        client._full_topic("status/working_status"), b"\x18\x78\x30\x05"
+    ))
+    updates.clear()
+    for fan in (4, 5, 0, None):
+        payload = b"\x1a\x06\x08\x02\x20\x03\x70\x01\x58\x01\xf8\x02\x02"
+        if fan is not None:
+            payload += b"\xd0\x01" + bytes([fan])
+        await client._handle_message(build_frame(
+            client._full_topic("status/robot_base_status"), payload
+        ))
+
+    assert updates == [
+        ("Super Powerful", "Super Powerful"),
+        ("Ultra Powerful", "Ultra Powerful"),
+        (None, None),
+        (None, None),
+    ]
+    assert coordinator.active_room_clean_settings[5].fan == FanLevel.SUPER
+    assert client.state.cleaning_time == 120
+
+
+def test_vacuum_suction_label_and_options_follow_readback() -> None:
+    from custom_components.narwal.vacuum import NarwalVacuum
+
+    coordinator = _new_coordinator()
+    state = NarwalState(working_status=WorkingStatus.CLEANING)
+    state.update_from_base_status({"26": 4})
+    coordinator.client = MagicMock()
+    coordinator.client.state = state
+    coordinator.data = state
+    coordinator.clean_settings.fan = FanLevel.SUPER
+    coordinator.record_accepted_clean_start(
+        {5: RoomCleanSettings(work_mode=WorkMode.VACUUM, fan=FanLevel.SUPER)}
+    )
+    vacuum = NarwalVacuum(coordinator)
+
+    assert vacuum.fan_speed == "Super Powerful"
+    assert "Ultra Powerful" not in vacuum.fan_speed_list
+    assert coordinator.clean_settings.fan == FanLevel.SUPER
+
+    state.update_from_base_status({"3": {"1": 10}, "11": 2, "47": 3})
+
+    assert vacuum.fan_speed == "Ultra Powerful"
+    assert "Ultra Powerful" in vacuum.fan_speed_list
+
+
+@pytest.mark.parametrize("has_error", (False, True))
+def test_unknown_active_suction_does_not_show_pending_value(has_error: bool) -> None:
+    from custom_components.narwal.select import (
+        LEGACY_SELECT_DESCRIPTIONS,
+        LegacyNarwalSettingSelect,
+    )
+    from custom_components.narwal.vacuum import NarwalVacuum
+
+    coordinator = _new_coordinator()
+    state = NarwalState(working_status=WorkingStatus.CLEANING)
+    state.update_from_base_status({"26": 99})
+    state.has_error = has_error
+    coordinator.client = MagicMock()
+    coordinator.client.state = state
+    coordinator.data = state
+    coordinator.clean_settings.fan = FanLevel.SUPER
+    coordinator.record_accepted_clean_start({5: RoomCleanSettings(fan=FanLevel.SUPER)})
+    description = next(d for d in LEGACY_SELECT_DESCRIPTIONS if d.setting_key == "suction")
+
+    assert NarwalVacuum(coordinator).fan_speed is None
+    assert LegacyNarwalSettingSelect(coordinator, description).current_option is None
+    assert coordinator.clean_settings.fan == FanLevel.SUPER
+
+
+def test_old_firmware_keeps_requested_suction_fallback() -> None:
+    coordinator = _new_coordinator()
+    state = NarwalState(working_status=WorkingStatus.CLEANING)
+    coordinator.client = MagicMock()
+    coordinator.client.state = state
+    coordinator.data = state
+    coordinator.record_accepted_clean_start({5: RoomCleanSettings(fan=FanLevel.SUPER)})
+
+    assert coordinator.active_clean_setting("fan") == FanLevel.SUPER
+
+
+def test_idle_suction_does_not_use_previous_task_readback() -> None:
+    coordinator = _new_coordinator()
+    state = NarwalState(working_status=WorkingStatus.DOCKED)
+    state.dock_field11 = 2
+    state.dock_field47 = 3
+    state.update_from_base_status({"26": 4})
+    coordinator.client = MagicMock()
+    coordinator.client.state = state
+    coordinator.data = state
+    coordinator.clean_settings.fan = FanLevel.SUPER
+
+    assert coordinator.active_clean_setting("fan") is None
+    assert coordinator.clean_settings.fan == FanLevel.SUPER
+
+
 def test_active_clean_settings_follow_current_room_and_runtime_updates() -> None:
     """Live controls report dispatched room profiles instead of pending globals."""
     coordinator = _new_coordinator()
