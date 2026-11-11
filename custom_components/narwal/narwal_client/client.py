@@ -476,7 +476,10 @@ class NarwalClient:
         self.state.map_display_data = display
         self._last_display_map_time = time.monotonic()
         if self.on_display_map:
-            self.on_display_map(self.state)
+            try:
+                self.on_display_map(self.state)
+            except Exception:
+                _LOGGER.exception("Error in display map callback")
         _LOGGER.debug(
             "display_map received: robot=(%.2f, %.2f) ts=%d",
             display.robot_x,
@@ -1593,6 +1596,59 @@ class NarwalClient:
     # runtime-validated on Flow firmware v01.07.23.00.
     _CUSTOM_CLEAN_TASK_TYPE = 6
 
+    @classmethod
+    def room_settings_from_current_task(
+        cls, response: CommandResponse
+    ) -> tuple[int, dict[int, RoomCleanSettings]] | None:
+        """Decode a complete room task without substituting pending defaults."""
+        if not response.accepted:
+            return None
+        task = response.data.get("2")
+        if not isinstance(task, dict) or type(task.get("1")) is not int:
+            return None
+        items = task.get("2")
+        if isinstance(items, dict):
+            items = [items]
+        if not isinstance(items, list) or not items:
+            return None
+        modes = {value[0]: (mode, value[1]) for mode, value in cls._WORK_MODE_PARAM.items()}
+        settings = {}
+        try:
+            for item in items:
+                zone, param = item["1"], item["2"]
+                room_id = zone["2"]
+                if (
+                    zone.get("1") != 1
+                    or type(room_id) is not int
+                    or room_id <= 0
+                    or room_id in settings
+                ):
+                    return None
+                mode, pass_tags = modes[param["1"]]
+                required = (
+                    ("2",)
+                    if mode == WorkMode.VACUUM
+                    else ("3", "4") if mode == WorkMode.MOP else ("2", "3", "4")
+                )
+                if any(type(param.get(tag)) is not int for tag in required):
+                    return None
+                counts = [param[tag] for tag in pass_tags]
+                if any(type(count) is not int or not 1 <= count <= 3 for count in counts):
+                    return None
+                if len(set(counts)) != 1:
+                    return None
+                settings[room_id] = RoomCleanSettings(
+                    work_mode=mode,
+                    fan=FanLevel(param.get("2", 0)),
+                    mop_strength=MopStrengthLevel(param.get("3", 0)),
+                    water=MopHumidity(param.get("4", 0)),
+                    passes=counts[0],
+                    route=CleaningRoute(param["8"]) if "8" in param else None,
+                )
+        except (KeyError, TypeError, ValueError):
+            return None
+        return task["1"], settings
+
     def _clean_param_for_settings(self, settings: RoomCleanSettings) -> dict[str, int]:
         """Return a CleanParam protobuf dict for one room."""
         param_mode, pass_tags = self._WORK_MODE_PARAM[settings.work_mode]
@@ -2230,6 +2286,44 @@ class NarwalClient:
                     raw_payload=resp.raw_payload,
                 )
         return resp
+
+    async def get_clean_timeline(self) -> CommandResponse:
+        """Read the current or most recently completed task timeline."""
+        return await self.send_command("info/get_clean_time_line", timeout=8.0)
+
+    @staticmethod
+    def active_job_id_from_timeline(response: CommandResponse) -> str | None:
+        """Identify one unfinished native job without losing timestamp precision."""
+        if not response.accepted or not isinstance(response.data, dict):
+            return None
+        payload = response.data.get("2")
+        if not isinstance(payload, dict):
+            return None
+        events = payload.get("1")
+        if isinstance(events, dict):
+            events = [events]
+        if not isinstance(events, list) or not events:
+            return None
+        previous = 0
+        start = None
+        for index, event in enumerate(events):
+            if not isinstance(event, dict):
+                return None
+            timestamp, kind = event.get("1"), event.get("2")
+            if (
+                type(timestamp) is not int
+                or not previous < timestamp < 2**63
+                or type(kind) is not int
+                or kind <= 0
+                or kind == 6
+            ):
+                return None
+            if kind == 1:
+                if index != 0:
+                    return None
+                start = str(timestamp)
+            previous = timestamp
+        return start
 
     async def get_current_task(self) -> CommandResponse:
         """Query the current clean task."""
