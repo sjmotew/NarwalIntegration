@@ -548,25 +548,30 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
         }
 
     def active_clean_setting(self, attr: str) -> object | None:
-        """Return the effective live value for the current clean, if known."""
+        """Return task settings, preferring fan telemetry for fixed suction."""
         state = self.data or self.client.state
         if not is_clean_session_context(state):
             return None
         overrides = getattr(self, "active_clean_setting_overrides", {})
         if attr in overrides:
-            return overrides[attr]
-        if (
+            value = overrides[attr]
+        elif (
             state.current_room_id is not None
             and state.current_room_id in self.active_room_clean_settings
         ):
-            return getattr(
-                self.active_room_clean_settings[state.current_room_id], attr
-            )
-        values = {
-            getattr(settings, attr)
-            for settings in self.active_room_clean_settings.values()
-        }
-        return next(iter(values)) if len(values) == 1 else None
+            value = getattr(self.active_room_clean_settings[state.current_room_id], attr)
+        else:
+            values = {
+                getattr(settings, attr) for settings in self.active_room_clean_settings.values()
+            }
+            value = next(iter(values)) if len(values) == 1 else None
+        if (
+            attr == "fan"
+            and value != FanLevel.UNSPECIFIED
+            and _state_attr_is_true(state, "fan_level_reported")
+        ):
+            return state.reported_fan_level
+        return value
 
     def set_active_clean_setting(self, attr: str, value: object) -> None:
         """Update the displayed live value after an accepted runtime command."""

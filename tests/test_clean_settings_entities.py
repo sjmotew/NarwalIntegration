@@ -1077,3 +1077,40 @@ class TestNarwalPassesNumber:
         with patch.object(num, "async_get_last_number_data", AsyncMock(return_value=data)):
             await num.async_added_to_hass()
         assert coord.clean_settings.passes == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("product_key", ["QxMSPG6VSO", "iSuVlI1If2"])
+async def test_flow2_legacy_live_ultra_sends_five(product_key: str) -> None:
+    coord = _coordinator(product_key=product_key, state=_state(WorkingStatus.CLEANING))
+    coord.active_clean_work_mode = WorkMode.VACUUM
+    coord.client.set_fan_speed = AsyncMock(return_value=CommandResponse(result_code=1))
+    select = LegacyNarwalSettingSelect(coord, _LEGACY_DESCS["suction"])
+    assert "Ultra Powerful" in select.options
+    await select.async_select_option("Ultra Powerful")
+    coord.client.set_fan_speed.assert_awaited_once_with(FanLevel.SUPER)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("option", ["Ultra", "Ultra Powerful"])
+async def test_unverified_model_retained_ultra_is_inert(option: str) -> None:
+    coord = _coordinator(state=_state(WorkingStatus.CLEANING))
+    coord.active_clean_work_mode = WorkMode.VACUUM
+    coord.active_clean_setting.return_value = FanLevel.SUPER
+    coord.client.set_fan_speed = AsyncMock()
+    select = LegacyNarwalSettingSelect(coord, _LEGACY_DESCS["suction"])
+    await select.async_select_option(option)
+    coord.client.set_fan_speed.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("product_key", ["QxMSPG6VSO", "iSuVlI1If2"])
+async def test_flow2_legacy_can_restore_ultra_before_new_fan_telemetry(product_key: str) -> None:
+    coord = _coordinator(product_key=product_key, state=_state(WorkingStatus.CLEANING))
+    coord.active_clean_work_mode = WorkMode.VACUUM
+    coord.active_clean_setting.return_value = FanLevel.SUPER
+    coord.client.set_fan_speed = AsyncMock(return_value=CommandResponse(result_code=1))
+    select = LegacyNarwalSettingSelect(coord, _LEGACY_DESCS["suction"])
+    await select.async_select_option("Standard")
+    await select.async_select_option("Ultra Powerful")
+    assert [call.args[0] for call in coord.client.set_fan_speed.await_args_list] == [FanLevel.NORMAL, FanLevel.SUPER]

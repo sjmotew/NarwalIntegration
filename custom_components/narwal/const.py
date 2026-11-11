@@ -166,8 +166,7 @@ _FAN_SPEED_CANONICAL: dict[str, FanLevel] = {
 
 FAN_SPEED_LIST: list[str] = list(_FAN_SPEED_CANONICAL)
 
-# Models whose app exposes only four suction tiers: FanLevel.SUPER (5) is
-# unreachable there, and the live clean/set_fan_level enum has no SUPER at all.
+# Models whose ordinary suction controls expose only four tiers.
 # AX26 confirmed by app captures in #70: its top tier sends CleanParam tag 2 =
 # 4 (DEEP), exposed as "Super Powerful" for those models.
 NO_LEVEL_5_FAN_PRODUCT_KEYS: frozenset[str] = frozenset({"qV6BujoYLz"})
@@ -223,13 +222,21 @@ def fan_speed_list_for(data: dict) -> list[str]:
     return list(fan_speed_map_for(data, include_aliases=False))
 
 
+# Confirmed by native level-five readback after a live SetFanLevel command.
+LIVE_LEVEL_5_FAN_PRODUCT_KEYS: frozenset[str] = frozenset({"QxMSPG6VSO", "iSuVlI1If2"})
+
+
 def live_fan_speed_list_for(
     data: dict,
     active_fan: FanLevel | None,
 ) -> list[str]:
-    """Return live suction choices, retaining an active level-five state."""
+    """Offer verified live levels, retaining an already active level five."""
     options = fan_speed_list_for(data)
-    if active_fan != FanLevel.SUPER and "Ultra Powerful" in options:
+    if (
+        data.get(CONF_PRODUCT_KEY) not in LIVE_LEVEL_5_FAN_PRODUCT_KEYS
+        and active_fan != FanLevel.SUPER
+        and "Ultra Powerful" in options
+    ):
         options.remove("Ultra Powerful")
     return options
 

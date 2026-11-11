@@ -15,6 +15,7 @@ from typing import Any, ClassVar
 from .const import (
     ACTIVE_CLEANING_STATUSES,
     CommandResult,
+    FanLevel,
     WorkingStatus,
 )
 
@@ -855,6 +856,9 @@ class NarwalState:
     # Core status
     working_status: WorkingStatus = WorkingStatus.UNKNOWN
     battery_level: int = 0  # real-time SOC from field 2 (float32)
+    reported_fan_level: FanLevel | None = None  # base-status field 26
+    fan_level_reported: bool = False
+    _fan_handoff_off_dock: bool = False
     firmware_version: str = ""
     firmware_target: str = ""
 
@@ -1332,9 +1336,29 @@ class NarwalState:
             and time.monotonic() <= self.assumed_robot_clean_until
         )
 
+    def _has_fan_handoff_context(self) -> bool:
+        """Retain fan evidence only across a wire-confirmed off-dock handoff."""
+        return self.working_status == WorkingStatus.TASK_COMPLETED and self._fan_handoff_off_dock
+
+    def _has_fan_task_context(self) -> bool:
+        """Return whether retained fan telemetry can belong to current robot work."""
+        return (
+            self.working_status in ACTIVE_CLEANING_STATUSES
+            or self.has_assumed_robot_clean
+            or self.has_recent_active_working_status
+            or self.has_paused_clean_task_context
+            or self._has_fan_handoff_context()
+        )
+
+    def _clear_fan_report(self) -> None:
+        self._fan_handoff_off_dock = False
+        self.reported_fan_level = None
+        self.fan_level_reported = False
+
     def assume_robot_clean(self) -> None:
         """Temporarily reserve robot-clean command context after an accepted start."""
         self.assumed_robot_clean_until = time.monotonic() + _ROBOT_START_ASSUME_TTL
+        self._clear_fan_report()
         self.map_display_data = None
 
     def mark_robot_resumed(self) -> None:
@@ -1452,6 +1476,8 @@ class NarwalState:
 
     def clear_task_details(self) -> None:
         """Clear active robot-task detail fields."""
+        if not self._has_fan_handoff_context():
+            self._clear_fan_report()
         self.is_paused = False
         self.cleaning_area = 0.0
         self.cleaning_time = 0
@@ -1549,6 +1575,7 @@ class NarwalState:
         Field 13 is totalDryStationBagTime (cumulative station timer, 18000 = 5h),
         not area — reading it as area is why the sensor was stuck at 1.8 m².
         """
+        had_fan_task_context = self._has_fan_task_context()
         self.raw_working_status = decoded
         reported_task_details: dict[str, Any] = {}
         previous_task_metrics: dict[str, Any] = {
@@ -1690,6 +1717,8 @@ class NarwalState:
             and not has_terminal_robot_status
         ):
             if task_details_changed:
+                if not had_fan_task_context:
+                    self._clear_fan_report()
                 self.last_active_working_status_time = now
                 self.is_paused = False
             self.last_terminal_working_status_time = 0.0
@@ -1765,6 +1794,7 @@ class NarwalState:
 
         Note: field 32 mirrors field 3 exactly (redundant).
         """
+        had_fan_task_context = self._has_fan_task_context()
         had_active_task_context = (
             self.has_assumed_robot_clean
             or self.has_recent_active_working_status
@@ -1786,6 +1816,10 @@ class NarwalState:
             )
         )
         self.raw_base_status = decoded
+        if (had_terminal_status and not self._has_fan_handoff_context()) or (
+            self.working_status == WorkingStatus.UNKNOWN and not had_active_task_context
+        ):
+            self._clear_fan_report()
         if "2" in decoded:
             self._update_battery_level(decoded["2"])
         # Field 11 = dock indicator (2=docked, 1=undocked)
@@ -1918,6 +1952,20 @@ class NarwalState:
                     )
                     next_working_status = WorkingStatus.UNKNOWN
                 self.working_status = next_working_status
+                self._fan_handoff_off_dock = (
+                    next_working_status == WorkingStatus.TASK_COMPLETED
+                    and (
+                        (
+                            type(decoded.get("11")) is int and decoded["11"] == 1
+                            and type(decoded.get("47")) is int and decoded["47"] == 2
+                        )
+                        or (
+                            self._fan_handoff_off_dock
+                            and previous_working_status == WorkingStatus.TASK_COMPLETED
+                            and not current_reports_docked
+                        )
+                    )
+                )
                 terminal_robot = self.working_status in {
                     WorkingStatus.TASK_COMPLETED,
                     WorkingStatus.ERROR,
@@ -2095,6 +2143,21 @@ class NarwalState:
         if "15" in decoded:
             with contextlib.suppress(ValueError, TypeError):
                 self.terminate_reason = int(decoded["15"])
+        if self._has_fan_handoff_context() and current_reports_docked:
+            self._clear_fan_report()
+        if not had_fan_task_context and self._has_fan_task_context():
+            self._clear_fan_report()
+        self.update_fan_from_base_status(decoded)
+
+    def update_fan_from_base_status(self, decoded: dict[str, Any]) -> None:
+        """Read fan telemetry without changing task context or metrics."""
+        if "26" in decoded:
+            self.fan_level_reported = True
+            self.reported_fan_level = None
+            raw_fan = decoded["26"]
+            if type(raw_fan) is int and raw_fan != 0:
+                with contextlib.suppress(ValueError):
+                    self.reported_fan_level = FanLevel(raw_fan)
 
     def _update_consumables(self, decoded: dict[str, Any]) -> None:
         """Parse trustworthy hardware-sampled base_status fields."""

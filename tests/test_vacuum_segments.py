@@ -1190,19 +1190,25 @@ class TestVacuumFanSpeed:
             "Ultra Powerful",
         ]
 
-    async def test_live_ultra_fan_is_clamped_for_legacy_service_call(self) -> None:
-        state = _active_clean_state()
-        vac = _make_vacuum(state=state)
+    async def test_unverified_model_rejects_live_ultra_without_clamping(self) -> None:
+        vac = _make_vacuum(state=_active_clean_state())
+        vac.coordinator.client.set_fan_speed = AsyncMock()
+        with pytest.raises(HomeAssistantError, match="not supported live"):
+            await vac.async_set_fan_speed("Ultra Powerful")
+        vac.coordinator.client.set_fan_speed.assert_not_awaited()
+
+    @pytest.mark.parametrize("product_key", ["QxMSPG6VSO", "iSuVlI1If2"])
+    @pytest.mark.parametrize("alias", ["max", "Ultra", "Ultra Powerful"])
+    async def test_flow2_live_ultra_keeps_requested_value(self, alias: str, product_key: str) -> None:
+        vac = _make_vacuum(state=_active_clean_state())
+        vac.coordinator.config_entry.data["product_key"] = product_key
         vac.coordinator.client.set_fan_speed = AsyncMock(
-            return_value=CommandResponse(result_code=0)
+            return_value=CommandResponse(result_code=1)
         )
-
-        await vac.async_set_fan_speed("Ultra Powerful")
-
-        vac.coordinator.client.set_fan_speed.assert_awaited_once_with(FanLevel.DEEP)
-        vac.coordinator.set_active_clean_setting.assert_called_once_with(
-            "fan", FanLevel.DEEP
-        )
+        assert "Ultra Powerful" in vac.fan_speed_list
+        await vac.async_set_fan_speed(alias)
+        vac.coordinator.client.set_fan_speed.assert_awaited_once_with(FanLevel.SUPER)
+        vac.coordinator.set_active_clean_setting.assert_called_once_with("fan", FanLevel.SUPER)
 
     async def test_reselecting_active_ultra_is_a_noop(self) -> None:
         vac = _make_vacuum(state=_active_clean_state())
@@ -1213,31 +1219,25 @@ class TestVacuumFanSpeed:
 
         vac.coordinator.client.set_fan_speed.assert_not_awaited()
 
+    @pytest.mark.parametrize("product_key", ["QxMSPG6VSO", "iSuVlI1If2"])
+    async def test_flow2_can_restore_ultra_before_new_fan_telemetry(self, product_key: str) -> None:
+        vac = _make_vacuum(state=_active_clean_state())
+        vac.coordinator.config_entry.data["product_key"] = product_key
+        vac.coordinator.active_clean_setting.return_value = FanLevel.SUPER
+        vac.coordinator.client.set_fan_speed = AsyncMock(return_value=CommandResponse(result_code=1))
+        await vac.async_set_fan_speed("Standard")
+        await vac.async_set_fan_speed("Ultra Powerful")
+        assert [call.args[0] for call in vac.coordinator.client.set_fan_speed.await_args_list] == [FanLevel.NORMAL, FanLevel.SUPER]
+
     async def test_pending_ultra_is_not_treated_as_active(self) -> None:
         vac = _make_vacuum(state=_active_clean_state())
         vac.coordinator.clean_settings.fan = FanLevel.SUPER
         vac.coordinator.active_clean_setting.return_value = None
         vac.coordinator.client.set_fan_speed = AsyncMock()
-
         assert "Ultra Powerful" not in vac.fan_speed_list
-        vac.coordinator.client.set_fan_speed = AsyncMock(
-            return_value=CommandResponse(result_code=0)
-        )
-        await vac.async_set_fan_speed("Ultra Powerful")
-
-        vac.coordinator.client.set_fan_speed.assert_awaited_once_with(FanLevel.DEEP)
-        assert vac.coordinator.clean_settings.fan == FanLevel.SUPER
-
-    @pytest.mark.parametrize("alias", ["max", "Ultra", "Ultra Powerful"])
-    async def test_live_legacy_ultra_aliases_clamp_to_deep(self, alias: str) -> None:
-        vac = _make_vacuum(state=_active_clean_state())
-        vac.coordinator.client.set_fan_speed = AsyncMock(
-            return_value=CommandResponse(result_code=0)
-        )
-
-        await vac.async_set_fan_speed(alias)
-
-        vac.coordinator.client.set_fan_speed.assert_awaited_once_with(FanLevel.DEEP)
+        with pytest.raises(HomeAssistantError, match="not supported live"):
+            await vac.async_set_fan_speed("Ultra Powerful")
+        vac.coordinator.client.set_fan_speed.assert_not_awaited()
         assert vac.coordinator.clean_settings.fan == FanLevel.SUPER
 
     async def test_live_fan_change_applies_while_paused(self) -> None:
