@@ -364,6 +364,7 @@ def install() -> None:
         FAN_SPEED = 32
         LOCATE = 64
         CLEAN_AREA = 128
+        SEND_COMMAND = 256
 
         def __or__(self, other: object) -> int:
             return 0
