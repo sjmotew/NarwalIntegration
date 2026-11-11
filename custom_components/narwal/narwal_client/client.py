@@ -1596,6 +1596,59 @@ class NarwalClient:
     # runtime-validated on Flow firmware v01.07.23.00.
     _CUSTOM_CLEAN_TASK_TYPE = 6
 
+    @classmethod
+    def room_settings_from_current_task(
+        cls, response: CommandResponse
+    ) -> tuple[int, dict[int, RoomCleanSettings]] | None:
+        """Decode a complete room task without substituting pending defaults."""
+        if not response.accepted:
+            return None
+        task = response.data.get("2")
+        if not isinstance(task, dict) or type(task.get("1")) is not int:
+            return None
+        items = task.get("2")
+        if isinstance(items, dict):
+            items = [items]
+        if not isinstance(items, list) or not items:
+            return None
+        modes = {value[0]: (mode, value[1]) for mode, value in cls._WORK_MODE_PARAM.items()}
+        settings = {}
+        try:
+            for item in items:
+                zone, param = item["1"], item["2"]
+                room_id = zone["2"]
+                if (
+                    zone.get("1") != 1
+                    or type(room_id) is not int
+                    or room_id <= 0
+                    or room_id in settings
+                ):
+                    return None
+                mode, pass_tags = modes[param["1"]]
+                required = (
+                    ("2",)
+                    if mode == WorkMode.VACUUM
+                    else ("3", "4") if mode == WorkMode.MOP else ("2", "3", "4")
+                )
+                if any(type(param.get(tag)) is not int for tag in required):
+                    return None
+                counts = [param[tag] for tag in pass_tags]
+                if any(type(count) is not int or not 1 <= count <= 3 for count in counts):
+                    return None
+                if len(set(counts)) != 1:
+                    return None
+                settings[room_id] = RoomCleanSettings(
+                    work_mode=mode,
+                    fan=FanLevel(param.get("2", 0)),
+                    mop_strength=MopStrengthLevel(param.get("3", 0)),
+                    water=MopHumidity(param.get("4", 0)),
+                    passes=counts[0],
+                    route=CleaningRoute(param["8"]) if "8" in param else None,
+                )
+        except (KeyError, TypeError, ValueError):
+            return None
+        return task["1"], settings
+
     def _clean_param_for_settings(self, settings: RoomCleanSettings) -> dict[str, int]:
         """Return a CleanParam protobuf dict for one room."""
         param_mode, pass_tags = self._WORK_MODE_PARAM[settings.work_mode]
