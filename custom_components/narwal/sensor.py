@@ -37,7 +37,8 @@ class NarwalSensorEntityDescription(SensorEntityDescription):
 def _has_active_cleaning_metrics(state: NarwalState) -> bool:
     """Return true while live clean-progress metrics describe the current task."""
     return (
-        state.is_cleaning
+        state.has_native_clean_task
+        or state.is_cleaning
         or state.has_recent_active_working_status
         or state.has_paused_clean_task_context
     )

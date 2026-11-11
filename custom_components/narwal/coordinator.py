@@ -42,6 +42,7 @@ from .narwal_client import (
     WorkMode,
 )
 from .narwal_client.const import ACTIVE_CLEANING_STATUSES, WorkingStatus
+from .narwal_client.lifecycle import CleanPhase, is_terminal_status
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -173,15 +174,15 @@ def is_confirmed_terminal_clean_state(state: NarwalState) -> bool:
     """Return True when reconciled telemetry confirms the clean has ended."""
     if has_blocking_error(state):
         return not (
-            state.working_status in ACTIVE_CLEANING_STATUSES
+            (state.has_native_clean_task or state.working_status in ACTIVE_CLEANING_STATUSES)
             and state.raw_base_status.get("11") == 1
             and state.raw_base_status.get("47") == 2
         )
     if state.working_status == WorkingStatus.TASK_COMPLETED:
-        # A reported off-dock TASK_COMPLETED between room phases has not yet
-        # been corroborated by a capture. Treat it as a possible handoff until
-        # dock telemetry confirms a session boundary.
+        # Off-dock task completion may be a handoff; require dock evidence.
         return state.has_dock_presence_signal
+    if _state_attr_is_true(state, "has_native_clean_task"):
+        return False
     if _state_attr_is_true(state, "has_paused_clean_task_context"):
         return False
     return (
@@ -196,7 +197,8 @@ def is_active_clean_session(state: NarwalState | None) -> bool:
     if state is None:
         return False
     return (
-        state.working_status in ACTIVE_CLEANING_STATUSES
+        _state_attr_is_true(state, "has_native_clean_task")
+        or state.working_status in ACTIVE_CLEANING_STATUSES
         or _state_attr_is_true(state, "has_assumed_robot_clean")
         or _state_attr_is_true(state, "has_recent_active_working_status")
         or _state_attr_is_true(state, "has_paused_clean_task_context")
@@ -208,7 +210,8 @@ def is_clean_session_context(state: NarwalState | None) -> bool:
     if state is None:
         return False
     return (
-        state.working_status in ACTIVE_CLEANING_STATUSES
+        _state_attr_is_true(state, "has_native_clean_task")
+        or state.working_status in ACTIVE_CLEANING_STATUSES
         or state.working_status == WorkingStatus.REMAPPING
         or (
             state.working_status == WorkingStatus.TASK_COMPLETED
@@ -224,6 +227,11 @@ def is_clean_session_context(state: NarwalState | None) -> bool:
 def is_live_clean_setting_available(state: NarwalState | None) -> bool:
     """Return True when live clean settings can be changed during a task."""
     if has_blocking_error(state):
+        return False
+    if (
+        _state_attr_is_true(state, "has_native_clean_task")
+        and (state.clean_task_phase != CleanPhase.CLEANING or state.is_docked)
+    ):
         return False
     if state.working_status in {WorkingStatus.REMAPPING, WorkingStatus.TASK_COMPLETED}:
         return False
@@ -249,7 +257,8 @@ def is_narwal_task_busy(state: NarwalState | None) -> bool:
     if state is None:
         return False
     return (
-        state.working_status in ACTIVE_CLEANING_STATUSES
+        _state_attr_is_true(state, "has_native_clean_task")
+        or state.working_status in ACTIVE_CLEANING_STATUSES
         or state.working_status == WorkingStatus.REMAPPING
         or (
             state.working_status == WorkingStatus.TASK_COMPLETED
@@ -361,9 +370,24 @@ def can_resume_cleaning(state: NarwalState | None) -> bool:
     """Return True when a paused robot clean can be resumed."""
     if has_blocking_error(state):
         return False
+    if (
+        _state_attr_is_true(state, "has_native_clean_task")
+        and (
+            state.is_docked
+            or state.clean_task_phase not in {
+                CleanPhase.CLEANING,
+                CleanPhase.RETURNING,
+                CleanPhase.RETURNING_TO_WASH,
+                CleanPhase.RETURNING_TO_CHARGE,
+                CleanPhase.DOCKING,
+            }
+        )
+    ):
+        return False
     return (
         (
-            state.working_status in (*ACTIVE_CLEANING_STATUSES, WorkingStatus.REMAPPING)
+            _state_attr_is_true(state, "has_native_clean_task")
+            or state.working_status in (*ACTIVE_CLEANING_STATUSES, WorkingStatus.REMAPPING)
             or _state_attr_is_true(state, "has_paused_clean_task_context")
         )
         and _state_attr_is_true(state, "is_paused")
@@ -381,6 +405,11 @@ def can_stop_cleaning(state: NarwalState | None) -> bool:
 def can_return_home(state: NarwalState | None) -> bool:
     """Return True when the robot can be recalled to the dock."""
     if has_blocking_error(state):
+        return False
+    if (
+        _state_attr_is_true(state, "has_native_clean_task")
+        and state.clean_task_phase == CleanPhase.UNKNOWN
+    ):
         return False
     return (
         not state.is_docked
@@ -567,12 +596,16 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
         self._active_context_revision = getattr(self, "_active_context_revision", 0) + 1
         self.active_clean_setting_overrides = {}
         self._trajectory_job_id = None
+        self._native_clean_job_id = None
         self._retained_trajectory_job_id = None
         self._pending_job_trajectory_cache = None
         self._retained_trajectory_unverified = False
         self._unverified_live_windows = deque(maxlen=2048)
         self._task_recovery_attempts = 0
         self._task_recovery_next_at = 0.0
+        self._terminal_recovery_key = None
+        self._terminal_recovery_attempts = 0
+        self._terminal_recovery_next_at = 0.0
         wake = getattr(self, "_task_recovery_wake", None)
         if wake is not None:
             wake.set()
@@ -586,18 +619,117 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
             for room_id, settings in room_settings.items()
         }
 
+    def _needs_terminal_task_recovery(self, state: NarwalState) -> bool:
+        """Recover an expired native phase through rate-limited local readback."""
+        return state.has_broadcast_clean_task and state.clean_task_phase == CleanPhase.UNKNOWN
+
     def _needs_active_task_recovery(self, state: NarwalState) -> bool:
-        return is_clean_session_context(state) and (
-            (
-                state.map_data is not None
-                and bool(state.map_data.rooms)
-                and not self.active_room_clean_settings
-            )
-            or (
-                callable(getattr(self.client, "get_clean_timeline", None))
-                and getattr(self, "_trajectory_job_id", None) is None
+        return self._needs_terminal_task_recovery(state) or self._needs_profile_task_recovery(state)
+
+    def _needs_profile_task_recovery(self, state: NarwalState) -> bool:
+        return (
+            state.map_data is not None
+            and is_clean_session_context(state)
+            and getattr(self, "_task_recovery_attempts", 0) < 3
+            and (
+                (
+                    state.map_data is not None
+                    and bool(state.map_data.rooms)
+                    and not self.active_room_clean_settings
+                )
+                or (
+                    callable(getattr(self.client, "get_clean_timeline", None))
+                    and getattr(self, "_trajectory_job_id", None) is None
+                )
             )
         )
+
+    async def _async_reconcile_ended_clean(self) -> None:
+        """Release a stale hold only with same-job ending and dock evidence."""
+        state = self.client.state
+        if not self._needs_terminal_task_recovery(state):
+            return
+        now = time.monotonic()
+        if now < getattr(self, "_terminal_recovery_next_at", 0):
+            return
+        frame = self._trajectory_map_frame(state)
+        native_id = getattr(self, "_native_clean_job_id", None)
+        trajectory_id = getattr(self, "_trajectory_job_id", None)
+        job_id = native_id or (
+            trajectory_id
+            if frame is None or frame == getattr(self, "_trajectory_job_frame", None)
+            else None
+        )
+        key = (job_id,)
+        broadcast_time = state.native_clean_broadcast_time
+        if key != getattr(self, "_terminal_recovery_key", None):
+            self._terminal_recovery_key = key
+            self._terminal_recovery_attempts = 0
+        self._terminal_recovery_attempts = min(self._terminal_recovery_attempts + 1, 3)
+        self._terminal_recovery_next_at = now + (
+            60 if self._terminal_recovery_attempts < 3 else 900
+        )
+        revision = getattr(self, "_active_context_revision", 0)
+        frame = self._trajectory_map_frame(state)
+        generation = self.client.status_broadcast_generation
+        task = state.native_clean_task
+
+        def unchanged() -> bool:
+            current = self.client.state
+            return (
+                current is state
+                and current.native_clean_task is task
+                and self.client.status_broadcast_generation == generation
+                and current.native_clean_broadcast_time == broadcast_time
+                and getattr(self, "_active_context_revision", 0) == revision
+                and getattr(self, "_trajectory_job_id", None) == trajectory_id
+                and getattr(self, "_native_clean_job_id", None) == native_id
+                and self._trajectory_map_frame(current) == frame
+                and current.has_broadcast_clean_task
+                and current.clean_task_phase == CleanPhase.UNKNOWN
+            )
+
+        try:
+            timeline = await self.client.get_clean_timeline()
+        except Exception:
+            timeline = None
+            _LOGGER.debug("Could not read held-task timeline", exc_info=True)
+        if not unchanged():
+            return
+        if timeline is None or job_id is None or (
+            NarwalClient.ended_job_id_from_timeline(timeline) != job_id
+        ):
+            if job_id is None and timeline is not None:
+                # Only an unfinished timeline can establish previously unknown ownership.
+                # An old ended timeline must not release an unrelated held task.
+                self._native_clean_job_id = NarwalClient.active_job_id_from_timeline(timeline)
+            try:
+                await self.client.subscribe_to_topics()
+            except Exception:
+                _LOGGER.debug("Could not renew held-task broadcasts", exc_info=True)
+            return
+        try:
+            response = await self.client.get_status(full_update=False)
+        except Exception:
+            _LOGGER.debug("Could not reconcile held clean", exc_info=True)
+            return
+        status = response.data.get("2") if isinstance(response.data, dict) else None
+        if (
+            not response.accepted
+            or not isinstance(status, dict)
+            or not is_terminal_status(status)
+            or not unchanged()
+        ):
+            return
+        state.native_clean_task = None
+        state.native_clean_from_broadcast = False
+        state.native_clean_broadcast_time = 0.0
+        state.update_from_base_status(status)
+        _LOGGER.info("Recovered ended native clean %s after a missed terminal update", key[0])
+        self._sync_active_clean_context(state)
+        self._transition_clean_state(state)
+        self._schedule_map_display_cache_save(state, immediate=True)
+        self.async_set_updated_data(state)
 
     async def _async_recover_trajectory_job_id(self) -> None:
         state = self.client.state
@@ -692,8 +824,7 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
         task = getattr(self, "_task_recovery_task", None)
         if (
             not self._needs_active_task_recovery(state)
-            or state.map_data is None
-            or getattr(self, "_task_recovery_attempts", 0) >= 3
+            or (state.map_data is None and not self._needs_terminal_task_recovery(state))
             or (task is not None and not task.done())
         ):
             return
@@ -703,17 +834,24 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
 
     async def _recover_active_task(self) -> None:
         """Retry independently of polling, which broadcasts can postpone."""
-        while (
-            self._needs_active_task_recovery(self.client.state)
-            and getattr(self, "_task_recovery_attempts", 0) < 3
-        ):
-            if self.client.state.map_data is None:
-                return
-            delay = getattr(self, "_task_recovery_next_at", 0) - time.monotonic()
+        while self._needs_active_task_recovery(self.client.state):
+            terminal = self._needs_terminal_task_recovery(self.client.state)
+            profile = self._needs_profile_task_recovery(self.client.state)
+            if profile and (
+                not terminal
+                or getattr(self, "_task_recovery_next_at", 0)
+                <= getattr(self, "_terminal_recovery_next_at", 0)
+            ):
+                terminal = False
+            deadline = "_terminal_recovery_next_at" if terminal else "_task_recovery_next_at"
+            delay = getattr(self, deadline, 0) - time.monotonic()
             if delay > 0:
                 await self._wait_for_task_recovery_retry(delay)
                 continue
-            await self._async_recover_active_clean_context()
+            if terminal:
+                await self._async_reconcile_ended_clean()
+            else:
+                await self._async_recover_active_clean_context()
 
     async def _wait_for_task_recovery_retry(self, delay: float) -> None:
         """Wait for the retry deadline or a changed clean session."""
@@ -839,10 +977,14 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
         previous = getattr(self, "_task_context_was_active", None)
         if previous is not None and active != previous:
             self._trajectory_job_id = None
+            self._native_clean_job_id = None
             self._active_context_revision = getattr(self, "_active_context_revision", 0) + 1
             if active:
                 self._task_recovery_attempts = 0
                 self._task_recovery_next_at = 0.0
+                self._terminal_recovery_key = None
+                self._terminal_recovery_attempts = 0
+                self._terminal_recovery_next_at = 0.0
             wake = getattr(self, "_task_recovery_wake", None)
             if wake is not None:
                 wake.set()
@@ -2716,7 +2858,8 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
         ):
             return False
         return (
-            state.working_status in ACTIVE_CLEANING_STATUSES
+            _state_attr_is_true(state, "has_native_clean_task")
+            or state.working_status in ACTIVE_CLEANING_STATUSES
             or (
                 state.working_status == WorkingStatus.TASK_COMPLETED
                 and not state.has_dock_presence_signal
@@ -3327,7 +3470,8 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
         # subscription — no wake burst (wake bursts during cleaning cause
         # pause bouncing).
         is_cleaning = (
-            state.is_cleaning
+            state.has_native_clean_task
+            or state.is_cleaning
             or state.has_recent_active_working_status
             or (
                 not state.is_docked

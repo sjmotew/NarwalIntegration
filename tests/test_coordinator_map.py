@@ -392,7 +392,7 @@ class TestActiveCleanRenewal:
         coordinator = self._coordinator()
         state = _flow_state(payload)
         assert state.working_status == WorkingStatus.CLEANING_ALT
-        assert state.is_docked is False
+        assert state.is_docked is (payload.get("11") == 2)
 
         self._run(coordinator, state, sub_age=21.0, map_age=1.0)
 

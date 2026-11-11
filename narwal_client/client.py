@@ -72,13 +72,14 @@ from .const import (
     WorkMode,
     fan_level_for_live_command,
 )
+from .lifecycle import clean_task_status, is_terminal_status
 from .models import (
+    DOCK_DRYING_TASKS,
     DOCK_TASK_DRY_DOCK_BAG,
     DOCK_TASK_DRY_DUST_BIN,
     DOCK_TASK_DRY_MOP,
     DOCK_TASK_EMPTY_DUSTBIN,
     DOCK_TASK_KEYS,
-    DOCK_DRYING_TASKS,
     DOCK_TASK_WASH_MOP,
     CommandResponse,
     DeviceInfo,
@@ -126,7 +127,8 @@ def _accepted_response(response: CommandResponse) -> bool:
 def _clean_session_context(state: NarwalState) -> bool:
     """Return true while robot-side work or its accepted-command guard is active."""
     return (
-        state.is_cleaning
+        state.has_native_clean_task
+        or state.is_cleaning
         or state.has_assumed_robot_clean
         or state.working_status in ACTIVE_CLEANING_STATUSES
         or (
@@ -142,7 +144,8 @@ def _clean_session_context(state: NarwalState) -> bool:
 def _robot_work_blocks_generic_dock_stop(state: NarwalState) -> bool:
     """Return true when generic force-end could target robot work, not dock work."""
     return (
-        state.is_cleaning
+        state.has_native_clean_task
+        or state.is_cleaning
         or state.has_assumed_robot_clean
         or state.working_status in ACTIVE_CLEANING_STATUSES
         or state.has_recent_active_working_status
@@ -367,6 +370,7 @@ class NarwalClient:
         self._should_reconnect = True
         self._listener_active = False  # True when start_listening() is running recv loop
         self._robot_awake = False  # True after a broadcast or addressed response
+        self.status_broadcast_generation = 0
         self._last_broadcast_time: float = 0.0  # monotonic time of last broadcast
         self._last_response_time: float = 0.0  # monotonic time of last addressed response
         self._last_display_map_time: float = 0.0  # monotonic time of last display_map
@@ -437,13 +441,17 @@ class NarwalClient:
 
     def _update_from_working_status_broadcast(self, decoded: dict[str, Any]) -> None:
         """Apply live task metrics from the working_status broadcast."""
+        self.status_broadcast_generation += 1
         self.state.update_from_working_status(decoded)
 
     def _update_from_base_status_broadcast(self, decoded: dict[str, Any]) -> None:
         """Apply a base-status broadcast without clobbering fresh task metrics."""
+        self.status_broadcast_generation += 1
         status = _base_status_working_status(decoded)
         if (
             self.state.has_recent_active_working_status
+            and clean_task_status(decoded) is None
+            and not (self.state.has_native_clean_task and is_terminal_status(decoded))
             and status in _STALE_DOCK_BASE_STATUSES
         ):
             terminal_dock_status = status in {
@@ -468,7 +476,7 @@ class NarwalClient:
             )
             return
 
-        self.state.update_from_base_status(decoded)
+        self.state.update_from_base_status(decoded, from_broadcast=True)
 
     def _update_from_display_map_broadcast(self, decoded: dict[str, Any]) -> None:
         """Apply a display-map broadcast and mark the trajectory as fresh."""
@@ -2273,7 +2281,7 @@ class NarwalClient:
                 status_data.get("2") if isinstance(status_data, dict) else None,
                 status_data,
             )
-            if full_update:
+            if full_update and not self.state.has_broadcast_clean_task:
                 self.state.update_from_base_status(status_data)
             else:
                 self.state.update_battery_from_base_status(status_data)
@@ -2324,6 +2332,31 @@ class NarwalClient:
                 start = str(timestamp)
             previous = timestamp
         return start
+
+    @staticmethod
+    def ended_job_id_from_timeline(response: CommandResponse) -> str | None:
+        """Identify an ordered native timeline ending in the terminal event."""
+        if not response.accepted or not isinstance(response.data, dict):
+            return None
+        payload = response.data.get("2")
+        events = payload.get("1") if isinstance(payload, dict) else None
+        if not isinstance(events, list) or len(events) < 2:
+            return None
+        end = events[-1]
+        if not isinstance(end, dict) or type(end.get("2")) is not int or end["2"] != 6:
+            return None
+        timestamp = end.get("1")
+        previous = events[-2]
+        if (
+            type(timestamp) is not int
+            or not isinstance(previous, dict)
+            or type(previous.get("1")) is not int
+            or not previous["1"] < timestamp < 2**63
+        ):
+            return None
+        return NarwalClient.active_job_id_from_timeline(
+            CommandResponse(result_code=response.result_code, data={"2": {"1": events[:-1]}})
+        )
 
     async def get_current_task(self) -> CommandResponse:
         """Query the current clean task."""
