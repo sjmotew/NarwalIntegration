@@ -136,9 +136,7 @@ update. Updating local defaults preserves any existing telemetry failure; it doe
 not make unavailable telemetry fresh.
 
 Atomicity is in memory. Persistence is scheduled through the existing stores and
-entity restoration; this is not a crash-atomic disk transaction. This service is
-proposed in [PR #140](https://github.com/sjmotew/NarwalIntegration/pull/140) for a
-release after v1.0.12; it is not part of the current release.
+entity restoration; this is not a crash-atomic disk transaction.
 
 ## Example: scheduled multi-room clean with settings
 
