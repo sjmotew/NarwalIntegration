@@ -223,7 +223,7 @@ def fan_speed_list_for(data: dict) -> list[str]:
 
 
 # Confirmed by native level-five readback after a live SetFanLevel command.
-LIVE_LEVEL_5_FAN_PRODUCT_KEYS: frozenset[str] = frozenset({"QxMSPG6VSO"})
+LIVE_LEVEL_5_FAN_PRODUCT_KEYS: frozenset[str] = frozenset({"QxMSPG6VSO", "iSuVlI1If2"})
 
 
 def live_fan_speed_list_for(

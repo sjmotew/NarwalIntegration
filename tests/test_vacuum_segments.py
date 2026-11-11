@@ -1197,10 +1197,11 @@ class TestVacuumFanSpeed:
             await vac.async_set_fan_speed("Ultra Powerful")
         vac.coordinator.client.set_fan_speed.assert_not_awaited()
 
+    @pytest.mark.parametrize("product_key", ["QxMSPG6VSO", "iSuVlI1If2"])
     @pytest.mark.parametrize("alias", ["max", "Ultra", "Ultra Powerful"])
-    async def test_flow2_live_ultra_keeps_requested_value(self, alias: str) -> None:
+    async def test_flow2_live_ultra_keeps_requested_value(self, alias: str, product_key: str) -> None:
         vac = _make_vacuum(state=_active_clean_state())
-        vac.coordinator.config_entry.data["product_key"] = "QxMSPG6VSO"
+        vac.coordinator.config_entry.data["product_key"] = product_key
         vac.coordinator.client.set_fan_speed = AsyncMock(
             return_value=CommandResponse(result_code=1)
         )
@@ -1218,9 +1219,10 @@ class TestVacuumFanSpeed:
 
         vac.coordinator.client.set_fan_speed.assert_not_awaited()
 
-    async def test_flow2_can_restore_ultra_before_new_fan_telemetry(self) -> None:
+    @pytest.mark.parametrize("product_key", ["QxMSPG6VSO", "iSuVlI1If2"])
+    async def test_flow2_can_restore_ultra_before_new_fan_telemetry(self, product_key: str) -> None:
         vac = _make_vacuum(state=_active_clean_state())
-        vac.coordinator.config_entry.data["product_key"] = "QxMSPG6VSO"
+        vac.coordinator.config_entry.data["product_key"] = product_key
         vac.coordinator.active_clean_setting.return_value = FanLevel.SUPER
         vac.coordinator.client.set_fan_speed = AsyncMock(return_value=CommandResponse(result_code=1))
         await vac.async_set_fan_speed("Standard")

@@ -1080,8 +1080,9 @@ class TestNarwalPassesNumber:
 
 
 @pytest.mark.asyncio
-async def test_flow2_legacy_live_ultra_sends_five() -> None:
-    coord = _coordinator(product_key="QxMSPG6VSO", state=_state(WorkingStatus.CLEANING))
+@pytest.mark.parametrize("product_key", ["QxMSPG6VSO", "iSuVlI1If2"])
+async def test_flow2_legacy_live_ultra_sends_five(product_key: str) -> None:
+    coord = _coordinator(product_key=product_key, state=_state(WorkingStatus.CLEANING))
     coord.active_clean_work_mode = WorkMode.VACUUM
     coord.client.set_fan_speed = AsyncMock(return_value=CommandResponse(result_code=1))
     select = LegacyNarwalSettingSelect(coord, _LEGACY_DESCS["suction"])
@@ -1103,8 +1104,9 @@ async def test_unverified_model_retained_ultra_is_inert(option: str) -> None:
 
 
 @pytest.mark.asyncio
-async def test_flow2_legacy_can_restore_ultra_before_new_fan_telemetry() -> None:
-    coord = _coordinator(product_key="QxMSPG6VSO", state=_state(WorkingStatus.CLEANING))
+@pytest.mark.parametrize("product_key", ["QxMSPG6VSO", "iSuVlI1If2"])
+async def test_flow2_legacy_can_restore_ultra_before_new_fan_telemetry(product_key: str) -> None:
+    coord = _coordinator(product_key=product_key, state=_state(WorkingStatus.CLEANING))
     coord.active_clean_work_mode = WorkMode.VACUUM
     coord.active_clean_setting.return_value = FanLevel.SUPER
     coord.client.set_fan_speed = AsyncMock(return_value=CommandResponse(result_code=1))
