@@ -5153,7 +5153,11 @@ class TestCoordinatorResilience:
         assert result.map_display_data is None
         assert coordinator._map_display_cache_signature == ()
         assert coordinator._prev_working_status == WorkingStatus.CLEANING
-        coordinator.config_entry.async_create_background_task.assert_called_once()
+        clear_calls = [
+            item for item in coordinator.config_entry.async_create_background_task.call_args_list
+            if item.args[-1] == "narwal_map_display_cache_clear"
+        ]
+        assert len(clear_calls) == 1
 
     async def test_push_update_resets_failure_counter(self) -> None:
         """_on_state_update resets _consecutive_failures to 0."""

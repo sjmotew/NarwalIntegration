@@ -6,9 +6,11 @@ import asyncio
 import base64
 import contextlib
 import logging
+import math
 import time
 import zlib
 from bisect import bisect_left
+from collections import deque
 from collections.abc import Mapping
 from dataclasses import dataclass, fields, replace
 from datetime import timedelta
@@ -103,6 +105,8 @@ class _MapDisplayCacheSnapshot:
     map_created_at: int
     active_clean: bool
     display: MapDisplayData
+    job_id: str | None = None
+    map_frame: tuple[object, ...] | None = None
 
     @property
     def trajectory_signature(self) -> tuple[int, int, int] | tuple[()]:
@@ -562,6 +566,16 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
         """Record effective room profiles for the accepted robot task."""
         self._active_context_revision = getattr(self, "_active_context_revision", 0) + 1
         self.active_clean_setting_overrides = {}
+        self._trajectory_job_id = None
+        self._retained_trajectory_job_id = None
+        self._pending_job_trajectory_cache = None
+        self._retained_trajectory_unverified = False
+        self._unverified_live_windows = deque(maxlen=2048)
+        self._task_recovery_attempts = 0
+        self._task_recovery_next_at = 0.0
+        wake = getattr(self, "_task_recovery_wake", None)
+        if wake is not None:
+            wake.set()
         self._clean_session_active = True
         self._clean_session_terminal = False
         self.active_clean_work_mode = self.shared_room_clean_work_mode(
@@ -572,14 +586,113 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
             for room_id, settings in room_settings.items()
         }
 
+    def _needs_active_task_recovery(self, state: NarwalState) -> bool:
+        return is_clean_session_context(state) and (
+            (
+                state.map_data is not None
+                and bool(state.map_data.rooms)
+                and not self.active_room_clean_settings
+            )
+            or (
+                callable(getattr(self.client, "get_clean_timeline", None))
+                and getattr(self, "_trajectory_job_id", None) is None
+            )
+        )
+
+    async def _async_recover_trajectory_job_id(self) -> None:
+        state = self.client.state
+        if (
+            not is_clean_session_context(state)
+            or not callable(getattr(self.client, "get_clean_timeline", None))
+            or getattr(self, "_trajectory_job_id", None) is not None
+        ):
+            return
+        revision = getattr(self, "_active_context_revision", 0)
+        geometry = self._trajectory_map_frame(state)
+        if geometry is None:
+            return
+        try:
+            response = await self.client.get_clean_timeline()
+            job_id = NarwalClient.active_job_id_from_timeline(response)
+        except Exception:
+            _LOGGER.debug("Could not read current clean timeline", exc_info=True)
+            return
+        if (
+            job_id is None
+            or revision != getattr(self, "_active_context_revision", 0)
+            or not is_clean_session_context(self.client.state)
+            or geometry != self._trajectory_map_frame(self.client.state)
+        ):
+            return
+        self._trajectory_job_id = job_id
+        self._trajectory_job_frame = geometry
+        pending = getattr(self, "_pending_job_trajectory_cache", None)
+        self._pending_job_trajectory_cache = None
+        if isinstance(pending, Mapping) and pending.get("job_id") != job_id:
+            current_display = self.client.state.map_display_data
+            live_display = None
+            timestamp_free = False
+            for window in getattr(self, "_unverified_live_windows", ()):
+                if window.timestamp and window.timestamp < int(job_id) // 1_000_000:
+                    continue
+                timestamp_free = timestamp_free or not window.timestamp
+                live_display = (
+                    window if live_display is None
+                    else self._merge_native_trajectory_windows(live_display, window)
+                )
+            if live_display is None and current_display is not None:
+                live_display = replace(
+                    current_display,
+                    trajectory_x_values=b"",
+                    trajectory_y_values=b"",
+                    trajectory_signature=(),
+                    trajectory_breaks=(),
+                )
+            self.client.state.map_display_data = live_display
+            self._retained_map_display = live_display
+            self._map_display_cache_restored = False
+            self._map_display_cache_restored_from_active = False
+            self._retained_trajectory_unverified = timestamp_free
+            if timestamp_free:
+                self._retained_trajectory_job_id = None
+            self._map_display_cache_signature = ()
+        if (
+            isinstance(pending, Mapping)
+            and pending.get("job_id") == job_id
+            and self._cached_trajectory_map_frame(pending) == geometry
+        ):
+            prefix = self._map_display_from_cache(pending)
+            current_display = self.client.state.map_display_data
+            if prefix is not None:
+                if current_display is not None and current_display.timestamp >= prefix.timestamp:
+                    prefix = self._merge_native_trajectory_windows(prefix, current_display)
+                elif current_display is not None:
+                    prefix = self._copy_map_display_pose(prefix, current_display)
+                self.client.state.map_display_data = prefix
+                self._retained_map_display = prefix
+                self._retained_trajectory_job_id = job_id
+                self._retained_trajectory_unverified = False
+                self._map_display_cache_restored_from_active = False
+                self._map_display_cache_signature = ()
+        self._unverified_live_windows = deque(maxlen=2048)
+        # A restored route has its own ownership; never label it from a new RPC.
+        if (
+            not getattr(self, "_retained_trajectory_unverified", False)
+            and getattr(self, "_retained_trajectory_frame", None) in (None, geometry)
+        ):
+            self._retained_trajectory_frame = geometry
+            self._retained_trajectory_job_id = job_id
+            self._map_display_cache_signature = ()
+            self._map_display_cache_last_save = 0.0
+        self._schedule_map_display_cache_save(self.client.state, immediate=True)
+        self.async_set_updated_data(self.client.state)
+
     def _schedule_active_task_recovery(self, state: NarwalState) -> None:
         """Start one bounded readback worker once push tracking is active."""
         task = getattr(self, "_task_recovery_task", None)
         if (
-            not is_clean_session_context(state)
-            or self.active_room_clean_settings
+            not self._needs_active_task_recovery(state)
             or state.map_data is None
-            or not state.map_data.rooms
             or getattr(self, "_task_recovery_attempts", 0) >= 3
             or (task is not None and not task.done())
         ):
@@ -591,11 +704,10 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
     async def _recover_active_task(self) -> None:
         """Retry independently of polling, which broadcasts can postpone."""
         while (
-            is_clean_session_context(self.client.state)
-            and not self.active_room_clean_settings
+            self._needs_active_task_recovery(self.client.state)
             and getattr(self, "_task_recovery_attempts", 0) < 3
         ):
-            if self.client.state.map_data is None or not self.client.state.map_data.rooms:
+            if self.client.state.map_data is None:
                 return
             delay = getattr(self, "_task_recovery_next_at", 0) - time.monotonic()
             if delay > 0:
@@ -618,9 +730,9 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
     async def _async_recover_active_clean_context(self) -> None:
         """Recover actual task parameters after reconnect, with bounded local reads."""
         state = self.client.state
-        if not is_clean_session_context(state) or self.active_room_clean_settings:
+        if not self._needs_active_task_recovery(state):
             return
-        if state.map_data is None or not state.map_data.rooms:
+        if state.map_data is None:
             return
         now = time.monotonic()
         if getattr(self, "_task_recovery_attempts", 0) >= 3 or now < getattr(self, "_task_recovery_next_at", 0):
@@ -628,6 +740,28 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
         self._task_recovery_attempts = getattr(self, "_task_recovery_attempts", 0) + 1
         self._task_recovery_next_at = now + 60
         self._task_context_was_active = True
+        if not self.active_room_clean_settings:
+            await self._async_recover_active_clean_parameters()
+        await self._async_recover_trajectory_job_id()
+        if (
+            getattr(self, "_task_recovery_attempts", 0) >= 3
+            or is_confirmed_terminal_clean_state(self.client.state)
+        ):
+            self._release_pending_trajectory_identity()
+
+    def _release_pending_trajectory_identity(self) -> None:
+        """Fall back to overlap-only history when ownership cannot be checked."""
+        if getattr(self, "_pending_job_trajectory_cache", None) is None:
+            return
+        self._pending_job_trajectory_cache = None
+        self._unverified_live_windows = deque(maxlen=2048)
+        self._map_display_cache_signature = ()
+        self._schedule_map_display_cache_save(self.client.state, immediate=True)
+
+    async def _async_recover_active_clean_parameters(self) -> None:
+        state = self.client.state
+        if not is_clean_session_context(state) or state.map_data is None or not state.map_data.rooms:
+            return
         revision = getattr(self, "_active_context_revision", 0)
         map_id = state.map_data.map_id
         try:
@@ -704,6 +838,7 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
         active = is_clean_session_context(state)
         previous = getattr(self, "_task_context_was_active", None)
         if previous is not None and active != previous:
+            self._trajectory_job_id = None
             self._active_context_revision = getattr(self, "_active_context_revision", 0) + 1
             if active:
                 self._task_recovery_attempts = 0
@@ -726,6 +861,8 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
         ):
             return
         if not is_clean_session_context(state):
+            if is_confirmed_terminal_clean_state(state):
+                self._release_pending_trajectory_identity()
             if self.active_room_clean_settings or self.active_clean_work_mode is not None:
                 self._active_context_revision = getattr(self, "_active_context_revision", 0) + 1
             self.active_clean_work_mode = None
@@ -1383,6 +1520,8 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
             map_created_at=getattr(static_map, "created_at", 0) if static_map else 0,
             active_clean=active_clean,
             display=display,
+            job_id=getattr(self, "_retained_trajectory_job_id", None),
+            map_frame=getattr(self, "_retained_trajectory_frame", None),
         )
 
     @staticmethod
@@ -1422,6 +1561,41 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
         )
 
     @staticmethod
+    def _trajectory_map_frame(state: NarwalState) -> tuple[object, ...] | None:
+        static_map = state.map_data
+        if static_map is None:
+            return None
+        frame = (
+            static_map.map_id,
+            static_map.created_at,
+            static_map.width,
+            static_map.height,
+            static_map.resolution,
+            static_map.origin_x,
+            static_map.origin_y,
+        )
+        if any(type(value) not in (int, float) or not math.isfinite(value) for value in frame):
+            return None
+        return frame if min(frame[2:5]) > 0 else None
+
+    @staticmethod
+    def _cached_trajectory_map_frame(payload: Mapping[str, object]) -> tuple[object, ...] | None:
+        frame = payload.get("map_frame_v1")
+        if frame is None:
+            # The initial job-labelled cache used a bitmap checksum. Pixel
+            # updates do not move the coordinate frame of an ongoing clean.
+            legacy = payload.get("map_geometry")
+            if isinstance(legacy, list) and len(legacy) == 7 and legacy[0] == payload.get("map_id"):
+                frame = [legacy[0], payload.get("map_created_at"), *legacy[1:-1]]
+        if (
+            not isinstance(frame, list)
+            or len(frame) != 7
+            or any(type(v) not in (int, float) or not math.isfinite(v) for v in frame)
+        ):
+            return None
+        return tuple(frame)
+
+    @staticmethod
     def _map_display_cache_payload_from_snapshot(
         snapshot: _MapDisplayCacheSnapshot,
     ) -> dict[str, object]:
@@ -1431,6 +1605,8 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
             "map_id": snapshot.map_id,
             "map_created_at": snapshot.map_created_at,
             "active_clean": snapshot.active_clean,
+            "job_id": snapshot.job_id,
+            "map_frame_v1": list(snapshot.map_frame) if snapshot.map_frame else None,
             "robot_x": display.robot_x,
             "robot_y": display.robot_y,
             "robot_heading": display.robot_heading,
@@ -1544,7 +1720,22 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
                 self._pending_map_display_cache_snapshot = snapshot
             return True
         if payload.get("active_clean") is not True:
-            return False
+            cached = self._map_display_from_cache(payload)
+            if cached is None:
+                return False
+            required_overlap = min(
+                NATIVE_TRAJECTORY_RESTORE_MIN_OVERLAP_POINTS,
+                len(cached.trajectory_x_values) // 4,
+                len(cached.trajectory_y_values) // 4,
+            )
+            if required_overlap <= 0 or (
+                max(
+                    self._native_trajectory_overlap(cached, current),
+                    self._native_trajectory_compacted_tail_end(cached, current),
+                ) < required_overlap
+                and not self._native_trajectory_replaces_compacted(cached, current)
+            ):
+                return False
 
         state.map_display_data = None
         restored = self._restore_map_display_cache_payload(payload)
@@ -1597,12 +1788,45 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
             and cached_created_at != static_map.created_at
         ):
             return False
+        cached_frame = self._cached_trajectory_map_frame(payload)
+        if cached_frame is not None and cached_frame != self._trajectory_map_frame(self.client.state):
+            return False
         if self._has_current_map_display_trajectory():
             return False
         cached_active_clean = payload.get("active_clean") is True
         if is_active_clean_session(self.client.state) and not cached_active_clean:
             return False
 
+        cached_job = payload.get("job_id")
+        current_job = getattr(self, "_trajectory_job_id", None)
+        if isinstance(cached_job, str) and current_job is not None and cached_job != current_job:
+            return False
+        self._retained_trajectory_job_id = (
+            cached_job
+            if (
+                isinstance(cached_job, str)
+                and cached_job == getattr(self, "_trajectory_job_id", None)
+                and cached_frame is not None
+                and cached_frame == self._trajectory_map_frame(self.client.state)
+            )
+            else None
+        )
+        self._pending_job_trajectory_cache = (
+            dict(payload)
+            if (
+                self._retained_trajectory_job_id is None
+                and isinstance(cached_job, str)
+                and cached_job.isdecimal()
+                and payload.get("active_clean") is True
+                and not is_confirmed_terminal_clean_state(self.client.state)
+                and cached_frame is not None
+                and cached_frame == self._trajectory_map_frame(self.client.state)
+            )
+            else None
+        )
+        self._retained_trajectory_frame = self._cached_trajectory_map_frame(payload)
+        self._retained_trajectory_unverified = self._retained_trajectory_job_id is None
+        self._unverified_live_windows = deque(maxlen=2048)
         self.client.state.map_display_data = display
         self._retained_map_display = display
         self._retained_map_identity = self._static_map_identity(self.client.state)
@@ -1639,6 +1863,11 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
         self._pending_new_clean_terminal_generation = None
         self._cancel_pending_new_clean_map_display()
         if clear_memory:
+            self._pending_job_trajectory_cache = None
+            self._retained_trajectory_unverified = False
+            self._unverified_live_windows = deque(maxlen=2048)
+            self._trajectory_job_id = None
+            self._retained_trajectory_job_id = None
             self.client.state.map_display_data = None
             self._retained_map_display = None
             self._retained_map_identity = None
@@ -2082,7 +2311,21 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
         previous = getattr(self, "_retained_map_display", None)
         if previous is current:
             return
+        if (
+            getattr(self, "_pending_job_trajectory_cache", None) is not None
+            and current.has_trajectory
+        ):
+            self._unverified_live_windows.append(
+                self._merge_native_trajectory_windows(current, current)
+            )
+            while len(self._unverified_live_windows) > 1 and sum(
+                len(window.trajectory_x_values) + len(window.trajectory_y_values)
+                for window in self._unverified_live_windows
+            ) > NATIVE_TRAJECTORY_MAX_POINTS * 8:
+                self._unverified_live_windows.popleft()
         if previous is None:
+            self._retained_trajectory_job_id = getattr(self, "_trajectory_job_id", None)
+            self._retained_trajectory_frame = self._trajectory_map_frame(state)
             self._retained_map_display = current
             self._retained_map_identity = self._static_map_identity(state)
             self._retained_map_geometry_identity = self._static_map_geometry_identity(
@@ -2093,6 +2336,13 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
             self,
             "_map_display_cache_restored_from_active",
             False,
+        )
+        same_native_job = (
+            getattr(self, "_trajectory_job_id", None) is not None
+            and getattr(self, "_trajectory_job_id", None)
+            == getattr(self, "_retained_trajectory_job_id", None)
+            and getattr(self, "_trajectory_job_frame", None)
+            == self._trajectory_map_frame(state)
         )
         if restored_active and current.has_trajectory:
             if (
@@ -2114,7 +2364,7 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
                 NATIVE_TRAJECTORY_RESTORE_MIN_OVERLAP_POINTS,
                 previous_count,
             )
-            if current_count < required_overlap:
+            if current_count < required_overlap and not same_native_job:
                 pending = replace(
                     current,
                     trajectory_x_values=previous.trajectory_x_values,
@@ -2129,17 +2379,19 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
                 self._retained_map_display = pending
                 return
             if (
-                max(
+                not same_native_job
+                and max(
                     self._native_trajectory_overlap(previous, current),
                     self._native_trajectory_compacted_tail_end(previous, current),
                 )
                 < required_overlap
                 and not self._native_trajectory_replaces_compacted(previous, current)
             ):
-                # Narwal exposes no cleaning-session id. Refuse to join a cached
-                # route unless a short tail sequence appears in the first live
+                # Without verified job ownership, require a short tail sequence
+                # from the cached route in the first live
                 # rolling window; one point can coincide across different cleans.
                 self._retained_map_display = current
+                self._retained_trajectory_unverified = False
                 self._map_display_cache_signature = ()
                 self._map_display_cache_active_clean = None
                 self._map_display_cache_restored = False
@@ -2344,6 +2596,8 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
     async def _async_write_map_display_cache(self, payload: object) -> None:
         """Finish an in-flight storage write before honoring cancellation."""
         async with self._map_display_cache_write_mutex():
+            if getattr(self, "_pending_job_trajectory_cache", None) is not None:
+                raise RuntimeError("Saved trail ownership is still being checked")
             write_task = asyncio.create_task(
                 self._map_display_cache_store.async_save(payload)
             )
@@ -2765,6 +3019,8 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
         self, state: NarwalState
     ) -> _MapDisplayCacheSnapshot | None:
         """Snapshot validated history instead of an unconfirmed route window."""
+        if getattr(self, "_pending_job_trajectory_cache", None) is not None:
+            return None
         if not self._map_display_awaits_new_clean_status(state):
             return self._map_display_cache_snapshot(state)
         current = state.map_display_data

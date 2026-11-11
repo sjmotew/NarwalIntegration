@@ -2287,6 +2287,44 @@ class NarwalClient:
                 )
         return resp
 
+    async def get_clean_timeline(self) -> CommandResponse:
+        """Read the current or most recently completed task timeline."""
+        return await self.send_command("info/get_clean_time_line", timeout=8.0)
+
+    @staticmethod
+    def active_job_id_from_timeline(response: CommandResponse) -> str | None:
+        """Identify one unfinished native job without losing timestamp precision."""
+        if not response.accepted or not isinstance(response.data, dict):
+            return None
+        payload = response.data.get("2")
+        if not isinstance(payload, dict):
+            return None
+        events = payload.get("1")
+        if isinstance(events, dict):
+            events = [events]
+        if not isinstance(events, list) or not events:
+            return None
+        previous = 0
+        start = None
+        for index, event in enumerate(events):
+            if not isinstance(event, dict):
+                return None
+            timestamp, kind = event.get("1"), event.get("2")
+            if (
+                type(timestamp) is not int
+                or not previous < timestamp < 2**63
+                or type(kind) is not int
+                or kind <= 0
+                or kind == 6
+            ):
+                return None
+            if kind == 1:
+                if index != 0:
+                    return None
+                start = str(timestamp)
+            previous = timestamp
+        return start
+
     async def get_current_task(self) -> CommandResponse:
         """Query the current clean task."""
         return await self.send_command(TOPIC_CMD_GET_CURRENT_TASK)
