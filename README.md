@@ -26,7 +26,7 @@ Another model? Run `nmap -p 9002 <vacuum-ip>`; if the port is open, [open an iss
 ## Features
 
 - **Vacuum entity**: start, stop, pause, resume, return to dock, locate, fan speed; room cleaning through `vacuum.clean_area`
-- **Clean settings**: work mode, suction, water level, mop strength, passes, route; per-room profiles and a `narwal.clean_rooms` action
+- **Clean settings**: work mode, suction, water level, mop strength, passes, route; per-room profiles, a `narwal.clean_rooms` action, and `narwal.set_pending_profiles` to set every next-clean profile at once
 - **Live map camera** with room labels, furniture, dock and trail; position, dock and trail attributes for map cards
 - **Sensors and alerts**: battery, cleaning time and area, current room, task progress, tanks, dust bag, consumables, errors
 - **Dock controls**: empty dustbin, wash mop, dry mop, dry dust bin, dry dock bag; ambient light on docks that have one

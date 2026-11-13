@@ -22,6 +22,14 @@ from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import service
 
+from .clean_profiles import (
+    MOP_STRENGTH_OPTIONS,
+    ROUTE_OPTIONS,
+    SUCTION_OPTIONS,
+    WATER_OPTIONS,
+    WORK_MODE_OPTIONS,
+    suction_for_model,
+)
 from .const import (
     CONF_DEVICE_ID,
     CONF_MODEL,
@@ -29,19 +37,18 @@ from .const import (
     DOMAIN,
     PLATFORMS,
     SERVICE_CLEAN_ROOMS,
+    SERVICE_SET_PENDING_PROFILES,
     configured_model_name,
-    fan_speed_map_for,
 )
-from .coordinator import NarwalCoordinator, can_prepare_clean_start
+from .coordinator import (
+    NarwalCoordinator,
+    can_prepare_clean_start,
+)
 from .narwal_client import (
-    CleaningRoute,
     CommandResult,
     FanLevel,
-    MopHumidity,
-    MopStrengthLevel,
     NarwalConnectionError,
     RoomCleanSettings,
-    WorkMode,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -69,38 +76,6 @@ FIELD_MOP_STRENGTH = "mop_strength"
 FIELD_PASSES = "passes"
 FIELD_ROUTE = "route"
 
-WORK_MODE_OPTIONS: dict[str, WorkMode] = {
-    "vacuum": WorkMode.VACUUM,
-    "mop": WorkMode.MOP,
-    "vacuum_then_mop": WorkMode.VACUUM_THEN_MOP,
-    "vacuum_and_mop": WorkMode.VACUUM_AND_MOP,
-}
-SUCTION_OPTIONS = (
-    "ai",
-    "quiet",
-    "standard",
-    "normal",
-    "strong",
-    "super_powerful",
-    "ultra_powerful",
-    "super",
-    "ultra",
-    "max",
-)
-WATER_OPTIONS: dict[str, MopHumidity] = {
-    "dry": MopHumidity.DRY,
-    "normal": MopHumidity.NORMAL,
-    "wet": MopHumidity.WET,
-}
-MOP_STRENGTH_OPTIONS: dict[str, MopStrengthLevel] = {
-    "normal": MopStrengthLevel.NORMAL,
-    "high": MopStrengthLevel.HIGH,
-}
-ROUTE_OPTIONS: dict[str, CleaningRoute] = {
-    "standard": CleaningRoute.STANDARD,
-    "meticulous": CleaningRoute.METICULOUS,
-}
-
 CLEAN_ROOMS_SCHEMA = vol.Schema(
     {
         vol.Optional(ATTR_ENTITY_ID): cv.comp_entity_ids,
@@ -120,17 +95,39 @@ CLEAN_ROOMS_SCHEMA = vol.Schema(
     }
 )
 
-SUCTION_OPTION_LABELS: dict[str, str] = {
-    "quiet": "Quiet",
-    "standard": "Standard",
-    "normal": "Standard",
-    "strong": "Strong",
-    "ultra": "Ultra Powerful",
-    "ultra_powerful": "Ultra Powerful",
-    "super": "Super Powerful",
-    "super_powerful": "Super Powerful",
-    "max": "Super Powerful",
+
+def _validate_pending_pass_count(value: object) -> int:
+    """Pending profiles require integer passes, including in YAML automations."""
+    if type(value) is not int or value not in (1, 2, 3):
+        raise vol.Invalid("Narwal pass count must be an integer between 1 and 3")
+    return value
+
+
+def _validate_room_reference(value: object) -> int | str:
+    """Keep room names intact and reject booleans or coerced numeric IDs."""
+    if (type(value) is int and value > 0) or (isinstance(value, str) and value):
+        return value
+    raise vol.Invalid("Narwal room must be a positive ID or a nonempty name")
+
+
+_PENDING_PROFILE_FIELDS = {
+    vol.Required(FIELD_MODE): vol.In(WORK_MODE_OPTIONS),
+    vol.Optional(FIELD_SUCTION): vol.In(SUCTION_OPTIONS),
+    vol.Optional(FIELD_WATER): vol.In(WATER_OPTIONS),
+    vol.Optional(FIELD_MOP_STRENGTH): vol.In(MOP_STRENGTH_OPTIONS),
+    vol.Required(FIELD_PASSES): _validate_pending_pass_count,
+    vol.Required(FIELD_ROUTE): vol.In(ROUTE_OPTIONS),
 }
+SET_PENDING_PROFILES_SCHEMA = vol.Schema(
+    {
+        vol.Required(ATTR_ENTITY_ID): cv.comp_entity_ids,
+        vol.Required("global_profile"): vol.Schema(_PENDING_PROFILE_FIELDS),
+        vol.Required("room_profiles"): {
+            _validate_room_reference: vol.Schema(_PENDING_PROFILE_FIELDS)
+        },
+        vol.Optional("selected_rooms"): [_validate_room_reference],
+    }
+)
 
 
 def _suction_for_coordinator(
@@ -138,30 +135,10 @@ def _suction_for_coordinator(
     option: str,
 ) -> FanLevel:
     """Return the model-valid suction level for a service option."""
-    if option == "ai":
-        return FanLevel.UNSPECIFIED
-    fan_map = fan_speed_map_for(coordinator.config_entry.data, include_aliases=False)
-    if option == "max":
-        return list(fan_map.values())[-1]
-    compatibility_label = {
-        "super": "Super",
-        "ultra": "Ultra",
-    }.get(option)
-    if compatibility_label is not None:
-        compatibility_level = fan_speed_map_for(
-            coordinator.config_entry.data
-        ).get(compatibility_label)
-        if compatibility_level is None:
-            raise HomeAssistantError(
-                f"{compatibility_label} suction is not supported by this Narwal model"
-            )
-        return compatibility_level
-    label = SUCTION_OPTION_LABELS[option]
-    if label not in fan_map:
-        raise HomeAssistantError(
-            f"{label} suction is not supported by this Narwal model"
-        )
-    return fan_map[label]
+    try:
+        return suction_for_model(coordinator.config_entry.data, option)
+    except ValueError as err:
+        raise HomeAssistantError(str(err)) from err
 
 
 def _domain_data(hass: HomeAssistant) -> dict[str, NarwalCoordinator]:
@@ -371,7 +348,9 @@ async def _async_get_service_coordinators(
 
 def _async_register_services(hass: HomeAssistant) -> None:
     """Register Narwal domain services."""
-    if hass.services.has_service(DOMAIN, SERVICE_CLEAN_ROOMS):
+    register_clean_rooms = not hass.services.has_service(DOMAIN, SERVICE_CLEAN_ROOMS)
+    register_pending_profiles = not hass.services.has_service(DOMAIN, SERVICE_SET_PENDING_PROFILES)
+    if not register_clean_rooms and not register_pending_profiles:
         return
 
     async def _async_extract_entity_ids(call: ServiceCall) -> list[str]:
@@ -473,12 +452,55 @@ def _async_register_services(hass: HomeAssistant) -> None:
             await coordinator.async_clear_map_display_cache()
             coordinator.async_set_updated_data(client.state)
 
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_CLEAN_ROOMS,
-        async_clean_rooms,
-        schema=CLEAN_ROOMS_SCHEMA,
-    )
+    if register_clean_rooms:
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_CLEAN_ROOMS,
+            async_clean_rooms,
+            schema=CLEAN_ROOMS_SCHEMA,
+        )
+
+    async def _async_apply_pending_profiles(call: ServiceCall) -> None:
+        """Apply an idle-only pending profile and selection transaction."""
+        entity_ids = await _async_extract_entity_ids(call)
+        if len(entity_ids) != 1:
+            raise HomeAssistantError("Target exactly one Narwal vacuum")
+        entity_ids = await _async_validate_clean_rooms_targets(hass, call, entity_ids)
+        coordinators = await _async_get_service_coordinators(hass, entity_ids)
+        if len(coordinators) != 1:
+            raise HomeAssistantError("Target exactly one Narwal vacuum")
+        coordinator = coordinators[0]
+
+        try:
+            transaction = coordinator.parse_pending_profile_transaction(
+                global_profile=call.data["global_profile"],
+                room_profiles=call.data["room_profiles"],
+                selected_rooms=call.data.get("selected_rooms"),
+            )
+            async with coordinator.dock_action_lock:
+                coordinator.set_pending_profile_transaction(transaction)
+        except ValueError as err:
+            raise HomeAssistantError(str(err)) from err
+
+    async def async_set_pending_profiles(call: ServiceCall) -> None:
+        """Log a visible warning and preserve a failed service result."""
+        try:
+            await _async_apply_pending_profiles(call)
+        except HomeAssistantError as err:
+            _LOGGER.warning(
+                "Pending profiles were not applied for %s: %s",
+                call.data.get(ATTR_ENTITY_ID),
+                err,
+            )
+            raise
+
+    if register_pending_profiles:
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_SET_PENDING_PROFILES,
+            async_set_pending_profiles,
+            schema=SET_PENDING_PROFILES_SCHEMA,
+        )
 
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:

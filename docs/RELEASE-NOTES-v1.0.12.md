@@ -2,8 +2,6 @@
 
 On top of [v1.0.11](RELEASE-NOTES-v1.0.11.md). **One breaking change** (the duplicate `Super` and `Ultra` suction options are gone; see below). Twelve pull requests from four contributors, plus one fix, one CI job and a documentation restructure of our own.
 
-<!-- DRAFT: #140 is approved but not merged. Remove the "Set every next-clean profile in one call" section and drop the test count to 1,122 if it slips to v1.0.13. -->
-
 1,202 tests, up from 981, and a second suite that loads the integration in genuine Home Assistant on every pull request.
 
 ---
