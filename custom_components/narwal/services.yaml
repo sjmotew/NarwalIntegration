@@ -71,3 +71,34 @@ clean_rooms:
           options:
             - standard
             - meticulous
+
+set_pending_profiles:
+  name: Set pending profiles
+  description: >-
+    Atomically set idle-only global and room profiles plus the final room
+    selection. This service never sends robot commands.
+  target:
+    entity:
+      integration: narwal
+      domain: vacuum
+  fields:
+    global_profile:
+      name: Global profile
+      required: true
+      selector:
+        object:
+    room_profiles:
+      name: Room profiles
+      description: >-
+        Profiles keyed by current-map room ID or exact unique room name. Omitted
+        rooms retain their profiles. Use clean_rooms keys and integer passes.
+      required: true
+      selector:
+        object:
+    selected_rooms:
+      name: Final selected rooms
+      description: >-
+        List of current-map room IDs or exact unique names. Omit to preserve the
+        selection; use [] to clear it for whole-floor cleaning. Room order is unchanged.
+      selector:
+        object:
