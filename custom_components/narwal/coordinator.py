@@ -474,6 +474,11 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
         )
         self._room_order_save_lock = asyncio.Lock()
         self._room_order_store_loaded = False
+        self._active_context_revision = 0
+        self._task_recovery_attempts = 0
+        self._task_recovery_next_at = 0.0
+        self._task_recovery_task: asyncio.Task[None] | None = None
+        self._task_recovery_wake = asyncio.Event()
         self.active_clean_work_mode: WorkMode | None = None
         self.active_room_clean_settings: dict[int, RoomCleanSettings] = {}
         self.active_clean_setting_overrides: dict[str, object] = {}
@@ -575,6 +580,7 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
         room_settings: Mapping[int, RoomCleanSettings],
     ) -> None:
         """Record effective room profiles for the accepted robot task."""
+        self._active_context_revision = getattr(self, "_active_context_revision", 0) + 1
         self.active_clean_setting_overrides = {}
         self._clean_session_active = True
         self.active_clean_work_mode = self.shared_room_clean_work_mode(
@@ -584,6 +590,86 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
             room_id: replace(settings)
             for room_id, settings in room_settings.items()
         }
+
+    def _schedule_active_task_recovery(self, state: NarwalState) -> None:
+        """Start one bounded readback worker once push tracking is active."""
+        task = getattr(self, "_task_recovery_task", None)
+        if (
+            not is_clean_session_context(state)
+            or self.active_room_clean_settings
+            or state.map_data is None
+            or not state.map_data.rooms
+            or getattr(self, "_task_recovery_attempts", 0) >= 3
+            or (task is not None and not task.done())
+        ):
+            return
+        self._task_recovery_task = self.config_entry.async_create_background_task(
+            self.hass, self._recover_active_task(), f"{DOMAIN}_current_task_recovery"
+        )
+
+    async def _recover_active_task(self) -> None:
+        """Retry independently of polling, which broadcasts can postpone."""
+        while (
+            is_clean_session_context(self.client.state)
+            and not self.active_room_clean_settings
+            and getattr(self, "_task_recovery_attempts", 0) < 3
+        ):
+            if self.client.state.map_data is None or not self.client.state.map_data.rooms:
+                return
+            delay = getattr(self, "_task_recovery_next_at", 0) - time.monotonic()
+            if delay > 0:
+                await self._wait_for_task_recovery_retry(delay)
+                continue
+            await self._async_recover_active_clean_context()
+
+    async def _wait_for_task_recovery_retry(self, delay: float) -> None:
+        """Wait for the retry deadline or a changed clean session."""
+        wake = getattr(self, "_task_recovery_wake", None)
+        if wake is None:
+            wake = self._task_recovery_wake = asyncio.Event()
+        try:
+            await asyncio.wait_for(wake.wait(), timeout=delay)
+        except TimeoutError:
+            pass
+        finally:
+            wake.clear()
+
+    async def _async_recover_active_clean_context(self) -> None:
+        """Recover actual task parameters after reconnect, with bounded local reads."""
+        state = self.client.state
+        if not is_clean_session_context(state) or self.active_room_clean_settings:
+            return
+        if state.map_data is None or not state.map_data.rooms:
+            return
+        now = time.monotonic()
+        if getattr(self, "_task_recovery_attempts", 0) >= 3 or now < getattr(self, "_task_recovery_next_at", 0):
+            return
+        self._task_recovery_attempts = getattr(self, "_task_recovery_attempts", 0) + 1
+        self._task_recovery_next_at = now + 60
+        self._task_context_was_active = True
+        revision = getattr(self, "_active_context_revision", 0)
+        map_id = state.map_data.map_id
+        try:
+            response = await self.client.get_current_task()
+            recovered = NarwalClient.room_settings_from_current_task(response)
+        except Exception:
+            _LOGGER.debug("Could not recover current clean parameters", exc_info=True)
+            return
+        current = self.client.state
+        if (
+            recovered is None
+            or getattr(self, "_active_context_revision", 0) != revision
+            or not is_clean_session_context(current)
+            or self.active_room_clean_settings
+            or current.map_data is None
+            or current.map_data.map_id != map_id
+            or recovered[0] != map_id
+            or not set(recovered[1]).issubset({room.room_id for room in current.map_data.rooms})
+        ):
+            return
+        self.active_room_clean_settings = recovered[1]
+        self.active_clean_work_mode = self.shared_room_clean_work_mode(recovered[1])
+        self.async_set_updated_data(current)
 
     def active_clean_setting(self, attr: str) -> object | None:
         """Return the effective live value for the current clean, if known."""
@@ -610,6 +696,7 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
         """Update the displayed live value after an accepted runtime command."""
         if not hasattr(self, "active_clean_setting_overrides"):
             self.active_clean_setting_overrides = {}
+        self._active_context_revision = getattr(self, "_active_context_revision", 0) + 1
         self.active_clean_setting_overrides[attr] = value
         for settings in self.active_room_clean_settings.values():
             setattr(settings, attr, value)
@@ -633,6 +720,17 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
 
     def _sync_active_clean_context(self, state: NarwalState) -> None:
         """Clear accepted-task metadata once the robot is no longer in a clean context."""
+        active = is_clean_session_context(state)
+        previous = getattr(self, "_task_context_was_active", None)
+        if previous is not None and active != previous:
+            self._active_context_revision = getattr(self, "_active_context_revision", 0) + 1
+            if active:
+                self._task_recovery_attempts = 0
+                self._task_recovery_next_at = 0.0
+            wake = getattr(self, "_task_recovery_wake", None)
+            if wake is not None:
+                wake.set()
+        self._task_context_was_active = active
         # A robot-side fault can interrupt an accepted clean without ending it.
         # Keep the dispatched profile while commands are blocked so a later
         # recovery can expose only the runtime settings that apply to the task.
@@ -647,6 +745,8 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
         ):
             return
         if not is_clean_session_context(state):
+            if self.active_room_clean_settings or self.active_clean_work_mode is not None:
+                self._active_context_revision = getattr(self, "_active_context_revision", 0) + 1
             self.active_clean_work_mode = None
             self.active_room_clean_settings.clear()
             if hasattr(self, "active_clean_setting_overrides"):
@@ -2667,6 +2767,7 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
             self.client.start_listening(),
             f"{DOMAIN}_ws_listener",
         )
+        self._schedule_active_task_recovery(self.client.state)
 
         state = self.client.state
         _LOGGER.info(
@@ -2790,6 +2891,7 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
                 )
 
         self._sync_active_clean_context(state)
+        self._schedule_active_task_recovery(state)
         self.async_set_updated_data(state)
 
         # Broadcast arrived — switch back to normal polling if in fast mode
@@ -3058,10 +3160,16 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
                     self.update_interval = POLL_INTERVAL
 
         self._sync_active_clean_context(self.client.state)
+        self._schedule_active_task_recovery(self.client.state)
         return self.client.state
 
     async def async_shutdown(self) -> None:
         """Disconnect from the vacuum."""
+        task = getattr(self, "_task_recovery_task", None)
+        if task is not None and not task.done():
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
         await self.client.disconnect()
         if self._listen_task and not self._listen_task.done():
             self._listen_task.cancel()
