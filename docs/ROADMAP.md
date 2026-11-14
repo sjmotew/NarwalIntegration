@@ -19,7 +19,7 @@ Researched and probed, parked pending further reverse engineering.
 
 | Feature | Status | Blocker |
 |---|---|---|
-| **Camera snapshots** | Client method works (robot returns ~170 KB) | Image data is **AES-encrypted**. A community setup ([#157](https://github.com/sjmotew/NarwalIntegration/issues/157), @marczukmichal) obtains a per-device key from the Narwal cloud account once and decrypts locally; that route needs a cloud login, so it belongs in an optional companion, not the core integration |
+| **Camera snapshots** | Client method works: refused while docked, about 2.4 frames/s of ~170 KB AES-CBC frames while the robot is off the dock (measured 2026-11-14, [PROTOCOL.md](PROTOCOL.md#developer)) | Image data is **AES-encrypted**. A community setup ([#157](https://github.com/sjmotew/NarwalIntegration/issues/157), @marczukmichal) obtains a per-device key from the Narwal cloud account once and decrypts locally; that route needs a cloud login, so it belongs in an optional companion, not the core integration |
 | **Camera LED control** | Partial response from robot | Correct payload format unconfirmed; needs idle-state testing |
 | **Vision obstacle overlay** | Built, tested, removed | Robot broadcasts raw AI candidates (3 to 6× more than the app shows), not confirmed detections. Unusable for a map overlay |
 | **Patrol / cruise mode** | Topics identified in APK | Not yet probed; depends on the camera working first |
