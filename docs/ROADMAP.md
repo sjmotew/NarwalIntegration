@@ -19,10 +19,25 @@ Researched and probed, parked pending further reverse engineering.
 
 | Feature | Status | Blocker |
 |---|---|---|
-| **Camera snapshots** | Client method works (robot returns ~170 KB) | Image data is **AES-encrypted**; the key has to come out of the Narwal APK |
+| **Camera snapshots** | Client method works (robot returns ~170 KB) | Image data is **AES-encrypted**. A community setup ([#157](https://github.com/sjmotew/NarwalIntegration/issues/157), @marczukmichal) obtains a per-device key from the Narwal cloud account once and decrypts locally; that route needs a cloud login, so it belongs in an optional companion, not the core integration |
 | **Camera LED control** | Partial response from robot | Correct payload format unconfirmed; needs idle-state testing |
 | **Vision obstacle overlay** | Built, tested, removed | Robot broadcasts raw AI candidates (3 to 6× more than the app shows), not confirmed detections. Unusable for a map overlay |
 | **Patrol / cruise mode** | Topics identified in APK | Not yet probed; depends on the camera working first |
+| **Live video** | App uses an Agora session with cloud-issued tokens | Cloud-dependent by design. A community add-on joins the session with the Agora Python server SDK and serves frames to a dashboard ([#157](https://github.com/sjmotew/NarwalIntegration/issues/157), @marczukmichal); the same caveat as the snapshot key applies |
+
+## Further out
+
+**Camera as a home-security monitor.** The onboard camera, driven from Home Assistant automations: a motion or door sensor fires, the robot is sent to that area (patrol / cruise, or a room clean with a zero-work profile as a fallback), and it streams video, takes pictures, or plays a sound through its speaker. The pieces and where they stand:
+
+| Piece | Status |
+|---|---|
+| Send the robot to a point or room | Room cleans work today; patrol topics are identified in the APK and unprobed |
+| Still images | Snapshot works, decryption needs the per-device key (above) |
+| Live video | Agora session, cloud tokens; community add-on exists (above) |
+| Sounds | `locate` plays the find-me chime today; the speaker topics for arbitrary audio are unexplored |
+| Return to dock afterwards | Works today |
+
+The local-only promise holds: anything that needs a Narwal cloud login ships as an optional companion add-on or integration, and the core keeps working without it. Community write-ups on these topics go in [Discussions](https://github.com/sjmotew/NarwalIntegration/discussions) under Show and tell; collaboration threads under Ideas.
 
 ## Open protocol questions, help wanted
 
