@@ -269,7 +269,7 @@ command.
 
 | Topic | Effect |
 |---|---|
-| `developer/take_picture` | Single camera frame |
+| `developer/take_picture` | Single camera frame. **Refused (code 2) while docked; accepted while the robot is off the dock.** Measured on a Flow (fw v01.09.07.06) mid-clean, 2026-11-14: 30/30 accepted, 0.40 s mean round trip (0.35 to 0.65 s), about 2.4 frames/s sequential, 150 to 203 KB per frame. Every frame differs, the size is always a multiple of 16 and the entropy is 7.999 bits/byte: AES-CBC with a per-frame IV, almost certainly the first 16 bytes. The key is per device and held by the Narwal cloud ([#157](https://github.com/sjmotew/NarwalIntegration/issues/157)); no local topic returns it. A second WebSocket client from another IP can poll this while Home Assistant holds its own connection |
 | `developer/get_robot_debug_image` | Cleartext carpet/planning debug PNGs |
 | `developer/led_control` | Toggle the robot's LED |
 | `developer/ping` | Ping/pong |
