@@ -7,6 +7,7 @@ import contextlib
 import logging
 import math
 import time
+from collections.abc import Mapping
 from typing import Any
 
 from homeassistant.components.camera import Camera
@@ -105,6 +106,25 @@ class NarwalCarpetCamera(NarwalEntity, Camera):
         return self._cached
 
 
+def map_rotation(options: Mapping[str, Any]) -> int:
+    """Return the clockwise map rotation in degrees from an entry's options."""
+    try:
+        rotation = int(options.get(CONF_MAP_ROTATION, MAP_ROTATION_DEFAULT))
+    except (TypeError, ValueError):
+        return MAP_ROTATION_DEFAULT
+    rotation %= 360
+    return rotation if rotation in (0, 90, 180, 270) else MAP_ROTATION_DEFAULT
+
+
+def map_zoom(options: Mapping[str, Any]) -> float:
+    """Return the map zoom factor from an entry's options."""
+    try:
+        zoom = float(options.get(CONF_MAP_ZOOM, MAP_ZOOM_DEFAULT))
+    except (TypeError, ValueError):
+        return MAP_ZOOM_DEFAULT
+    return max(1.0, min(2.0, zoom))
+
+
 class NarwalMapCamera(NarwalEntity, Camera):
     """Camera entity that streams the vacuum's map as MJPEG."""
 
@@ -158,30 +178,11 @@ class NarwalMapCamera(NarwalEntity, Camera):
 
     def _map_rotation(self) -> int:
         """Return persisted clockwise map rotation in degrees."""
-        try:
-            rotation = int(
-                self.coordinator.config_entry.options.get(
-                    CONF_MAP_ROTATION,
-                    MAP_ROTATION_DEFAULT,
-                )
-            )
-        except (TypeError, ValueError):
-            return MAP_ROTATION_DEFAULT
-        rotation %= 360
-        return rotation if rotation in (0, 90, 180, 270) else MAP_ROTATION_DEFAULT
+        return map_rotation(self.coordinator.config_entry.options)
 
     def _map_zoom(self) -> float:
         """Return persisted map zoom factor."""
-        try:
-            zoom = float(
-                self.coordinator.config_entry.options.get(
-                    CONF_MAP_ZOOM,
-                    MAP_ZOOM_DEFAULT,
-                )
-            )
-        except (TypeError, ValueError):
-            return MAP_ZOOM_DEFAULT
-        return max(1.0, min(2.0, zoom))
+        return map_zoom(self.coordinator.config_entry.options)
 
     async def async_camera_image(
         self, width: int | None = None, height: int | None = None,

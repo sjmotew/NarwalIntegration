@@ -50,10 +50,12 @@ from .narwal_client import (
     NarwalConnectionError,
     RoomCleanSettings,
 )
+from .websocket_api import async_setup_websocket_api
 
 _LOGGER = logging.getLogger(__name__)
 
-# Configured from config entries only; async_setup just registers services.
+# Configured from config entries only; async_setup just registers services and
+# websocket commands.
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 NarwalConfigEntry: TypeAlias = ConfigEntry[NarwalCoordinator]
@@ -504,8 +506,9 @@ def _async_register_services(hass: HomeAssistant) -> None:
 
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
-    """Set up Narwal services."""
+    """Set up Narwal services and websocket commands."""
     _async_register_services(hass)
+    async_setup_websocket_api(hass)
     return True
 
 

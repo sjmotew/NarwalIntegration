@@ -309,6 +309,23 @@ def install() -> None:
     ha_diag.async_redact_data = _async_redact_data  # type: ignore[attr-defined]
     ha_diag.REDACTED = REDACTED  # type: ignore[attr-defined]
 
+    # homeassistant.components.websocket_api: the decorators leave the handler a
+    # plain coroutine and record the schema on it, as HA's own decorator does.
+    ha_ws = _mod("homeassistant.components.websocket_api", ha_comp)
+
+    def _websocket_command(schema):
+        def decorator(func):
+            func._ws_schema = schema  # type: ignore[attr-defined]
+            return func
+
+        return decorator
+
+    ha_ws.websocket_command = _websocket_command  # type: ignore[attr-defined]
+    ha_ws.async_response = lambda func: func  # type: ignore[attr-defined]
+    ha_ws.async_register_command = MagicMock()  # type: ignore[attr-defined]
+    ha_ws.ActiveConnection = MagicMock  # type: ignore[attr-defined]
+    ha_ws.ERR_NOT_FOUND = "not_found"  # type: ignore[attr-defined]
+
     ha_vac = _mod("homeassistant.components.vacuum", ha_comp)
     ha_vac.DOMAIN = "vacuum"  # type: ignore[attr-defined]
 
