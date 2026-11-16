@@ -305,6 +305,24 @@
           "name": "Route"
         }
       }
+    },
+    "get_topic_response": {
+      "name": "Topic-Antwort abrufen",
+      "description": "Sendet ein rohes Topic an den Roboter und gibt seine Antwort unverändert als Hex zurück. Zum Ändern einer Einstellung vacuum.send_command verwenden.",
+      "fields": {
+        "topic": {
+          "name": "Topic",
+          "description": "Kurzes Topic ohne Produktschlüssel und Geräte-ID, kleingeschriebene Segmente getrennt durch \"/\", z. B. region/get."
+        },
+        "payload_hex": {
+          "name": "Nutzdaten (Hex)",
+          "description": "Protobuf-Anfrage als Hex-String. Die meisten Abfragen brauchen keine."
+        },
+        "timeout": {
+          "name": "Zeitlimit",
+          "description": "Sekunden, die auf die Antwort gewartet wird."
+        }
+      }
     }
   }
 }

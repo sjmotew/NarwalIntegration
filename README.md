@@ -116,6 +116,7 @@ account UUID redacted. [What each section settles](docs/TROUBLESHOOTING.md#attac
 | [docs/SETUP.md](docs/SETUP.md) | Discovery internals, VLAN / SNAT, CX7 Device ID |
 | [docs/ROOM-CLEANING.md](docs/ROOM-CLEANING.md) | Area mapping, per-room profiles, dashboard generator, automation example |
 | [docs/MAP-CARD.md](docs/MAP-CARD.md) | Map camera attributes for dashboard cards: robot position, dock, trail, calibration points |
+| [docs/SEND-COMMAND.md](docs/SEND-COMMAND.md) | Raw topics for settings with no entity: `vacuum.send_command` and `narwal.get_topic_response` |
 | [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | Quick fixes, known limitations in detail, diagnostics |
 | [docs/PROTOCOL.md](docs/PROTOCOL.md) | The local WebSocket protocol: frames, topics, field maps, corrections, open questions |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | Next steps, parked features, captures that would settle open questions |

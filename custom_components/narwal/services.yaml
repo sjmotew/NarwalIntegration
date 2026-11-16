@@ -71,3 +71,35 @@ clean_rooms:
           options:
             - standard
             - meticulous
+get_topic_response:
+  name: Get topic response
+  description: Send one raw topic to the robot and return its reply as hex, without interpreting it. Use vacuum.send_command to change a setting.
+  target:
+    entity:
+      integration: narwal
+      domain: vacuum
+  fields:
+    topic:
+      name: Topic
+      description: Short topic without product key and device ID, lowercase segments separated by "/", e.g. region/get.
+      required: true
+      example: region/get
+      selector:
+        text:
+    payload_hex:
+      name: Payload (hex)
+      description: Protobuf request body as a hex string. Most reads take none.
+      example: "0a00"
+      selector:
+        text:
+    timeout:
+      name: Timeout
+      description: Seconds to wait for the reply.
+      default: 5
+      selector:
+        number:
+          min: 1
+          max: 10
+          step: 0.5
+          unit_of_measurement: s
+          mode: box

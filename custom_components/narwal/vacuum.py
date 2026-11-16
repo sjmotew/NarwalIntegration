@@ -7,6 +7,7 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+import voluptuous as vol
 from homeassistant.components.vacuum import (
     StateVacuumEntity,
     VacuumActivity,
@@ -18,12 +19,15 @@ try:
     from homeassistant.components.vacuum import Segment
 except ImportError:
     Segment = None  # HA < 2026.3 — room cleaning unavailable
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import HomeAssistant, ServiceResponse, SupportsResponse, callback
+from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers import entity_platform
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.restore_state import ExtraStoredData, RestoreEntity
 
 from . import NarwalConfigEntry
 from .const import (
+    SERVICE_GET_TOPIC_RESPONSE,
     UNVERSIONED_FAN_SPEED_MAP,
     fan_speed_label_map_for,
     fan_speed_list_for,
@@ -47,6 +51,7 @@ from .coordinator import (
 from .dock_tasks import ROBOT_RETURN_COMPATIBLE_DOCK_TASKS
 from .entity import NarwalEntity
 from .narwal_client import (
+    CommandResponse,
     CommandResult,
     FanLevel,
     NarwalCommandError,
@@ -62,10 +67,21 @@ from .narwal_client.const import (
 
 _LOGGER = logging.getLogger(__name__)
 
-_SEND_COMMAND_TOPIC = re.compile(r"[a-z0-9_]+(?:/[a-z0-9_]+)*")
+_RAW_TOPIC = re.compile(r"[a-z0-9_]+(?:/[a-z0-9_]+)*")
 _SEND_COMMAND_PARAMS = frozenset({"payload_hex", "timeout"})
-_SEND_COMMAND_TIMEOUT_RANGE = (1.0, 30.0)
-EVENT_COMMAND_RESPONSE = "narwal_command_response"
+_RAW_TIMEOUT_MIN = 1.0
+
+ATTR_TOPIC = "topic"
+ATTR_PAYLOAD_HEX = "payload_hex"
+ATTR_TIMEOUT = "timeout"
+
+# Types only; _parse_raw_request does the real checks for both actions, so
+# vacuum.send_command and narwal.get_topic_response reject the same input.
+GET_TOPIC_RESPONSE_SCHEMA = {
+    vol.Required(ATTR_TOPIC): cv.string,
+    vol.Optional(ATTR_PAYLOAD_HEX): str,
+    vol.Optional(ATTR_TIMEOUT): vol.Any(int, float),
+}
 
 
 @dataclass(frozen=True)
@@ -231,6 +247,14 @@ async def async_setup_entry(
     coordinator = entry.runtime_data
     async_add_entities([NarwalVacuum(coordinator)])
 
+    platform = entity_platform.async_get_current_platform()
+    platform.async_register_entity_service(
+        SERVICE_GET_TOPIC_RESPONSE,
+        GET_TOPIC_RESPONSE_SCHEMA,
+        "async_get_topic_response",
+        supports_response=SupportsResponse.ONLY,
+    )
+
 
 class NarwalVacuum(NarwalEntity, RestoreEntity, StateVacuumEntity):
     """Representation of a Narwal robot vacuum."""
@@ -319,11 +343,13 @@ class NarwalVacuum(NarwalEntity, RestoreEntity, StateVacuumEntity):
     def supported_features(self) -> VacuumEntityFeature:
         """Return currently usable native Home Assistant vacuum features."""
         features = VacuumEntityFeature.STATE
-        state = self.coordinator.data
-        if state is None or not self.available:
+        if not self.available:
             return features
         # Raw commands are the robot's to accept or refuse, whatever the state.
         features |= VacuumEntityFeature.SEND_COMMAND
+        state = self.coordinator.data
+        if state is None:
+            return features
 
         if not self._trusts_state:
             # State cannot narrow this down; advertise what the robot accepts.
@@ -684,58 +710,113 @@ class NarwalVacuum(NarwalEntity, RestoreEntity, StateVacuumEntity):
         params: dict[str, Any] | list[Any] | None = None,
         **kwargs: Any,
     ) -> None:
-        """Send one raw command topic to the robot (``vacuum.send_command``).
+        """Write one raw command topic to the robot (``vacuum.send_command``).
 
         ``command`` is the short topic, e.g. ``config/set`` or ``region/set``,
         without the product key and device ID. ``params`` may hold
         ``payload_hex`` (the protobuf request body, empty by default) and
-        ``timeout`` in seconds. The reply is published as a
-        ``narwal_command_response`` event. A refused command raises, except
-        for ``get`` topics, whose field 1 can be data rather than a result.
+        ``timeout`` in seconds. Field 1 of the reply is the result code; a
+        refused command raises. Reads go through ``narwal.get_topic_response``.
         """
-        topic = (command or "").strip().strip("/")
-        if not _SEND_COMMAND_TOPIC.fullmatch(topic):
-            raise HomeAssistantError(f"Narwal send_command: invalid topic {command!r}")
-        if topic in UNACKNOWLEDGED_TOPICS:
-            # Responses are matched by send order; an unanswered request would
-            # make the next commands time out until its slot expires (#108).
-            raise HomeAssistantError(
-                f"Narwal send_command: {topic} is never answered by the robot"
-            )
         if params is None:
             params = {}
         if not isinstance(params, dict):
             raise HomeAssistantError(
                 "Narwal send_command: params must be a mapping (payload_hex, timeout)"
             )
-        unknown = sorted(set(params) - _SEND_COMMAND_PARAMS)
+        unknown = sorted(
+            str(key) for key in params if key not in _SEND_COMMAND_PARAMS
+        )
         if unknown:
             raise HomeAssistantError(
                 f"Narwal send_command: unknown params {', '.join(unknown)}"
             )
-        payload_hex = params.get("payload_hex", "")
+        topic, payload, timeout = self._parse_raw_request(
+            "send_command",
+            command,
+            params.get(ATTR_PAYLOAD_HEX, ""),
+            params.get(ATTR_TIMEOUT, COMMAND_RESPONSE_TIMEOUT),
+        )
+        resp = await self._async_send_raw("send_command", topic, payload, timeout)
+        _raise_if_command_failed(resp, f"command {topic}")
+
+    async def async_get_topic_response(
+        self,
+        topic: str,
+        payload_hex: str = "",
+        timeout: float = COMMAND_RESPONSE_TIMEOUT,
+    ) -> ServiceResponse:
+        """Read one raw topic and return the robot's reply (``narwal.get_topic_response``).
+
+        Field 1 of a read reply can be data rather than a result code, so the
+        reply is never judged: a refusal comes back as its bytes (``0802`` is
+        NOT_APPLICABLE) for the caller to decode.
+        """
+        topic, payload, timeout = self._parse_raw_request(
+            "get_topic_response", topic, payload_hex, timeout
+        )
+        resp = await self._async_send_raw("get_topic_response", topic, payload, timeout)
+        raw = resp.raw_payload or b""
+        return {"response_hex": raw.hex(), "response_bytes": len(raw)}
+
+    def _parse_raw_request(
+        self,
+        action: str,
+        topic: Any,
+        payload_hex: Any,
+        timeout: Any,
+    ) -> tuple[str, bytes, float]:
+        """Validate a raw topic request shared by both raw-command actions."""
+        short_topic = (topic if isinstance(topic, str) else "").strip().strip("/")
+        if not _RAW_TOPIC.fullmatch(short_topic):
+            raise HomeAssistantError(f"Narwal {action}: invalid topic {topic!r}")
+        if short_topic in UNACKNOWLEDGED_TOPICS:
+            # Responses are matched by send order; an unanswered request would
+            # make the next commands time out until its slot expires (#108).
+            raise HomeAssistantError(
+                f"Narwal {action}: {short_topic} is never answered by the robot"
+            )
         if not isinstance(payload_hex, str):
             raise HomeAssistantError(
-                "Narwal send_command: payload_hex must be a quoted hex string"
+                f"Narwal {action}: payload_hex must be a quoted hex string"
             )
         try:
             payload = bytes.fromhex(payload_hex)
         except ValueError as err:
             raise HomeAssistantError(
-                "Narwal send_command: payload_hex is not valid hex"
+                f"Narwal {action}: payload_hex is not valid hex"
             ) from err
-        low, high = _SEND_COMMAND_TIMEOUT_RANGE
+        # bool is an int subclass: float(True) would pass as a 1 s timeout.
+        if isinstance(timeout, bool):
+            raise HomeAssistantError(f"Narwal {action}: timeout must be a number")
         try:
-            timeout = float(params.get("timeout", COMMAND_RESPONSE_TIMEOUT))
+            seconds = float(timeout)
         except (TypeError, ValueError) as err:
             raise HomeAssistantError(
-                "Narwal send_command: timeout must be a number"
+                f"Narwal {action}: timeout must be a number"
             ) from err
-        if not low <= timeout <= high:
+        # Capped like start/return: the call holds the dock action lock, so a
+        # topic the robot ignores delays those actions for up to this long.
+        if not _RAW_TIMEOUT_MIN <= seconds <= self._ACTION_TIMEOUT:
             raise HomeAssistantError(
-                f"Narwal send_command: timeout must be {low:g}-{high:g} s"
+                f"Narwal {action}: timeout must be "
+                f"{_RAW_TIMEOUT_MIN:g}-{self._ACTION_TIMEOUT:g} s"
             )
+        return short_topic, payload, seconds
 
+    async def _async_send_raw(
+        self,
+        action: str,
+        topic: str,
+        payload: bytes,
+        timeout: float,
+    ) -> CommandResponse:
+        """Wake the robot and send one raw topic under the dock action lock.
+
+        The lock is held for every topic: a raw command cannot be classified
+        as dock-safe, and without the lock it could land between another
+        action's state check and its command.
+        """
         async with self.coordinator.dock_action_lock:
             try:
                 await self._ensure_awake()
@@ -743,26 +824,16 @@ class NarwalVacuum(NarwalEntity, RestoreEntity, StateVacuumEntity):
                     topic, payload, timeout=timeout
                 )
             except (NarwalCommandError, NarwalConnectionError) as err:
-                raise HomeAssistantError(f"Narwal send_command {topic}: {err}") from err
+                raise HomeAssistantError(f"Narwal {action} {topic}: {err}") from err
         _LOGGER.debug(
-            "send_command %s (%d B) -> result %s, %d B reply",
+            "%s %s (%d B) -> result %s, %d B reply",
+            action,
             topic,
             len(payload),
             resp.result_code,
             len(resp.raw_payload or b""),
         )
-        self.hass.bus.async_fire(
-            EVENT_COMMAND_RESPONSE,
-            {
-                "entity_id": self.entity_id,
-                "command": topic,
-                "result_code": int(resp.result_code),
-                "accepted": resp.accepted,
-                "response_hex": (resp.raw_payload or b"").hex(),
-            },
-        )
-        if not topic.rsplit("/", 1)[-1].startswith("get"):
-            _raise_if_command_failed(resp, f"command {topic}")
+        return resp
 
     async def async_set_fan_speed(self, fan_speed: str, **kwargs) -> None:
         """Set the fan speed.

@@ -553,6 +553,9 @@ independent capture efforts. Direction is C→R (client to robot) or R→C.
 Not all of these have been exercised locally. Rows this integration uses are marked ✓; the
 rest are known-to-exist and unexplored — good starting points for anyone probing.
 
+To probe a topic from Home Assistant without a second connection, use `vacuum.send_command`
+(writes) or `narwal.get_topic_response` (reads); see [SEND-COMMAND.md](SEND-COMMAND.md).
+
 | # | Path | Dir | Category | Used |
 |---|---|---|---|---|
 | 01 | `/common/yell` | C→R | Common | ✓ |

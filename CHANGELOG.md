@@ -9,6 +9,10 @@ instance and verified on hardware before it was pushed.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). **Breaking** marks a
 change that can alter the behaviour of an existing automation or dashboard.
 
+## [v1.0.13] — unreleased
+
+- **Added:** `vacuum.send_command` writes a raw topic and `narwal.get_topic_response` reads one and returns the robot's reply, for settings with no entity such as the Freo 20 wake word or the robot timezone ([#156](https://github.com/sjmotew/NarwalIntegration/pull/156), @d1ggs). [Guide](docs/SEND-COMMAND.md).
+
 ## [v1.0.11] — 2026-10-25
 
 *A docked robot stays connected, and a cleaning robot says so.* No breaking changes.

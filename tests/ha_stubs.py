@@ -36,6 +36,7 @@ def install() -> None:
     vol.Required = MagicMock(side_effect=lambda *a, **kw: a[0] if a else "key")  # type: ignore[attr-defined]
     vol.Optional = MagicMock(side_effect=lambda *a, **kw: a[0] if a else "key")  # type: ignore[attr-defined]
     vol.In = MagicMock()  # type: ignore[attr-defined]
+    vol.Any = MagicMock()  # type: ignore[attr-defined]
     vol.Invalid = type("Invalid", (Exception,), {})  # type: ignore[attr-defined]
 
     # --- homeassistant ---
@@ -79,6 +80,14 @@ def install() -> None:
     ha_core.ServiceCall = MagicMock  # type: ignore[attr-defined]
     ha_core.State = MagicMock  # type: ignore[attr-defined]
     ha_core.callback = lambda f: f  # type: ignore[attr-defined]
+    ha_core.ServiceResponse = dict  # type: ignore[attr-defined]
+
+    class _SupportsResponse:
+        NONE = "none"
+        OPTIONAL = "optional"
+        ONLY = "only"
+
+    ha_core.SupportsResponse = _SupportsResponse  # type: ignore[attr-defined]
 
     ha_util = _mod("homeassistant.util", ha)
     ha_util.slugify = lambda value: str(value).lower().replace(" ", "_")  # type: ignore[attr-defined]
@@ -128,6 +137,7 @@ def install() -> None:
     ha_cv.comp_entity_ids = MagicMock()  # type: ignore[attr-defined]
     ha_cv.entity_ids = MagicMock()  # type: ignore[attr-defined]
     ha_cv.ensure_list = MagicMock()  # type: ignore[attr-defined]
+    ha_cv.string = MagicMock()  # type: ignore[attr-defined]
     ha_cv.config_entry_only_config_schema = MagicMock()  # type: ignore[attr-defined]
 
     # NOTE: deliberately does NOT expose EntityCategory. Real HA removed
@@ -220,6 +230,7 @@ def install() -> None:
     ha_storage.Store = _Store  # type: ignore[attr-defined]
     ha_ep = _mod("homeassistant.helpers.entity_platform", ha_helpers)
     ha_ep.AddConfigEntryEntitiesCallback = MagicMock  # type: ignore[attr-defined]
+    ha_ep.async_get_current_platform = MagicMock()  # type: ignore[attr-defined]
 
     # homeassistant.helpers.service_info.* — discovery payloads (zeroconf, DHCP)
     ha_si = _mod("homeassistant.helpers.service_info", ha_helpers)
