@@ -124,6 +124,7 @@ MAP_ZOOM_DEFAULT = 1.0  # renderer clamps to 1.0–2.0
 
 CONF_DOCK_LIGHT_SUPPORTED = "dock_light_supported"
 SERVICE_CLEAN_ROOMS = "clean_rooms"
+SERVICE_SET_PENDING_PROFILES = "set_pending_profiles"
 SERVICE_GET_TOPIC_RESPONSE = "get_topic_response"
 
 def product_keys_for_model(label: str) -> set[str]:

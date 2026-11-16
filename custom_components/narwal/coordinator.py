@@ -18,6 +18,14 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
+from .clean_profiles import (
+    MOP_STRENGTH_OPTIONS,
+    ROUTE_OPTIONS,
+    WATER_OPTIONS,
+    WORK_MODE_OPTIONS,
+    PendingProfileInput,
+    suction_for_model,
+)
 from .const import DOMAIN, NO_BROADCAST_PRODUCT_KEYS
 from .dock_tasks import (
     ROBOT_START_COMPATIBLE_DOCK_TASKS,
@@ -150,6 +158,17 @@ class CleanSettings(RoomCleanSettings):
     route: CleaningRoute = CleaningRoute.METICULOUS
 
 
+@dataclass(frozen=True)
+class PendingProfileTransaction:
+    """Parsed profiles and the map identities they were resolved against."""
+
+    map_id: str
+    rooms: tuple[tuple[int, str], ...]
+    global_profile: tuple[RoomCleanSettings, set[str]]
+    room_profiles: Mapping[int, tuple[RoomCleanSettings, set[str]]]
+    selected_room_ids: set[int] | None
+
+
 def _state_attr_is_true(state: NarwalState, attr: str) -> bool:
     """Return True only for explicit boolean state properties."""
     return getattr(state, attr, False) is True
@@ -277,6 +296,25 @@ def can_edit_pending_clean_settings(state: NarwalState | None) -> bool:
         and state.assumed_active_dock_task is None
         and bool(drying_tasks)
         and drying_tasks <= ROBOT_START_COMPATIBLE_DOCK_TASKS
+    )
+
+
+def can_apply_pending_profiles(state: NarwalState | None) -> bool:
+    """Require a docked idle state before replacing the next-clean profile."""
+    return (
+        state is not None
+        and state.working_status
+        in {
+            WorkingStatus.STANDBY,
+            WorkingStatus.DOCKED,
+            WorkingStatus.DOCKED_V2,
+            WorkingStatus.CHARGED,
+        }
+        and state.is_docked
+        and not state.is_paused
+        and not state.is_returning_to_dock
+        and not is_clean_session_context(state)
+        and can_edit_pending_clean_settings(state)
     )
 
 
@@ -1227,6 +1265,177 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
         if key[0] is None:
             self._room_profile_pending_resolution.add(room_id)
         self._schedule_room_selection_save()
+
+    @property
+    def profiles_loaded(self) -> bool:
+        """Whether persisted room profiles and selections are ready for updates."""
+        return self._room_selection_store_loaded and self._room_profile_store_loaded
+
+    def _pending_profile_map(self) -> tuple[str, tuple[tuple[int, str], ...]]:
+        """Snapshot current room identities without fetching or changing state."""
+        state = self.data
+        map_data = state.map_data if state is not None else None
+        map_id = self.room_settings_map_id(map_data)
+        rooms = map_data.rooms if map_data is not None else None
+        if (
+            not self.profiles_loaded
+            or not can_apply_pending_profiles(state)
+            or not map_id
+            or not isinstance(rooms, (list, tuple))
+            or not rooms
+        ):
+            raise ValueError(
+                "Narwal pending profiles require a loaded idle docked robot "
+                "and a positively identified current map"
+            )
+        identities = tuple(
+            sorted((room.room_id, room.display_name) for room in rooms if room.room_id > 0)
+        )
+        if not identities or len({room_id for room_id, _ in identities}) != len(identities):
+            raise ValueError("Narwal current map has missing or duplicate room IDs")
+        return map_id, identities
+
+    def resolve_room_id(self, room: int | str) -> int:
+        """Resolve a positive ID or exact, unique display name on the cached map.
+
+        Numeric strings always mean IDs. Never consult room entities or fetch a map.
+        """
+        map_data = self.data.map_data if self.data is not None else None
+        rooms = map_data.rooms if map_data is not None else None
+        if not rooms:
+            raise ValueError("Narwal current map is not available")
+        if type(room) is int or (isinstance(room, str) and room.isdecimal()):
+            room_id = int(room)
+            if room_id > 0 and any(item.room_id == room_id for item in rooms):
+                return room_id
+        elif isinstance(room, str) and room:
+            matches = [
+                item.room_id for item in rooms if item.room_id > 0 and item.display_name == room
+            ]
+            if len(matches) > 1:
+                raise ValueError(f"Ambiguous Narwal room name: {room}; use a room ID")
+            if matches:
+                return matches[0]
+        raise ValueError(f"Unknown or invalid Narwal room on the current map: {room}")
+
+    def _parse_pending_profile(
+        self,
+        raw: PendingProfileInput,
+    ) -> tuple[RoomCleanSettings, set[str]]:
+        """Convert service keys to typed settings, checking model and mode support."""
+        mode = WORK_MODE_OPTIONS[raw["mode"]]
+        settings = RoomCleanSettings(work_mode=mode)
+        attrs = {"work_mode", "passes", "route"}
+        if clean_setting_applies_to_mode("fan", mode):
+            if "suction" not in raw:
+                raise ValueError("Vacuum profile requires suction")
+            settings.fan = suction_for_model(self.config_entry.data, raw["suction"])
+            attrs.add("fan")
+        elif "suction" in raw:
+            raise ValueError("Suction is not applicable to a mop-only profile")
+        if clean_setting_applies_to_mode("water", mode):
+            if "water" not in raw or "mop_strength" not in raw:
+                raise ValueError("Mop profile requires water and mop_strength")
+            settings.water = WATER_OPTIONS[raw["water"]]
+            settings.mop_strength = MOP_STRENGTH_OPTIONS[raw["mop_strength"]]
+            attrs.update({"water", "mop_strength"})
+        elif "water" in raw or "mop_strength" in raw:
+            raise ValueError("Water and mop_strength are not applicable to a vacuum-only profile")
+        settings.passes = raw["passes"]
+        settings.route = ROUTE_OPTIONS[raw["route"]]
+        return settings, attrs
+
+    def parse_pending_profile_transaction(
+        self,
+        *,
+        global_profile: PendingProfileInput,
+        room_profiles: Mapping[int | str, PendingProfileInput],
+        selected_rooms: list[int | str] | None,
+    ) -> PendingProfileTransaction:
+        """Parse a schema-validated request without mutating any pending state."""
+        map_id, rooms = self._pending_profile_map()
+        parsed_profiles: dict[int, tuple[RoomCleanSettings, set[str]]] = {}
+        for room, raw in room_profiles.items():
+            room_id = self.resolve_room_id(room)
+            if room_id in parsed_profiles:
+                raise ValueError("Duplicate Narwal room profile; use each room only once")
+            parsed_profiles[room_id] = self._parse_pending_profile(raw)
+        selected_ids = None
+        if selected_rooms is not None:
+            selected_ids = set()
+            for room in selected_rooms:
+                room_id = self.resolve_room_id(room)
+                if room_id in selected_ids:
+                    raise ValueError("Duplicate Narwal selected room; use each room only once")
+                selected_ids.add(room_id)
+        return PendingProfileTransaction(
+            map_id=map_id,
+            rooms=rooms,
+            global_profile=self._parse_pending_profile(global_profile),
+            room_profiles=parsed_profiles,
+            selected_room_ids=selected_ids,
+        )
+
+    def set_pending_profile_transaction(self, transaction: PendingProfileTransaction) -> None:
+        """Commit typed profiles synchronously while holding the clean-start lock.
+
+        Omitted room profiles and selections retain their current values. Recheck
+        all map identities, even omitted rooms, after waiting for the lock.
+        """
+        if not self.dock_action_lock.locked():
+            raise ValueError("Narwal pending profiles require the clean-start lock")
+        map_id, rooms = self._pending_profile_map()
+        if (map_id, rooms) != (transaction.map_id, transaction.rooms):
+            raise ValueError("Narwal current map changed before pending profiles could be applied")
+        room_profiles = transaction.room_profiles
+        selected_room_ids = transaction.selected_room_ids
+        current_room_ids = {room_id for room_id, _ in rooms}
+        if not set(room_profiles) <= current_room_ids or (
+            selected_room_ids is not None and not selected_room_ids <= current_room_ids
+        ):
+            raise ValueError("Narwal room profiles do not match the current map")
+
+        # Resolve startup defaults only after every rejection check, in this
+        # synchronous commit. Otherwise an unresolved selection/profile could
+        # overwrite the explicit transaction the next time an entity reads it.
+        if self._migrate_unidentified_room_state(map_id):
+            self._room_selection_dirty_maps.discard(None)
+            self._room_selection_dirty_maps.add(map_id)
+
+        global_profile, global_attrs = transaction.global_profile
+        global_settings = replace(self.clean_settings)
+        for attr in global_attrs:
+            setattr(global_settings, attr, getattr(global_profile, attr))
+
+        next_profiles = dict(self.room_clean_settings)
+        next_customized = {
+            key: set(fields) for key, fields in self.room_clean_settings_customized.items()
+        }
+        for room_id, (profile, custom_fields) in room_profiles.items():
+            key = (map_id, room_id)
+            stored = next_profiles.get(key)
+            stored = RoomCleanSettings() if stored is None else replace(stored)
+            next_profiles[key] = stored
+            for attr in custom_fields:
+                setattr(stored, attr, getattr(profile, attr))
+            next_customized.setdefault(key, set()).update(custom_fields)
+
+        next_selections = dict(self.selected_clean_rooms)
+        next_dirty_maps = set(self._room_selection_dirty_maps)
+        if selected_room_ids is not None:
+            if selected_room_ids:
+                next_selections[map_id] = set(selected_room_ids)
+            else:
+                next_selections.pop(map_id, None)
+            next_dirty_maps.add(map_id)
+
+        self.clean_settings = global_settings
+        self.room_clean_settings = next_profiles
+        self.room_clean_settings_customized = next_customized
+        self.selected_clean_rooms = next_selections
+        self._room_selection_dirty_maps = next_dirty_maps
+        self._schedule_room_selection_save()
+        self.async_update_listeners()
 
     def _map_display_cache_payload(
         self,
