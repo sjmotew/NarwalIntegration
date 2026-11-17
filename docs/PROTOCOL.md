@@ -788,8 +788,15 @@ order only: 8 self test, 12 auto-empty, 7 leaving the dock, 3 vacuuming, 4 worki
 zone, 6 driving home. Dock-side states seen: `{1: 14, 12: 4}` mop drying, `{1: 14, 12: 6}`
 dust-cabinet disinfection, 3.18 = 4 dust-bag drying. **Field 11 = 3** read as "on the dock while
 a job is in progress": 3 during every self test and for the whole of a mid-job recharge (10 % to
-80 %), 2 when docked with no job, 1 off the dock. Whether other models agree is the open
-question; a Flow capture of the same four starts would settle it.
+80 %), 2 when docked with no job, 1 off the dock. **Confirmed over the local socket on the
+same unit** (second capture in the discussion, 2026-11-17): `status/get_device_base_status`
+polled every 5 s through a vacuum-only job answered 48 of 48 times and showed the same field 3
+and field 11 transitions the cloud saw, within seconds: `{1: 1, 3: 6}` on the dock, then
+`{1: 2, 4: 8}` self test, `{1: 2, 4: 12}` auto-empty, `{1: 2, 4: 7}` leaving the dock,
+`{1: 2, 4: 3}` vacuuming, `{1: 2, 4: 6}` driving home, `{1: 19, 18: 4}` and `{1: 14, 12: 6}` back
+on the dock. Field 11 flipped 2 → 1 on leaving and back to 2 on docking. The fault block has
+not yet been seen locally. Whether other models agree is the open question; a Flow capture of
+the same four starts would settle it.
 
 **Consumables — several, tracked together in
 [#79](https://github.com/sjmotew/NarwalIntegration/issues/79).**
@@ -808,8 +815,16 @@ question; a Flow capture of the same four starts would settle it.
   inference from enum ordering. [#77](https://github.com/sjmotew/NarwalIntegration/issues/77)
   suggests at least one model disagrees.
 
-**Unexplored topics.** `/schedule/clean_schedule/get`, `/config/get`, `/config/volume/set` and
-`/info/get_clean_time_line` are all known to exist and have never been probed locally.
+**`/info/get_clean_time_line` — probed (CX7).** It returns the **whole timeline of the last job
+as a list**, the same entries with the same timestamps that `status/time_line_status` pushes one
+by one over the cloud, including the closing entry with the end reason (`1.2 = 6`, `1.5 = 1`
+for a normal end; see the fault paragraph above for `7`)
+([Discussion #164](https://github.com/sjmotew/NarwalIntegration/discussions/164), second
+capture). On a model that does not broadcast, polling it once after a job is a local way to
+get the end reason.
+
+**Unexplored topics.** `/schedule/clean_schedule/get`, `/config/get` and `/config/volume/set`
+are known to exist and have never been probed locally.
 `/consumable/get_consumable_info` **has** now been probed — see §7.
 
 ---
