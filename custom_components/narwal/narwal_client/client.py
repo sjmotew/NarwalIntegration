@@ -1253,7 +1253,8 @@ class NarwalClient:
                 request. A late answer is then discarded if no request is owed
                 one, but taken as the answer to any command still in flight.
                 Meant for user-supplied topics, where a timeout most likely
-                means the robot ignored the topic.
+                means the robot ignored the topic. A cancelled wait gives up
+                the place the same way.
 
         Returns:
             CommandResponse with result code and decoded data.
@@ -1294,7 +1295,7 @@ class NarwalClient:
                     else:
                         # No listener — read directly from websocket
                         msg = await self._wait_for_field5_response(timeout, future)
-                except NarwalCommandError:
+                except (NarwalCommandError, asyncio.CancelledError):
                     if not hold_place_on_timeout:
                         with contextlib.suppress(ValueError):
                             self._expected_responses.remove(expected)

@@ -71,15 +71,25 @@ from .narwal_client.const import (
     TOPIC_CMD_DUST_GATHERING,
     TOPIC_CMD_EASY_CLEAN,
     TOPIC_CMD_FORCE_END,
+    TOPIC_CMD_GET_ALL_MAPS,
+    TOPIC_CMD_GET_BASE_STATUS,
+    TOPIC_CMD_GET_CONSUMABLE_INFO,
     TOPIC_CMD_GET_CURRENT_TASK,
+    TOPIC_CMD_GET_DEBUG_IMAGE,
+    TOPIC_CMD_GET_DEVICE_INFO,
+    TOPIC_CMD_GET_FEATURE_LIST,
+    TOPIC_CMD_GET_MAP,
     TOPIC_CMD_PAUSE,
     TOPIC_CMD_PLAN_START,
     TOPIC_CMD_RECALL,
     TOPIC_CMD_RESUME,
     TOPIC_CMD_SET_FAN_LEVEL,
+    TOPIC_CMD_SET_LED,
     TOPIC_CMD_SET_MOP_HUMIDITY,
+    TOPIC_CMD_TAKE_PICTURE,
     TOPIC_CMD_WASH_MOP,
     TOPIC_CMD_WASH_MOP_BY_ROBOT_STATUS,
+    TOPIC_CMD_YELL,
     UNACKNOWLEDGED_TOPICS,
     fan_level_for_live_command,
 )
@@ -117,6 +127,25 @@ _NATIVE_TOPICS: dict[str, str] = {
 # which narwal.get_topic_response may send. vacuum.send_command gets none.
 _NATIVE_TOPIC_PREFIXES = ("clean/", "task/")
 _RAW_READ_ALLOWED_TOPICS = frozenset({TOPIC_CMD_GET_CURRENT_TASK})
+# Topics the client itself sends and waits on, which the raw actions may send.
+# A timeout on these means the reply is late, not missing, so the request keeps
+# its place like the client's own would and the late reply is dropped. Any
+# other topic gives up its place, because the robot most likely ignored it.
+_RAW_ANSWERED_TOPICS = frozenset(
+    {
+        TOPIC_CMD_YELL,
+        TOPIC_CMD_GET_DEVICE_INFO,
+        TOPIC_CMD_GET_FEATURE_LIST,
+        TOPIC_CMD_GET_BASE_STATUS,
+        TOPIC_CMD_GET_CONSUMABLE_INFO,
+        TOPIC_CMD_GET_CURRENT_TASK,
+        TOPIC_CMD_GET_MAP,
+        TOPIC_CMD_GET_ALL_MAPS,
+        TOPIC_CMD_TAKE_PICTURE,
+        TOPIC_CMD_SET_LED,
+        TOPIC_CMD_GET_DEBUG_IMAGE,
+    }
+)
 
 ATTR_TOPIC = "topic"
 ATTR_PAYLOAD_HEX = "payload_hex"
@@ -788,18 +817,19 @@ class NarwalVacuum(NarwalEntity, RestoreEntity, StateVacuumEntity):
         resp = await self._async_send_raw(
             "send_command", topic, payload, timeout, lock=True
         )
-        _raise_if_command_failed(resp, f"command {topic}")
-        # The client counts a non-int field 1 as SUCCESS; for a write that
-        # means the topic answered with data, which this action would drop.
+        # A non-int field 1 is data, not a result code; checked first because
+        # the client turns a string such as '2' into result code 2.
         field1 = (resp.data or {}).get("1")
         if field1 is not None and (
             isinstance(field1, bool) or not isinstance(field1, int)
         ):
             raise HomeAssistantError(
                 f"Narwal send_command: the robot answered {topic} with data "
-                "rather than a result code. The command was sent; use "
-                "narwal.get_topic_response to see the reply"
+                f"({len(resp.raw_payload or b'')} B) rather than a result code. "
+                "The command was sent and should not be sent again; "
+                "narwal.get_topic_response is the action for reading a topic"
             )
+        _raise_if_command_failed(resp, f"command {topic}")
 
     async def async_get_topic_response(
         self,
@@ -908,9 +938,11 @@ class NarwalVacuum(NarwalEntity, RestoreEntity, StateVacuumEntity):
         wake plus the timeout; the client's command lock still serialises
         the frames.
 
-        A timed-out raw request gives up its reply slot at once
-        (``hold_place_on_timeout=False``): an unknown topic most likely
-        timed out because the robot ignores it.
+        A topic in ``_RAW_ANSWERED_TOPICS`` keeps its reply place after a
+        timeout, as the client's own request would, so its late reply is
+        dropped. Any other topic gives up its place at once
+        (``hold_place_on_timeout=False``), because the robot most likely
+        ignored it.
         """
         guard = (
             self.coordinator.dock_action_lock if lock else contextlib.nullcontext()
@@ -919,7 +951,10 @@ class NarwalVacuum(NarwalEntity, RestoreEntity, StateVacuumEntity):
             try:
                 await self._ensure_awake()
                 resp = await self.coordinator.client.send_command(
-                    topic, payload, timeout=timeout, hold_place_on_timeout=False
+                    topic,
+                    payload,
+                    timeout=timeout,
+                    hold_place_on_timeout=topic in _RAW_ANSWERED_TOPICS,
                 )
             except (NarwalCommandError, NarwalConnectionError) as err:
                 raise HomeAssistantError(f"Narwal {action} {topic}: {err}") from err

@@ -13,6 +13,7 @@ robot clock to Europe/Rome.
 
 from __future__ import annotations
 
+import asyncio
 import sys
 from unittest.mock import AsyncMock, MagicMock
 
@@ -22,7 +23,7 @@ import tests.ha_stubs
 
 tests.ha_stubs.install()
 
-from narwal_client.const import CommandResult  # noqa: E402
+from narwal_client.const import UNACKNOWLEDGED_TOPICS, CommandResult  # noqa: E402
 from narwal_client.models import CommandResponse, NarwalState  # noqa: E402
 from tests.test_vacuum_segments import _make_vacuum  # noqa: E402
 
@@ -176,6 +177,23 @@ class TestWrite:
         with pytest.raises(_HomeAssistantError, match="with data"):
             await _write(vac)
 
+    @pytest.mark.parametrize("code", ["2", "3", "4"])
+    async def test_string_field_1_is_data_not_a_result_code(self, code: str) -> None:
+        """0a0132 decodes to '2', which the client turns into result code 2.
+
+        The write ran; reporting NOT_APPLICABLE would invite a resend.
+        """
+        raw = bytes.fromhex("0a01") + code.encode()
+        vac = _vacuum(
+            CommandResponse(result_code=int(code), data={"1": code}, raw_payload=raw)
+        )
+        with pytest.raises(_HomeAssistantError) as err:
+            await _write(vac)
+        message = str(err.value)
+        assert "with data (3 B)" in message
+        assert "should not be sent again" in message
+        assert "failed" not in message
+
     @pytest.mark.parametrize(
         "response",
         [
@@ -255,7 +273,7 @@ class TestRead:
         lock = vac.coordinator.dock_action_lock
         await lock.acquire()
         try:
-            response = await _read(vac)
+            response = await asyncio.wait_for(_read(vac), 1)
         finally:
             lock.release()
         assert response == {"response_hex": "0801", "response_bytes": 2}
@@ -286,7 +304,7 @@ class TestRead:
         vac = _vacuum()
         await _read(vac, "clean/current_clean_task/get")
         vac.coordinator.client.send_command.assert_awaited_once_with(
-            "clean/current_clean_task/get", b"", timeout=5.0, hold_place_on_timeout=False
+            "clean/current_clean_task/get", b"", timeout=5.0, hold_place_on_timeout=True
         )
 
 
@@ -347,14 +365,33 @@ class TestShared:
         vac.coordinator.client.send_command.assert_not_awaited()
 
     @pytest.mark.parametrize(
-        "topic", ["config/set", "config/get", "region/get", "common/reboot", "map/get_map"]
+        "topic", ["config/set", "config/get", "region/get", "common/reboot", "config/gett"]
     )
     async def test_other_topics_are_sent(self, action: str, topic: str) -> None:
+        """A topic not known to be answered gives up its place on a timeout."""
         vac = _vacuum()
         await _call(vac, action, topic)
         vac.coordinator.client.send_command.assert_awaited_once_with(
             topic, b"", timeout=5.0, hold_place_on_timeout=False
         )
+
+    @pytest.mark.parametrize("topic", ["map/get_map", "common/yell", "developer/led_control"])
+    async def test_answered_topics_keep_their_place(self, action: str, topic: str) -> None:
+        """A timeout on a topic the client waits on means a late reply, not none."""
+        vac = _vacuum()
+        await _call(vac, action, topic)
+        vac.coordinator.client.send_command.assert_awaited_once_with(
+            topic, b"", timeout=5.0, hold_place_on_timeout=True
+        )
+
+    def test_answered_topics_can_be_sent(self, action: str) -> None:
+        module = _vacuum_module(_vacuum())
+        answered = module._RAW_ANSWERED_TOPICS
+        assert answered
+        assert not answered & set(module._NATIVE_TOPICS)
+        assert not answered & UNACKNOWLEDGED_TOPICS
+        for topic in answered - module._RAW_READ_ALLOWED_TOPICS:
+            assert not topic.startswith(module._NATIVE_TOPIC_PREFIXES)
 
     @pytest.mark.parametrize(("payload_hex", "body"), [(1234, b"\x12\x34"), (12, b"\x12")])
     async def test_int_payload_is_read_as_hex_text(

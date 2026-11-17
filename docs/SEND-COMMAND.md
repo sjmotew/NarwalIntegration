@@ -62,11 +62,12 @@ data:
 | `params.timeout` | Seconds to wait for the reply, 1 to 10. Default 5 |
 
 Field 1 of the reply is the result code. The action succeeds when the code is `SUCCESS` (1) or
-`APPLIED` (6), or when the reply has no field 1 or is empty. Any other code (`NOT_APPLICABLE`,
-`CONFLICT`, `NOT_READY`, ...) fails the action with its name, so an automation stops there and
-the error shows in its trace. If field 1 is data instead of a number, the topic answered like a
-read: the command was sent, but the action fails and points to `narwal.get_topic_response`,
-which returns the reply.
+`APPLIED` (6), or when the reply carries no result code (no field 1, field 1 = 0, an empty
+reply, or a reply that cannot be decoded). Any other code (`NOT_APPLICABLE`, `CONFLICT`,
+`NOT_READY`, ...) fails the action with its name, so an automation stops there and the error
+shows in its trace. If field 1 is data instead of a number, the topic answered like a read and
+the action fails. The command was sent, so do not send it again. Reads belong to
+`narwal.get_topic_response`.
 
 ## Read a setting
 
@@ -132,13 +133,19 @@ Freo 20, product key `fjhpiem4ba`, firmware v01.00.21.05:
   answers blocks other commands, polls included, until its timeout. Topics known never to be
   answered are refused up front, but a mistyped topic the robot ignores still causes this. That
   is why the timeout is capped at 10 s.
-- **A late reply.** When a raw command times out, its place is released at once, so the next
-  command's reply is not discarded. A reply that arrives after the timeout can instead be taken
-  for the answer to the next command, if one is in flight.
+- **A late reply.** A raw request to a topic the integration itself uses and knows is answered
+  (`map/get_map` and the like) keeps its place after a timeout, so a late reply is dropped. A
+  request to any other topic gives up its place at once, so the next command's reply is not
+  discarded. A reply to it that arrives after the timeout can be taken for the next command's
+  answer, if one is in flight. A cancelled request (a restarted automation) gives up its place
+  the same way.
 - **Writes make other actions wait.** `vacuum.send_command` holds the same lock as start, stop,
   pause, return to dock, locate, `narwal.clean_rooms` and the dock tasks, so those wait until
   it finishes: up to 10 s to wake the robot plus the timeout. `narwal.get_topic_response` does
-  not take or wait for that lock.
+  not take or wait for that lock. A read still goes through the one-command-at-a-time queue, so
+  another command can wait up to the read's timeout. Only the wait for the wake is gone.
+- **Reads skip the action lock.** `narwal.get_topic_response` sends whatever topic it is given
+  without that lock, so use `vacuum.send_command` for anything that changes a setting.
 - **No undo.** Any user who can control the vacuum can send any topic that is not refused,
   including `common/reboot` and `common/shutdown`. Read a setting before changing it so you can put it
   back.

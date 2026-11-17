@@ -80,7 +80,7 @@ async def test_read_returns_the_reply_keyed_by_entity(
     )
     assert response == {entity_id: {"response_hex": "0802", "response_bytes": 2}}
     send_command.assert_awaited_once_with(
-        "map/get_map", b"", timeout=3.0, hold_place_on_timeout=False
+        "map/get_map", b"", timeout=3.0, hold_place_on_timeout=True
     )
 
 

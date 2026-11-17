@@ -193,9 +193,34 @@ async def test_released_place_late_answer_with_nothing_owed_is_dropped() -> None
         await client.send_command(
             TOPIC_CMD_GET_MAP, timeout=0.05, hold_place_on_timeout=False
         )
+    # Released at the timeout, not consumed by the late frame below
+    assert not client._expected_responses
 
     await client._handle_message(MAP_RESPONSE)  # late, nobody waits
 
+    assert not client._expected_responses
+
+
+@pytest.mark.asyncio
+async def test_cancelled_wait_releases_its_place() -> None:
+    """A cancelled caller (a restarted automation) must not keep its place."""
+    client = _listening_client()
+
+    task = asyncio.create_task(
+        client.send_command("config/gett", timeout=5.0, hold_place_on_timeout=False)
+    )
+    await asyncio.sleep(0.01)
+    assert client._expected_responses
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert not client._expected_responses
+
+    delivery = asyncio.create_task(_deliver_after(client, STATUS_RESPONSE, 0.01))
+    response = await client.send_command(TOPIC_CMD_GET_BASE_STATUS, timeout=1.0)
+    await delivery
+
+    assert response.raw_payload == STATUS_RESPONSE[4:]
     assert not client._expected_responses
 
 
