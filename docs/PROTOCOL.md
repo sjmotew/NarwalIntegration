@@ -284,11 +284,11 @@ command.
 CleanTask {
   1: map_id                     // from get_map field 2.1 — NOT always 1
   2: [ CleanItem {              // repeated, one per zone
-       1: ZoneOption { 1: type, 2: zone_id }   // type 1 = room, 2 = free rectangle
+       1: ZoneOption { 1: type, 2: zone_id }   // type 1 = room, 2 = free rectangle, 3 = whole house (no zone_id, order 0)
        2: CleanParam { ... }                   // mode, fan, water, mop strength, passes
        3: order                                // execution order, 1-based
      } ]
-  3: TaskOption {}              // empty in every capture, app included
+  3: TaskOption { 1: 0, 5: 0 }  // app sends {1: 0, 5: 0}; {1: 1, 5: 0} with Freo Mind on (CX7, Discussion #164)
   5: task_type
 }
 ```
@@ -303,7 +303,13 @@ Notes that cost real debugging time:
 - **`ZoneOption` field 4 is not required.** It was reported as required on firmware
   v01.08.03.07; a capture of the app's own task on v01.09.05.01 shows the app omitting it.
   See [Corrections](#corrections-things-this-project-got-wrong).
-- **`TaskOption` is empty** in every capture examined, including the app's.
+- **`TaskOption` is not always empty.** Earlier captures showed it empty; on a CX7
+  (v01.13.11.02, app 2.11.90, [Discussion #164](https://github.com/sjmotew/NarwalIntegration/discussions/164))
+  the app sends `1a 04 08 00 28 00` (`{1: 0, 5: 0}`) and `{1: 1, 5: 0}` with "Freo Mind" on,
+  with `CleanParam` tag 9 moving in step (`48 00` → `48 01`); the robot's own task readback then
+  carries `1a 02 08 01`. Sending it empty still works.
+- **A whole-house start from the app** uses `ZoneOption {1: 3}` with no zone id and order 0,
+  and the robot's task readback lists every room (same capture).
 
 ### Verified against the app's own bytes
 
