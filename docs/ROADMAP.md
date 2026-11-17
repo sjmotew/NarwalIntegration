@@ -19,11 +19,11 @@ Researched and probed, parked pending further reverse engineering.
 
 | Feature | Status | Blocker |
 |---|---|---|
-| **Camera snapshots** | Client method works: refused while docked, about 2.4 frames/s of ~170 KB AES-CBC frames while the robot is off the dock (measured 2026-11-14, [PROTOCOL.md](PROTOCOL.md#developer)) | Image data is **AES-encrypted**. A community setup ([#157](https://github.com/sjmotew/NarwalIntegration/issues/157), @marczukmichal) obtains a per-device key from the Narwal cloud account once and decrypts locally; that route needs a cloud login, so it belongs in an optional companion, not the core integration |
+| **Camera snapshots** | Client method works: refused while docked, about 2.4 frames/s of ~170 KB AES-CBC frames while the robot is off the dock (measured 2026-11-14, [PROTOCOL.md](PROTOCOL.md#developer)) | Image data is **AES-encrypted**. A community setup ([Discussion #163](https://github.com/sjmotew/NarwalIntegration/discussions/163), @marczukmichal) obtains the per-device RSA key and IV from the Narwal cloud account once and decrypts locally; the local `take_picture` frames match that file layout (256-byte RSA-wrapped key + AES-CBC body), so the same key should unlock them; that route needs a cloud login, so it belongs in an optional companion, not the core integration |
 | **Camera LED control** | Partial response from robot | Correct payload format unconfirmed; needs idle-state testing |
 | **Vision obstacle overlay** | Built, tested, removed | Robot broadcasts raw AI candidates (3 to 6× more than the app shows), not confirmed detections. Unusable for a map overlay |
 | **Patrol / cruise mode** | Topics identified in APK | Not yet probed; depends on the camera working first |
-| **Live video** | App uses an Agora session with cloud-issued tokens | Cloud-dependent by design. A community add-on joins the session with the Agora Python server SDK and serves frames to a dashboard ([#157](https://github.com/sjmotew/NarwalIntegration/issues/157), @marczukmichal); the same caveat as the snapshot key applies |
+| **Live video** | App uses an Agora session with cloud-issued tokens | Cloud-dependent by design. A community add-on joins the session with the Agora Python server SDK and serves frames to a dashboard ([Discussion #163](https://github.com/sjmotew/NarwalIntegration/discussions/163), @marczukmichal, code at marczukmichal/narwal-freo20-ha); the same caveat as the snapshot key applies |
 
 ## Further out
 
