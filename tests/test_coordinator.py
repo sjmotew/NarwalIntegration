@@ -3992,7 +3992,7 @@ class TestTopicSubscriptionRenewal:
     is the signal that tells us we are cleaning, so gating renewal on it deadlocks.
     """
 
-    def _coordinator(self, last_subscribe: float) -> NarwalCoordinator:
+    def _coordinator(self, last_subscribe: float | None) -> NarwalCoordinator:
         c = _new_coordinator()
         c.hass = MagicMock()
         c.config_entry = MagicMock()
@@ -4031,6 +4031,35 @@ class TestTopicSubscriptionRenewal:
         """A poll past the renewal window re-sends the subscription."""
         c = self._coordinator(time.monotonic() - (TOPIC_RESUBSCRIBE_AFTER + 30))
         await c._async_update_data()
+        c.client.subscribe_to_topics.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_first_subscribe_is_not_held_back_on_a_freshly_booted_host(
+        self,
+    ) -> None:
+        """The renewal window must not depend on time.monotonic() being large.
+
+        time.monotonic() is system uptime on Linux. The timestamp used to start
+        at 0.0, so on a host up for less than the renewal window the first
+        subscribe was throttled until uptime passed it.
+        """
+        c = self._coordinator(None)
+        with patch(
+            "custom_components.narwal.coordinator.time.monotonic",
+            return_value=20.0,
+        ):
+            await c._async_update_data()
+        c.client.subscribe_to_topics.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_window_still_holds_back_a_repeat_subscribe(self) -> None:
+        c = self._coordinator(None)
+        with patch(
+            "custom_components.narwal.coordinator.time.monotonic",
+            return_value=20.0,
+        ):
+            await c._async_update_data()
+            await c._async_update_data()
         c.client.subscribe_to_topics.assert_awaited_once()
 
     @pytest.mark.asyncio
