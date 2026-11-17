@@ -35,6 +35,7 @@ def install() -> None:
     vol.Schema = MagicMock()  # type: ignore[attr-defined]
     vol.Required = MagicMock(side_effect=lambda *a, **kw: a[0] if a else "key")  # type: ignore[attr-defined]
     vol.Optional = MagicMock(side_effect=lambda *a, **kw: a[0] if a else "key")  # type: ignore[attr-defined]
+    vol.Exclusive = MagicMock(side_effect=lambda *a, **kw: a[0] if a else "key")  # type: ignore[attr-defined]
     vol.In = MagicMock()  # type: ignore[attr-defined]
     vol.Invalid = type("Invalid", (Exception,), {})  # type: ignore[attr-defined]
 
@@ -48,6 +49,7 @@ def install() -> None:
         ha_auth_permissions,
     )
     ha_auth_permissions_const.POLICY_CONTROL = "control"  # type: ignore[attr-defined]
+    ha_auth_permissions_const.POLICY_READ = "read"  # type: ignore[attr-defined]
 
     # homeassistant.const
     ha_const = _mod("homeassistant.const", ha)
@@ -89,7 +91,14 @@ def install() -> None:
     ha_exc.HomeAssistantError = type(  # type: ignore[attr-defined]
         "HomeAssistantError", (Exception,), {}
     )
-    ha_exc.Unauthorized = type("Unauthorized", (Exception,), {})  # type: ignore[attr-defined]
+    class _UnauthorizedError(Exception):
+        """Takes HA's keyword arguments (context, entity_id, permission, ...)."""
+
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            super().__init__(*args)
+            self.kwargs = kwargs
+
+    ha_exc.Unauthorized = _UnauthorizedError  # type: ignore[attr-defined]
     ha_exc.UnknownUser = type("UnknownUser", (Exception,), {})  # type: ignore[attr-defined]
 
     # homeassistant.config_entries
@@ -128,6 +137,7 @@ def install() -> None:
     ha_cv.comp_entity_ids = MagicMock()  # type: ignore[attr-defined]
     ha_cv.entity_ids = MagicMock()  # type: ignore[attr-defined]
     ha_cv.ensure_list = MagicMock()  # type: ignore[attr-defined]
+    ha_cv.entity_id = str  # type: ignore[attr-defined]
     ha_cv.config_entry_only_config_schema = MagicMock()  # type: ignore[attr-defined]
 
     # NOTE: deliberately does NOT expose EntityCategory. Real HA removed

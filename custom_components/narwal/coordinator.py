@@ -26,7 +26,12 @@ from .clean_profiles import (
     PendingProfileInput,
     suction_for_model,
 )
-from .const import DOMAIN, NO_BROADCAST_PRODUCT_KEYS
+from .const import (
+    DOMAIN,
+    NATIVE_TRAJECTORY_MAX_POINTS,
+    NATIVE_TRAJECTORY_RECENT_TAIL_POINTS,
+    NO_BROADCAST_PRODUCT_KEYS,
+)
 from .dock_tasks import (
     ROBOT_START_COMPATIBLE_DOCK_TASKS,
     ROBOT_START_STOP_REQUIRED_DOCK_TASKS,
@@ -65,8 +70,6 @@ ROOM_ORDER_STORE_VERSION = 1
 # Retained routes can reach roughly 0.5 MiB at the point cap. Persist session
 # boundaries immediately, but checkpoint point growth at a storage-safe cadence.
 MAP_DISPLAY_CACHE_SAVE_INTERVAL = 300.0
-NATIVE_TRAJECTORY_MAX_POINTS = 50_000
-NATIVE_TRAJECTORY_RECENT_TAIL_POINTS = 200
 NATIVE_TRAJECTORY_RESTORE_MIN_OVERLAP_POINTS = 3
 NATIVE_TRAJECTORY_RESTORE_GRACE = 60.0
 

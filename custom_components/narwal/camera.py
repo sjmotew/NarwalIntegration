@@ -7,7 +7,6 @@ import contextlib
 import logging
 import math
 import time
-from collections.abc import Mapping
 from typing import Any
 
 from homeassistant.components.camera import Camera
@@ -16,35 +15,26 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import NarwalConfigEntry
 from .const import (
-    CONF_MAP_ROTATION,
-    CONF_MAP_ZOOM,
     CONF_SHOW_FURNITURE,
     CONF_SHOW_FURNITURE_LABELS,
     CONF_SHOW_ROOM_LABELS,
     MAP_OPTION_DEFAULTS,
-    MAP_ROTATION_DEFAULT,
-    MAP_ZOOM_DEFAULT,
 )
-from .coordinator import (
-    NATIVE_TRAJECTORY_MAX_POINTS,
-    NATIVE_TRAJECTORY_RECENT_TAIL_POINTS,
-    NarwalCoordinator,
-)
+from .coordinator import NarwalCoordinator
 from .entity import NarwalEntity
+from .map_geometry import (
+    map_is_drawable,
+    map_rotation,
+    map_zoom,
+    native_trajectory_grid_points,
+)
 from .narwal_client.const import WorkingStatus
-from .narwal_client.models import overlay_to_grid
 
 _LOGGER = logging.getLogger(__name__)
 
 # Minimum seconds between re-renders (display_map arrives every ~1.5s
 # but PIL rendering is CPU-bound — no need to render every broadcast).
 _MIN_RENDER_INTERVAL = 2
-
-# Native trajectory points can repeat across display_map frames because field 2 is
-# the accumulated Narwal trajectory. Deduplicate tiny adjacent moves only.
-_NATIVE_TRAIL_MIN_GRID_DELTA = 0.25
-_NATIVE_TRAIL_MAX_POINTS = NATIVE_TRAJECTORY_MAX_POINTS
-_NATIVE_TRAIL_RECENT_TAIL_POINTS = NATIVE_TRAJECTORY_RECENT_TAIL_POINTS
 
 # The `path` attribute is sent to every frontend on each rendered frame, so it
 # carries a decimated copy of the drawn trail (newest points kept dense), not
@@ -104,25 +94,6 @@ class NarwalCarpetCamera(NarwalEntity, Camera):
             self._cached = img
             self._cached_at = now
         return self._cached
-
-
-def map_rotation(options: Mapping[str, Any]) -> int:
-    """Return the clockwise map rotation in degrees from an entry's options."""
-    try:
-        rotation = int(options.get(CONF_MAP_ROTATION, MAP_ROTATION_DEFAULT))
-    except (TypeError, ValueError):
-        return MAP_ROTATION_DEFAULT
-    rotation %= 360
-    return rotation if rotation in (0, 90, 180, 270) else MAP_ROTATION_DEFAULT
-
-
-def map_zoom(options: Mapping[str, Any]) -> float:
-    """Return the map zoom factor from an entry's options."""
-    try:
-        zoom = float(options.get(CONF_MAP_ZOOM, MAP_ZOOM_DEFAULT))
-    except (TypeError, ValueError):
-        return MAP_ZOOM_DEFAULT
-    return max(1.0, min(2.0, zoom))
 
 
 class NarwalMapCamera(NarwalEntity, Camera):
@@ -210,87 +181,6 @@ class NarwalMapCamera(NarwalEntity, Camera):
         await super().async_will_remove_from_hass()
 
     @staticmethod
-    def _native_trajectory_grid_points(
-        points: list[tuple[float, float]],
-        static_map,
-        max_points: int = _NATIVE_TRAIL_MAX_POINTS,
-        tail_points: int = _NATIVE_TRAIL_RECENT_TAIL_POINTS,
-    ) -> list[tuple[float, float]]:
-        """Return in-bounds grid points from Narwal's native trajectory."""
-        converted: list[tuple[float, float]] = []
-        pending_break = False
-
-        for raw_x, raw_y in NarwalMapCamera._native_trajectory_render_points(
-            points, max_points, tail_points,
-        ):
-            if not math.isfinite(raw_x) or not math.isfinite(raw_y):
-                pending_break = bool(converted)
-                continue
-            grid_x = overlay_to_grid(raw_x, static_map.origin_x)
-            grid_y = overlay_to_grid(raw_y, static_map.origin_y)
-            if grid_x is None or grid_y is None:
-                continue
-            if (
-                grid_x < 0
-                or grid_y < 0
-                or grid_x >= static_map.width
-                or grid_y >= static_map.height
-            ):
-                _LOGGER.debug(
-                    "Skipping native Narwal trail point outside map bounds: "
-                    "%.1f, %.1f (%dx%d)",
-                    grid_x,
-                    grid_y,
-                    static_map.width,
-                    static_map.height,
-                )
-                pending_break = bool(converted)
-                continue
-            point = (grid_x, grid_y)
-            if pending_break:
-                converted.append((float("nan"), float("nan")))
-                pending_break = False
-            if converted and math.hypot(
-                point[0] - converted[-1][0],
-                point[1] - converted[-1][1],
-            ) < _NATIVE_TRAIL_MIN_GRID_DELTA:
-                continue
-            converted.append(point)
-        return converted
-
-    @staticmethod
-    def _native_trajectory_render_points(
-        points: list[tuple[float, float]],
-        max_points: int = _NATIVE_TRAIL_MAX_POINTS,
-        tail_points: int = _NATIVE_TRAIL_RECENT_TAIL_POINTS,
-    ):
-        """Yield render-capped trajectory points while preserving the latest tail."""
-        if len(points) <= max_points:
-            yield from points
-            return
-
-        tail_size = min(tail_points, max_points)
-        tail_start = len(points) - tail_size
-        prefix_slots = max_points - tail_size
-        if prefix_slots <= 0:
-            yield from points[-max_points:]
-            return
-
-        span = max(tail_start - 1, 0)
-        slots = max(prefix_slots - 1, 1)
-        selected_indices: set[int] = set()
-        for slot in range(prefix_slots):
-            selected_indices.add(round(slot * span / slots))
-        selected_indices.update(range(tail_start, len(points)))
-        selected_indices.update(
-            index
-            for index, point in enumerate(points)
-            if not math.isfinite(point[0]) or not math.isfinite(point[1])
-        )
-        for index in sorted(selected_indices):
-            yield points[index]
-
-    @staticmethod
     def _trajectory_cache_key(
         display,
     ) -> tuple[int, int, int] | tuple[()]:
@@ -352,7 +242,7 @@ class NarwalMapCamera(NarwalEntity, Camera):
                 trail_points = display.trajectory_render_points()
             segments: list[list[list[float]]] = []
             segment: list[list[float]] = []
-            for grid_x, grid_y in cls._native_trajectory_grid_points(
+            for grid_x, grid_y in native_trajectory_grid_points(
                 trail_points,
                 static_map,
                 _PATH_ATTRIBUTE_MAX_POINTS,
@@ -441,7 +331,7 @@ class NarwalMapCamera(NarwalEntity, Camera):
 
         native_trail = None
         if display and display.has_trajectory:
-            native_trail = cls._native_trajectory_grid_points(
+            native_trail = native_trajectory_grid_points(
                 trail_points
                 if trail_points is not None
                 else display.trajectory_render_points(),
@@ -480,12 +370,7 @@ class NarwalMapCamera(NarwalEntity, Camera):
         display = state.map_display_data
 
         static_map = state.map_data
-        if (
-            not static_map
-            or not static_map.compressed_map
-            or static_map.width <= 0
-            or static_map.height <= 0
-        ):
+        if not map_is_drawable(static_map):
             # No map, no frame: do not keep describing the previous one.
             self._map_attributes = {}
             self.async_write_ha_state()

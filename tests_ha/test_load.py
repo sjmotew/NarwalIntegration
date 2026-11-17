@@ -33,6 +33,7 @@ MODULES = [
     "config_flow",
     "diagnostics",
     "entity",
+    "map_geometry",
     "websocket_api",
 ]
 

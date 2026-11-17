@@ -7,13 +7,14 @@ import math
 import struct
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
 import tests.ha_stubs
 
 tests.ha_stubs.install()
 
 from custom_components.narwal.camera import (  # noqa: E402
     _MAP_CARD_ATTRIBUTES,
-    _NATIVE_TRAIL_MAX_POINTS,
     _PATH_ATTRIBUTE_MAX_POINTS,
     NarwalMapCamera,
 )
@@ -52,48 +53,6 @@ def _camera(state: NarwalState) -> NarwalMapCamera:
     return camera
 
 
-def test_native_trajectory_grid_points_convert_and_dedupe() -> None:
-    """Narwal-native trajectory points are converted using the map origin."""
-    static_map = MapData(width=100, height=100, origin_x=2, origin_y=4)
-
-    points = NarwalMapCamera._native_trajectory_grid_points(
-        [(3.0, 5.0), (3.1, 5.1), (4.0, 6.0), (200.0, 200.0)],
-        static_map,
-    )
-
-    assert points == [(1.0, 1.0), (2.0, 2.0)]
-
-
-def test_native_trajectory_grid_points_preserve_segment_breaks() -> None:
-    """Discontinuous native windows remain separated for the renderer."""
-    static_map = MapData(width=100, height=100, origin_x=2, origin_y=4)
-
-    points = NarwalMapCamera._native_trajectory_grid_points(
-        [(3.0, 5.0), (4.0, 6.0), (float("nan"), float("nan")), (5.0, 7.0)],
-        static_map,
-    )
-
-    assert points[:2] == [(1.0, 1.0), (2.0, 2.0)]
-    assert math.isnan(points[2][0])
-    assert math.isnan(points[2][1])
-    assert points[3] == (3.0, 3.0)
-
-
-def test_native_trajectory_grid_points_break_at_out_of_bounds_sample() -> None:
-    """Missing off-map samples cannot connect otherwise nearby valid points."""
-    static_map = MapData(width=100, height=100)
-
-    points = NarwalMapCamera._native_trajectory_grid_points(
-        [(10.0, 10.0), (101.0, 10.0), (11.0, 10.0)],
-        static_map,
-    )
-
-    assert points[0] == (10.0, 10.0)
-    assert math.isnan(points[1][0])
-    assert math.isnan(points[1][1])
-    assert points[2] == (11.0, 10.0)
-
-
 def test_trajectory_cache_key_changes_for_same_length_native_update() -> None:
     """Same-length native trajectory updates must repaint the map overlay."""
     first = MapDisplayData.from_broadcast(
@@ -106,22 +65,6 @@ def test_trajectory_cache_key_changes_for_same_length_native_update() -> None:
     assert NarwalMapCamera._trajectory_cache_key(first) != (
         NarwalMapCamera._trajectory_cache_key(corrected)
     )
-
-
-def test_native_trajectory_grid_points_decimates_long_route_and_preserves_tail() -> None:
-    """Long native trajectories retain the latest Narwal point when capped."""
-    static_map = MapData(width=_NATIVE_TRAIL_MAX_POINTS + 20, height=10)
-    points = [(float(index), 1.0) for index in range(_NATIVE_TRAIL_MAX_POINTS + 10)]
-
-    converted = NarwalMapCamera._native_trajectory_grid_points(points, static_map)
-
-    assert len(converted) == _NATIVE_TRAIL_MAX_POINTS
-    assert converted[0] == (0.0, 1.0)
-    assert converted[-1] == (float(_NATIVE_TRAIL_MAX_POINTS + 9), 1.0)
-    assert converted[-200:] == [
-        (float(index), 1.0)
-        for index in range(_NATIVE_TRAIL_MAX_POINTS - 190, _NATIVE_TRAIL_MAX_POINTS + 10)
-    ]
 
 
 def test_handle_update_passes_native_trail_to_renderer_outside_cleaning() -> None:
@@ -147,9 +90,8 @@ def test_handle_update_passes_native_trail_to_renderer_outside_cleaning() -> Non
     camera = _camera(state)
     camera._schedule_render = MagicMock()
 
-    with patch.object(
-        NarwalMapCamera,
-        "_native_trajectory_grid_points",
+    with patch(
+        "custom_components.narwal.camera.native_trajectory_grid_points",
         side_effect=AssertionError("callback must not process full native route"),
     ):
         camera._handle_coordinator_update()
@@ -504,11 +446,23 @@ def test_robot_outside_the_map_has_no_position() -> None:
     assert "vacuum_position" not in attributes
 
 
-def test_lost_map_clears_the_map_card_attributes() -> None:
-    """Without a map there is no frame to describe."""
-    camera = _camera(NarwalState())
+@pytest.mark.parametrize(
+    "static_map",
+    [
+        None,
+        MapData(map_id=2, width=0, height=10, compressed_map=b"\x01"),
+        MapData(map_id=2, width=10, height=10),
+    ],
+    ids=["no map", "zero width", "no image"],
+)
+def test_lost_map_clears_the_map_card_attributes(static_map: MapData | None) -> None:
+    """Without a drawable map there is no frame to describe, and nothing is rendered."""
+    state = NarwalState()
+    state.map_data = static_map
+    camera = _camera(state)
     camera._map_attributes = {"vacuum_position": {"x": 1.0, "y": 1.0, "a": 0.0}}
 
     camera._handle_coordinator_update()
 
     assert camera.extra_state_attributes == {"render_count": 0}
+    camera._async_render.assert_not_called()
