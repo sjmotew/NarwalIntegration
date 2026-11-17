@@ -1233,6 +1233,8 @@ class NarwalClient:
         short_topic: str,
         payload: bytes = b"",
         timeout: float = COMMAND_RESPONSE_TIMEOUT,
+        *,
+        hold_place_on_timeout: bool = True,
     ) -> CommandResponse:
         """Send a command and wait for the field5 response.
 
@@ -1246,6 +1248,12 @@ class NarwalClient:
             short_topic: Command topic without prefix/device_id.
             payload: Protobuf-encoded payload (empty for most commands).
             timeout: Seconds to wait for response.
+            hold_place_on_timeout: If False, a command that times out gives up
+                its place at once, so the next response goes to the next
+                request. A late answer is then discarded if no request is owed
+                one, but taken as the answer to any command still in flight.
+                Meant for user-supplied topics, where a timeout most likely
+                means the robot ignored the topic.
 
         Returns:
             CommandResponse with result code and decoded data.
@@ -1264,30 +1272,33 @@ class NarwalClient:
             future: asyncio.Future[NarwalMessage] = (
                 asyncio.get_running_loop().create_future()
             )
+            expected = _ExpectedResponse(
+                short_topic,
+                time.monotonic() + timeout + LATE_RESPONSE_GRACE,
+                future,
+            )
             try:
-                await self._send_expecting(
-                    short_topic,
-                    frame,
-                    _ExpectedResponse(
-                        short_topic,
-                        time.monotonic() + timeout + LATE_RESPONSE_GRACE,
-                        future,
-                    ),
-                )
+                await self._send_expecting(short_topic, frame, expected)
                 _LOGGER.debug("Sent command: %s (%d bytes)", short_topic, len(frame))
 
-                # If listener is running, it routes the response to our future
-                # (avoid concurrent recv)
-                if self._listener_active:
-                    try:
-                        msg = await asyncio.wait_for(future, timeout=timeout)
-                    except TimeoutError:
-                        raise NarwalCommandError(
-                            f"No response for command '{short_topic}' within {timeout}s"
-                        ) from None
-                else:
-                    # No listener — read directly from websocket
-                    msg = await self._wait_for_field5_response(timeout, future)
+                try:
+                    # If listener is running, it routes the response to our
+                    # future (avoid concurrent recv)
+                    if self._listener_active:
+                        try:
+                            msg = await asyncio.wait_for(future, timeout=timeout)
+                        except TimeoutError:
+                            raise NarwalCommandError(
+                                f"No response for command '{short_topic}' within {timeout}s"
+                            ) from None
+                    else:
+                        # No listener — read directly from websocket
+                        msg = await self._wait_for_field5_response(timeout, future)
+                except NarwalCommandError:
+                    if not hold_place_on_timeout:
+                        with contextlib.suppress(ValueError):
+                            self._expected_responses.remove(expected)
+                    raise
             finally:
                 # A late answer now finds a done future and is discarded
                 future.cancel()

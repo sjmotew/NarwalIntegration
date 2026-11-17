@@ -168,6 +168,63 @@ async def test_direct_read_path_discards_late_response() -> None:
 
 
 @pytest.mark.asyncio
+async def test_released_place_lets_the_next_command_get_its_answer() -> None:
+    """An ignored raw topic must not cost the next command its response."""
+    client = _listening_client()
+
+    with pytest.raises(NarwalCommandError):
+        await client.send_command(
+            "config/gett", timeout=0.05, hold_place_on_timeout=False
+        )
+    assert not client._expected_responses
+
+    delivery = asyncio.create_task(_deliver_after(client, STATUS_RESPONSE, 0.01))
+    response = await client.send_command(TOPIC_CMD_GET_BASE_STATUS, timeout=1.0)
+    await delivery
+
+    assert response.raw_payload == STATUS_RESPONSE[4:]
+
+
+@pytest.mark.asyncio
+async def test_released_place_late_answer_with_nothing_owed_is_dropped() -> None:
+    client = _listening_client()
+
+    with pytest.raises(NarwalCommandError):
+        await client.send_command(
+            TOPIC_CMD_GET_MAP, timeout=0.05, hold_place_on_timeout=False
+        )
+
+    await client._handle_message(MAP_RESPONSE)  # late, nobody waits
+
+    assert not client._expected_responses
+
+
+@pytest.mark.asyncio
+async def test_direct_read_path_releases_place_on_timeout() -> None:
+    """Without the listener, a released place also passes the next answer on."""
+    client = NarwalClient("10.0.0.1", device_id="device")
+    client._ws = AsyncMock()
+    client._connected.set()
+
+    async def silent() -> bytes:
+        await asyncio.sleep(10)
+        return b""
+
+    client._ws.recv = AsyncMock(side_effect=silent)
+
+    with pytest.raises(NarwalCommandError):
+        await client.send_command(
+            "config/gett", timeout=0.05, hold_place_on_timeout=False
+        )
+    assert not client._expected_responses
+
+    client._ws.recv = AsyncMock(side_effect=[STATUS_RESPONSE])
+    response = await client.send_command(TOPIC_CMD_GET_BASE_STATUS, timeout=1.0)
+
+    assert response.raw_payload == STATUS_RESPONSE[4:]
+
+
+@pytest.mark.asyncio
 async def test_reconnect_forgets_what_the_old_socket_was_owed() -> None:
     client = _listening_client()
     await client._send_unawaited("common/notify_app_event", b"\x08\x01")
