@@ -9,6 +9,7 @@ its own map or place markers on the camera image. All positions are map grid coo
 | `vacuum_position` | `{x, y, a}` | Robot position; `a` is the heading in degrees (0 = +x, 90 = +y) |
 | `charger` | `{x, y}` | Dock position |
 | `path` | `[[[x, y], …], …]` | Trail of the current clean as segments, decimated to at most 400 points with the newest kept dense |
+| `calibration_points` | `[{vacuum: {x, y}, map: {x, y}}, …]` | Three grid points and their pixels in the camera image, after rotation and zoom |
 | `rooms` | `one entry per room with x0 y0 x1 y1, pos_x pos_y and name` | for the Xiaomi Vacuum Map Card |
 
 `calibration_points, rooms` follows the format map cards such as
