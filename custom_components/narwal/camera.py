@@ -53,8 +53,9 @@ _PATH_ATTRIBUTE_TAIL_POINTS = 100
 
 # Map-card attributes change with every frame and are only useful live.
 _MAP_CARD_ATTRIBUTES = frozenset(
-    {"calibration_points", "vacuum_position", "charger", "path"}
+    {"calibration_points", "vacuum_position", "charger", "path", "rooms"}
 )
+
 
 async def async_setup_entry(
     hass: HomeAssistant,
@@ -134,6 +135,7 @@ class NarwalMapCamera(NarwalEntity, Camera):
             MAP_OPTION_DEFAULTS[CONF_SHOW_FURNITURE_LABELS],
         )
         self._room_label_points: list[tuple[str, float, float]] = []
+        self._all_room_points: list[tuple[str, float, float]] = []
         self._map_attributes: dict[str, Any] = {}
 
     @property
@@ -143,7 +145,8 @@ class NarwalMapCamera(NarwalEntity, Camera):
         ``render_count`` changes with every frame so HA publishes it. The other
         keys describe the same frame for vacuum map cards: ``calibration_points``
         (grid to image pixels), ``vacuum_position`` ({x, y, a}), ``charger``
-        ({x, y}) and ``path`` (segments of [x, y]), all in map grid coordinates.
+        ({x, y}), ``path`` (segments of [x, y]) and ``rooms`` ({id: bounds}),
+        all in map grid coordinates.
         """
         return {"render_count": self._render_count, **self._map_attributes}
 
@@ -298,6 +301,60 @@ class NarwalMapCamera(NarwalEntity, Camera):
             return ()
         return display.trajectory_signature
 
+    @staticmethod
+    def _build_rooms_attribute(
+        static_map,
+        all_room_points: list[tuple[str, float, float]],
+    ) -> dict[str, dict[str, Any]]:
+        """Build the `rooms` attribute dictionary for Xiaomi Vacuum Map Card."""
+        if not getattr(static_map, "rooms", None):
+            return {}
+
+        label_coords: dict[str, tuple[float, float]] = {
+            name: (x, y) for name, x, y in all_room_points
+        }
+
+        rooms_attr: dict[str, dict[str, Any]] = {}
+        for room in static_map.rooms:
+            room_id = str(room.room_id)
+            name = room.display_name
+
+            if name in label_coords:
+                cx, cy = label_coords[name]
+            else:
+                cx, cy = static_map.width / 2.0, static_map.height / 2.0
+
+            x0 = getattr(room, "min_x", None)
+            if x0 is None:
+                x0 = getattr(room, "x0", None)
+            y0 = getattr(room, "min_y", None)
+            if y0 is None:
+                y0 = getattr(room, "y0", None)
+            x1 = getattr(room, "max_x", None)
+            if x1 is None:
+                x1 = getattr(room, "x1", None)
+            y1 = getattr(room, "max_y", None)
+            if y1 is None:
+                y1 = getattr(room, "y1", None)
+
+            if None in (x0, y0, x1, y1):
+                x0 = max(0.0, cx - 15.0)
+                y0 = max(0.0, cy - 15.0)
+                x1 = min(float(static_map.width), cx + 15.0)
+                y1 = min(float(static_map.height), cy + 15.0)
+
+            rooms_attr[room_id] = {
+                "x0": round(float(x0), 1),
+                "y0": round(float(y0), 1),
+                "x1": round(float(x1), 1),
+                "y1": round(float(y1), 1),
+                "pos_x": round(float(cx), 1),
+                "pos_y": round(float(cy), 1),
+                "name": name,
+            }
+
+        return rooms_attr
+
     @classmethod
     def _map_card_attributes(
         cls,
@@ -308,6 +365,7 @@ class NarwalMapCamera(NarwalEntity, Camera):
         image_width: int,
         image_height: int,
         trail_points: list[tuple[float, float]] | None = None,
+        all_room_points: list[tuple[str, float, float]] | None = None,
     ) -> dict[str, Any]:
         """Return the map-card attributes of a rendered frame (executor thread).
 
@@ -319,6 +377,10 @@ class NarwalMapCamera(NarwalEntity, Camera):
         from .narwal_client.map_renderer import calibration_points
 
         attributes: dict[str, Any] = {}
+        rooms = cls._build_rooms_attribute(static_map, all_room_points or [])
+        if rooms:
+            attributes["rooms"] = rooms
+
         calibration = calibration_points(
             static_map.height, image_width, image_height, map_rotation, map_zoom,
         )
@@ -387,6 +449,7 @@ class NarwalMapCamera(NarwalEntity, Camera):
         map_rotation: int,
         map_zoom: float,
         room_label_points: list[tuple[str, float, float]],
+        all_room_points: list[tuple[str, float, float]],
     ) -> tuple[bytes | None, dict[str, Any]]:
         """Render a frame and describe it for map cards (executor thread).
 
@@ -418,6 +481,7 @@ class NarwalMapCamera(NarwalEntity, Camera):
                 base_map_image.width,
                 base_map_image.height,
                 trail_points,
+                all_room_points,
             )
         except Exception:
             _LOGGER.exception("Failed to build map card attributes")
@@ -589,12 +653,14 @@ class NarwalMapCamera(NarwalEntity, Camera):
             or static_ts != self._base_map_ts
             or map_options_key != self._base_map_options_key
         ):
-            room_names: dict[int, str] | None = None
-            if map_options_key[0] and static_map.rooms:
-                room_names = {
+            all_room_names: dict[int, str] | None = None
+            if static_map.rooms:
+                all_room_names = {
                     r.room_id: r.display_name for r in static_map.rooms
                 }
+            visible_room_names = all_room_names if map_options_key[0] else None
             obstacles = static_map.obstacles if map_options_key[1] else None
+
             base_img = await self.hass.async_add_executor_job(
                 render_base_map,
                 static_map.compressed_map,
@@ -602,7 +668,7 @@ class NarwalMapCamera(NarwalEntity, Camera):
                 static_map.height,
                 None,
                 None,
-                room_names,
+                visible_room_names,
                 obstacles,
                 static_map.origin_x,
                 static_map.origin_y,
@@ -614,13 +680,19 @@ class NarwalMapCamera(NarwalEntity, Camera):
                 self._base_map_image = base_img
                 self._base_map_ts = static_ts
                 self._base_map_options_key = map_options_key
-                self._room_label_points = await self.hass.async_add_executor_job(
+
+                computed_points = await self.hass.async_add_executor_job(
                     room_label_points,
                     static_map.compressed_map,
                     static_map.width,
                     static_map.height,
-                    room_names,
+                    all_room_names,
                 )
+                self._all_room_points = computed_points
+                self._room_label_points = (
+                    computed_points if map_options_key[0] else []
+                )
+
                 _LOGGER.info(
                     "Base map rendered (ts=%d, %dx%d)",
                     static_ts,
@@ -640,6 +712,7 @@ class NarwalMapCamera(NarwalEntity, Camera):
                 self._map_rotation(),
                 self._map_zoom(),
                 self._room_label_points,
+                self._all_room_points,
             )
 
             if png_bytes:
