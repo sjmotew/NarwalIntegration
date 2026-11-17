@@ -751,11 +751,39 @@ as the pending setting for the next task. Home Assistant select entities also ad
 previous `Ultra` spelling beside `Ultra Powerful`: the select service validates options before
 entity-level alias normalization, so keeping that option is required for existing automations.
 
-**The error state.** No `WorkingStatus` value for a fault has ever been observed. Until one is,
-a robot error cannot be represented at all.
+**The error state — answered on one unit.** It is not a `WorkingStatus` value. On a Freo Z
+Ultra (CX7, `hEA7OEshlx`, v01.13.11.02;
+[Discussion #164](https://github.com/sjmotew/NarwalIntegration/discussions/164), @pdb0102,
+captured on the cloud MQTT path, local repeat pending) a fault arrives in **`robot_base_status`
+field 1** as a message `{1: code, 2: 2, 3: text}` — for example code `0x02310001`
+(36765697), text "Robot Perception System Error!" — while field 3.1 keeps the job's value for a
+few seconds and then goes to `{1: 1, 3: 2}`. Field 1 empties again within seconds. On
+`status/time_line_status` the job closes with **1.5 = 7**, against `1` for a normal end and `9`
+for a stop from the app. A second fault the same day (clean-water tank, `0x01010035`) arrived
+the same way and was resumable with `task/resume`. The integration does not yet surface this;
+it is the obvious shape for an error sensor.
 
-**Whether pass count is one field or two.** The app splits it by mode (vacuum passes, mop
-passes); we expose one control.
+**Pass count is two fields — answered.** `CleanParam` tag 5 is vacuum passes and tag 6 is
+mop passes. Two app starts for the same room that differ only there show `28 02 30 01` against
+`28 01 30 02`, and `clean/current_clean_task/get` echoes the split
+([Discussion #164](https://github.com/sjmotew/NarwalIntegration/discussions/164), CX7
+v01.13.11.02). The integration still exposes one control that sets both.
+
+**Field 3 carries a different activity sub-field per work mode (one unit).** The same capture
+shows 3.1 following the running job's mode and the activity sitting in a mode-specific
+sub-field: vacuum only `{1: 2, 4: n}`, mop only `{1: 3, 5: n}`, vacuum and mop `{1: 5, 6: n}`,
+vacuum then mop `{1: 4, 7: n}`. The 3.6 list in §7 and on
+[#142](https://github.com/sjmotew/NarwalIntegration/issues/142) is therefore the vacuum-and-mop
+column only, and the "2 while cleaning off the dock" (#124) and "5 while stuck" notes in §7
+may be the same activity numbered differently per column. Matched to app screenshots for 3.7
+(vacuum then mop): 14 self test, 13 leaving the dock, 7 vacuuming, 9 mopping, 2 returning to
+wash the mop, 4 washing the mop, 6 returning to charge. For 3.4 (vacuum only), from event
+order only: 8 self test, 12 auto-empty, 7 leaving the dock, 3 vacuuming, 4 working a drawn
+zone, 6 driving home. Dock-side states seen: `{1: 14, 12: 4}` mop drying, `{1: 14, 12: 6}`
+dust-cabinet disinfection, 3.18 = 4 dust-bag drying. **Field 11 = 3** read as "on the dock while
+a job is in progress": 3 during every self test and for the whole of a mid-job recharge (10 % to
+80 %), 2 when docked with no job, 1 off the dock. Whether other models agree is the open
+question; a Flow capture of the same four starts would settle it.
 
 **Consumables — several, tracked together in
 [#79](https://github.com/sjmotew/NarwalIntegration/issues/79).**
