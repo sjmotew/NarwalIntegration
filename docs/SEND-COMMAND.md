@@ -13,6 +13,36 @@ Both wake the robot first if it is asleep. They are low-level tools: you need th
 for most writes, a protobuf request body. [PROTOCOL.md](PROTOCOL.md#9-topic-reference) lists
 the known topics and field maps.
 
+If a setting has an entity, change it through the entity. After a raw `config/set` of that
+setting, the entity shows the old value until the next refresh.
+
+## Refused topics
+
+Topics the integration sends itself to start, stop or change a task are refused by both
+actions. A raw copy would skip the integration's own bookkeeping, so entities would show stale
+state. The error names what to use instead:
+
+| Topic | Use instead |
+|---|---|
+| `clean/plan/start`, `clean/start_clean`, `clean/easy_clean/start` | `vacuum.start` or `narwal.clean_rooms` |
+| `task/pause` | `vacuum.pause` |
+| `task/resume` | `vacuum.start` |
+| `task/force_end` | `vacuum.stop`, or turn off the dock task switch |
+| `task/cancel` | `vacuum.stop` |
+| `supply/recall` | `vacuum.return_to_base` |
+| `supply/wash_mop`, `supply/wash_mop_by_robot_status` | Wash mop switch |
+| `supply/dry_mop` | Dry mop switch |
+| `supply/dry_dust_bag` | Dry and disinfect dust bin switch |
+| `supply/dry_station_bag` | Dry and disinfect dock bag switch |
+| `supply/dust_gathering` | Empty dustbin switch |
+| `clean/set_fan_level` | `vacuum.set_fan_speed` |
+| `clean/set_mop_humidity` | Mopping humidity select |
+| `supply/ambient_light_ctrl` | Dock light |
+
+Any other topic under `clean/` or `task/` is refused as well. The one exception is the read
+`clean/current_clean_task/get`, which `narwal.get_topic_response` may send. Other topics,
+such as `config/*`, `region/*`, `map/*` and `common/reboot`, are not restricted.
+
 ## Change a setting
 
 ```yaml
@@ -31,9 +61,12 @@ data:
 | `params.payload_hex` | Request body as a quoted hex string. Empty by default |
 | `params.timeout` | Seconds to wait for the reply, 1 to 10. Default 5 |
 
-Field 1 of the reply is the result code. `SUCCESS` (1), `APPLIED` (6) and a reply without field 1
-count as accepted; any other code (`NOT_APPLICABLE`, `CONFLICT`, `NOT_READY`, ...) fails the action with its name, so an
-automation stops there and the error shows in its trace.
+Field 1 of the reply is the result code. The action succeeds when the code is `SUCCESS` (1) or
+`APPLIED` (6), or when the reply has no field 1 or is empty. Any other code (`NOT_APPLICABLE`,
+`CONFLICT`, `NOT_READY`, ...) fails the action with its name, so an automation stops there and
+the error shows in its trace. If field 1 is data instead of a number, the topic answered like a
+read: the command was sent, but the action fails and points to `narwal.get_topic_response`,
+which returns the reply.
 
 ## Read a setting
 
@@ -67,6 +100,10 @@ reply before trusting it.
 To try a read by hand, run the action from **Developer tools → Actions**; the response is shown
 under the form. In an automation, the trace keeps it for each run.
 
+The `response_variable` value is stored in every saved automation trace. When only the size
+matters, use `response_bytes` rather than `response_hex`. Do not read maps (`map/get_map`)
+from automations, because a whole map would be stored with each trace.
+
 ## Decoding a reply
 
 Replies are protobuf without a schema. `protoc --decode_raw` shows the field numbers and values:
@@ -92,12 +129,16 @@ Freo 20, product key `fjhpiem4ba`, firmware v01.00.21.05:
 
 - **One command at a time.** Replies carry no topic and are matched to requests by send order
   ([#108](https://github.com/sjmotew/NarwalIntegration/issues/108)). A topic the robot never
-  answers keeps its place for the timeout plus 10 s, and other commands, polls included, time
-  out behind it. Topics known never to be answered are refused up front, but a mistyped topic
-  the robot ignores still causes this. That is why the timeout is capped at 10 s.
-- **Other actions wait.** A raw command holds the same lock as start, stop, pause, return to
-  dock, locate, `narwal.clean_rooms` and the dock tasks, so those wait until it finishes: up to 10 s to wake the robot plus
-  the timeout.
-- **No undo.** Any user who can control the vacuum can send any topic, including
-  `common/reboot` and `common/shutdown`. Read a setting before changing it so you can put it
+  answers blocks other commands, polls included, until its timeout. Topics known never to be
+  answered are refused up front, but a mistyped topic the robot ignores still causes this. That
+  is why the timeout is capped at 10 s.
+- **A late reply.** When a raw command times out, its place is released at once, so the next
+  command's reply is not discarded. A reply that arrives after the timeout can instead be taken
+  for the answer to the next command, if one is in flight.
+- **Writes make other actions wait.** `vacuum.send_command` holds the same lock as start, stop,
+  pause, return to dock, locate, `narwal.clean_rooms` and the dock tasks, so those wait until
+  it finishes: up to 10 s to wake the robot plus the timeout. `narwal.get_topic_response` does
+  not take or wait for that lock.
+- **No undo.** Any user who can control the vacuum can send any topic that is not refused,
+  including `common/reboot` and `common/shutdown`. Read a setting before changing it so you can put it
   back.

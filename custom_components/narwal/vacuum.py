@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import re
 from dataclasses import dataclass
@@ -61,6 +62,24 @@ from .narwal_client import (
 from .narwal_client.const import (
     ACTIVE_CLEANING_STATUSES,
     COMMAND_RESPONSE_TIMEOUT,
+    TOPIC_CMD_AMBIENT_LIGHT_CTRL,
+    TOPIC_CMD_CANCEL,
+    TOPIC_CMD_CLEAN_TASK,
+    TOPIC_CMD_DRY_DUST_BAG,
+    TOPIC_CMD_DRY_MOP,
+    TOPIC_CMD_DRY_STATION_BAG,
+    TOPIC_CMD_DUST_GATHERING,
+    TOPIC_CMD_EASY_CLEAN,
+    TOPIC_CMD_FORCE_END,
+    TOPIC_CMD_GET_CURRENT_TASK,
+    TOPIC_CMD_PAUSE,
+    TOPIC_CMD_PLAN_START,
+    TOPIC_CMD_RECALL,
+    TOPIC_CMD_RESUME,
+    TOPIC_CMD_SET_FAN_LEVEL,
+    TOPIC_CMD_SET_MOP_HUMIDITY,
+    TOPIC_CMD_WASH_MOP,
+    TOPIC_CMD_WASH_MOP_BY_ROBOT_STATUS,
     UNACKNOWLEDGED_TOPICS,
     fan_level_for_live_command,
 )
@@ -71,6 +90,34 @@ _RAW_TOPIC = re.compile(r"[a-z0-9_]+(?:/[a-z0-9_]+)*")
 _SEND_COMMAND_PARAMS = frozenset({"payload_hex", "timeout"})
 _RAW_TIMEOUT_MIN = 1.0
 
+# Topics the integration sends itself to change cleaning, task or dock state.
+# A raw copy would skip the bookkeeping the native action does (assumed clean,
+# map cache, pending settings), so entities would go stale. Each is refused
+# and the error names what to use instead.
+_NATIVE_TOPICS: dict[str, str] = {
+    TOPIC_CMD_PLAN_START: "vacuum.start or narwal.clean_rooms",
+    TOPIC_CMD_CLEAN_TASK: "vacuum.start or narwal.clean_rooms",
+    TOPIC_CMD_EASY_CLEAN: "vacuum.start or narwal.clean_rooms",
+    TOPIC_CMD_PAUSE: "vacuum.pause",
+    TOPIC_CMD_RESUME: "vacuum.start",
+    TOPIC_CMD_FORCE_END: "vacuum.stop, or turn off the dock task switch",
+    TOPIC_CMD_CANCEL: "vacuum.stop",
+    TOPIC_CMD_RECALL: "vacuum.return_to_base",
+    TOPIC_CMD_WASH_MOP: "the Wash mop switch",
+    TOPIC_CMD_WASH_MOP_BY_ROBOT_STATUS: "the Wash mop switch",
+    TOPIC_CMD_DRY_MOP: "the Dry mop switch",
+    TOPIC_CMD_DRY_DUST_BAG: "the Dry and disinfect dust bin switch",
+    TOPIC_CMD_DRY_STATION_BAG: "the Dry and disinfect dock bag switch",
+    TOPIC_CMD_DUST_GATHERING: "the Empty dustbin switch",
+    TOPIC_CMD_SET_FAN_LEVEL: "vacuum.set_fan_speed",
+    TOPIC_CMD_SET_MOP_HUMIDITY: "the Mopping humidity select",
+    TOPIC_CMD_AMBIENT_LIGHT_CTRL: "the Dock light entity",
+}
+# Any other clean/ or task/ topic is refused too, except these known reads,
+# which narwal.get_topic_response may send. vacuum.send_command gets none.
+_NATIVE_TOPIC_PREFIXES = ("clean/", "task/")
+_RAW_READ_ALLOWED_TOPICS = frozenset({TOPIC_CMD_GET_CURRENT_TASK})
+
 ATTR_TOPIC = "topic"
 ATTR_PAYLOAD_HEX = "payload_hex"
 ATTR_TIMEOUT = "timeout"
@@ -79,7 +126,7 @@ ATTR_TIMEOUT = "timeout"
 # vacuum.send_command and narwal.get_topic_response reject the same input.
 GET_TOPIC_RESPONSE_SCHEMA = {
     vol.Required(ATTR_TOPIC): cv.string,
-    vol.Optional(ATTR_PAYLOAD_HEX): str,
+    vol.Optional(ATTR_PAYLOAD_HEX): cv.string,
     vol.Optional(ATTR_TIMEOUT): vol.Any(int, float),
 }
 
@@ -736,9 +783,23 @@ class NarwalVacuum(NarwalEntity, RestoreEntity, StateVacuumEntity):
             command,
             params.get(ATTR_PAYLOAD_HEX, ""),
             params.get(ATTR_TIMEOUT, COMMAND_RESPONSE_TIMEOUT),
+            read=False,
         )
-        resp = await self._async_send_raw("send_command", topic, payload, timeout)
+        resp = await self._async_send_raw(
+            "send_command", topic, payload, timeout, lock=True
+        )
         _raise_if_command_failed(resp, f"command {topic}")
+        # The client counts a non-int field 1 as SUCCESS; for a write that
+        # means the topic answered with data, which this action would drop.
+        field1 = (resp.data or {}).get("1")
+        if field1 is not None and (
+            isinstance(field1, bool) or not isinstance(field1, int)
+        ):
+            raise HomeAssistantError(
+                f"Narwal send_command: the robot answered {topic} with data "
+                "rather than a result code. The command was sent; use "
+                "narwal.get_topic_response to see the reply"
+            )
 
     async def async_get_topic_response(
         self,
@@ -753,9 +814,11 @@ class NarwalVacuum(NarwalEntity, RestoreEntity, StateVacuumEntity):
         NOT_APPLICABLE) for the caller to decode.
         """
         topic, payload, timeout = self._parse_raw_request(
-            "get_topic_response", topic, payload_hex, timeout
+            "get_topic_response", topic, payload_hex, timeout, read=True
         )
-        resp = await self._async_send_raw("get_topic_response", topic, payload, timeout)
+        resp = await self._async_send_raw(
+            "get_topic_response", topic, payload, timeout, lock=False
+        )
         raw = resp.raw_payload or b""
         return {"response_hex": raw.hex(), "response_bytes": len(raw)}
 
@@ -765,8 +828,14 @@ class NarwalVacuum(NarwalEntity, RestoreEntity, StateVacuumEntity):
         topic: Any,
         payload_hex: Any,
         timeout: Any,
+        *,
+        read: bool,
     ) -> tuple[str, bytes, float]:
-        """Validate a raw topic request shared by both raw-command actions."""
+        """Validate a raw topic request shared by both raw-command actions.
+
+        ``read`` is true for ``narwal.get_topic_response``, which may also send
+        the known reads under ``clean/`` and ``task/``.
+        """
         short_topic = (topic if isinstance(topic, str) else "").strip().strip("/")
         if not _RAW_TOPIC.fullmatch(short_topic):
             raise HomeAssistantError(f"Narwal {action}: invalid topic {topic!r}")
@@ -776,6 +845,22 @@ class NarwalVacuum(NarwalEntity, RestoreEntity, StateVacuumEntity):
             raise HomeAssistantError(
                 f"Narwal {action}: {short_topic} is never answered by the robot"
             )
+        if short_topic in _NATIVE_TOPICS:
+            raise HomeAssistantError(
+                f"Narwal {action}: {short_topic} is sent by the integration "
+                f"itself; use {_NATIVE_TOPICS[short_topic]} instead"
+            )
+        if short_topic.startswith(_NATIVE_TOPIC_PREFIXES) and not (
+            read and short_topic in _RAW_READ_ALLOWED_TOPICS
+        ):
+            raise HomeAssistantError(
+                f"Narwal {action}: {short_topic} is refused; clean/ and task/ "
+                "topics change cleaning state, use the vacuum actions instead"
+            )
+        # An all-digit hex body from a template arrives as an int (native
+        # template types); take it back as text. bool is an int subclass.
+        if isinstance(payload_hex, int) and not isinstance(payload_hex, bool):
+            payload_hex = str(payload_hex)
         if not isinstance(payload_hex, str):
             raise HomeAssistantError(
                 f"Narwal {action}: payload_hex must be a quoted hex string"
@@ -795,8 +880,9 @@ class NarwalVacuum(NarwalEntity, RestoreEntity, StateVacuumEntity):
             raise HomeAssistantError(
                 f"Narwal {action}: timeout must be a number"
             ) from err
-        # Capped like start/return: the call holds the dock action lock, so a
-        # topic the robot ignores delays those actions for up to this long.
+        # Capped like start/return: a write holds the dock action lock, and
+        # any request holds the client's command lock, so a topic the robot
+        # ignores delays other commands for up to this long.
         if not _RAW_TIMEOUT_MIN <= seconds <= self._ACTION_TIMEOUT:
             raise HomeAssistantError(
                 f"Narwal {action}: timeout must be "
@@ -810,18 +896,30 @@ class NarwalVacuum(NarwalEntity, RestoreEntity, StateVacuumEntity):
         topic: str,
         payload: bytes,
         timeout: float,
+        *,
+        lock: bool,
     ) -> CommandResponse:
-        """Wake the robot and send one raw topic under the dock action lock.
+        """Wake the robot and send one raw topic.
 
-        The lock is held for every topic: a raw command cannot be classified
-        as dock-safe, and without the lock it could land between another
-        action's state check and its command.
+        Writes (``lock``) hold the dock action lock: a raw write cannot be
+        classified as dock-safe, and without the lock it could land between
+        another action's state check and its command. Reads skip it, so a
+        polled read on a sleeping robot cannot delay stop or return by the
+        wake plus the timeout; the client's command lock still serialises
+        the frames.
+
+        A timed-out raw request gives up its reply slot at once
+        (``hold_place_on_timeout=False``): an unknown topic most likely
+        timed out because the robot ignores it.
         """
-        async with self.coordinator.dock_action_lock:
+        guard = (
+            self.coordinator.dock_action_lock if lock else contextlib.nullcontext()
+        )
+        async with guard:
             try:
                 await self._ensure_awake()
                 resp = await self.coordinator.client.send_command(
-                    topic, payload, timeout=timeout
+                    topic, payload, timeout=timeout, hold_place_on_timeout=False
                 )
             except (NarwalCommandError, NarwalConnectionError) as err:
                 raise HomeAssistantError(f"Narwal {action} {topic}: {err}") from err

@@ -79,7 +79,26 @@ async def test_read_returns_the_reply_keyed_by_entity(
         return_response=True,
     )
     assert response == {entity_id: {"response_hex": "0802", "response_bytes": 2}}
-    send_command.assert_awaited_once_with("map/get_map", b"", timeout=3.0)
+    send_command.assert_awaited_once_with(
+        "map/get_map", b"", timeout=3.0, hold_place_on_timeout=False
+    )
+
+
+async def test_read_takes_an_all_digit_payload_given_as_int(
+    hass: HomeAssistant, robot: tuple[str, AsyncMock]
+) -> None:
+    """A template rendering "1234" yields an int; the schema must let it through."""
+    entity_id, send_command = robot
+    await hass.services.async_call(
+        DOMAIN,
+        SERVICE_GET_TOPIC_RESPONSE,
+        {"entity_id": entity_id, "topic": "config/get", "payload_hex": 1234},
+        blocking=True,
+        return_response=True,
+    )
+    send_command.assert_awaited_once_with(
+        "config/get", b"\x12\x34", timeout=5.0, hold_place_on_timeout=False
+    )
 
 
 @pytest.mark.parametrize(
@@ -88,6 +107,7 @@ async def test_read_returns_the_reply_keyed_by_entity(
         {"topic": "region/get", "timeout": True},
         {"topic": "region/get", "timeout": 15},
         {"topic": "region/get", "payload_hex": 100},
+        {"topic": "region/get", "payload_hex": ["a0"]},
         {"topic": "Region/Get"},
         {"topic": "region/get", "params": {}},
         {},
@@ -119,7 +139,9 @@ async def test_send_command_writes_and_raises_on_refusal(
         {"entity_id": entity_id, "command": "config/set", "params": {"payload_hex": "a00200"}},
         blocking=True,
     )
-    send_command.assert_awaited_once_with("config/set", bytes.fromhex("a00200"), timeout=5.0)
+    send_command.assert_awaited_once_with(
+        "config/set", bytes.fromhex("a00200"), timeout=5.0, hold_place_on_timeout=False
+    )
 
     send_command.return_value = CommandResponse(result_code=CommandResult.NOT_APPLICABLE)
     with pytest.raises(HomeAssistantError, match="NOT_APPLICABLE"):
@@ -129,3 +151,26 @@ async def test_send_command_writes_and_raises_on_refusal(
             {"entity_id": entity_id, "command": "map/get_map"},
             blocking=True,
         )
+
+
+@pytest.mark.parametrize("topic", ["clean/start_clean", "supply/recall"])
+async def test_native_topics_are_refused_by_both_actions(
+    hass: HomeAssistant, robot: tuple[str, AsyncMock], topic: str
+) -> None:
+    entity_id, send_command = robot
+    with pytest.raises(HomeAssistantError, match=f"{topic} is sent by the integration"):
+        await hass.services.async_call(
+            "vacuum",
+            "send_command",
+            {"entity_id": entity_id, "command": topic},
+            blocking=True,
+        )
+    with pytest.raises(HomeAssistantError, match=f"{topic} is sent by the integration"):
+        await hass.services.async_call(
+            DOMAIN,
+            SERVICE_GET_TOPIC_RESPONSE,
+            {"entity_id": entity_id, "topic": topic},
+            blocking=True,
+            return_response=True,
+        )
+    send_command.assert_not_awaited()

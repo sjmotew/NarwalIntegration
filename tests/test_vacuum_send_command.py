@@ -102,14 +102,14 @@ class TestWrite:
         vac = _vacuum()
         await _write(vac, payload_hex="a00200")
         vac.coordinator.client.send_command.assert_awaited_once_with(
-            "config/set", bytes.fromhex("a00200"), timeout=5.0
+            "config/set", bytes.fromhex("a00200"), timeout=5.0, hold_place_on_timeout=False
         )
 
     async def test_strips_slashes_and_defaults_to_empty_payload(self) -> None:
         vac = _vacuum()
         await vac.async_send_command("/region/set/")
         vac.coordinator.client.send_command.assert_awaited_once_with(
-            "region/set", b"", timeout=5.0
+            "region/set", b"", timeout=5.0, hold_place_on_timeout=False
         )
 
     @pytest.mark.parametrize("timeout", [1, 8, 10, 7.5])
@@ -155,6 +155,59 @@ class TestWrite:
         with pytest.raises(_HomeAssistantError, match="unknown params 1, foo"):
             await vac.async_send_command("config/set", {1: "x", "foo": "y"})
 
+    async def test_reply_with_data_in_field_1_raises(self) -> None:
+        """The client counts a non-int field 1 as SUCCESS; a write must not."""
+        vac = _vacuum(
+            CommandResponse(
+                result_code=CommandResult.SUCCESS,
+                data={"1": {"2": 3}},
+                raw_payload=bytes.fromhex("0a021003"),
+            )
+        )
+        with pytest.raises(
+            _HomeAssistantError, match="answered region/get with data.*get_topic_response"
+        ):
+            await vac.async_send_command("region/get")
+        vac.coordinator.client.send_command.assert_awaited_once()
+
+    @pytest.mark.parametrize("data", [{"1": True}, {"1": b"x"}, {"1": "x"}])
+    async def test_non_int_field_1_values_raise(self, data: dict) -> None:
+        vac = _vacuum(CommandResponse(result_code=CommandResult.SUCCESS, data=data))
+        with pytest.raises(_HomeAssistantError, match="with data"):
+            await _write(vac)
+
+    @pytest.mark.parametrize(
+        "response",
+        [
+            CommandResponse(result_code=0, data={"2": 5}, raw_payload=bytes.fromhex("1005")),
+            CommandResponse(result_code=0),
+            CommandResponse(result_code=CommandResult.SUCCESS, data={"1": 1}),
+            CommandResponse(result_code=CommandResult.APPLIED, data={"1": 6}),
+        ],
+    )
+    async def test_reply_without_data_in_field_1_is_accepted(self, response) -> None:
+        vac = _vacuum(response)
+        await _write(vac, payload_hex="a00200")
+
+    async def test_current_task_read_is_refused(self) -> None:
+        """Only the read action has the clean/ and task/ read allowlist."""
+        vac = _vacuum()
+        with pytest.raises(_HomeAssistantError, match="clean/current_clean_task/get is refused"):
+            await vac.async_send_command("clean/current_clean_task/get")
+        vac.coordinator.client.send_command.assert_not_awaited()
+
+    async def test_holds_the_action_lock_while_sending(self) -> None:
+        vac = _vacuum()
+        lock = vac.coordinator.dock_action_lock
+
+        async def _send(*_args, **_kwargs):
+            assert lock.locked()
+            return CommandResponse(result_code=CommandResult.SUCCESS)
+
+        vac.coordinator.client.send_command = AsyncMock(side_effect=_send)
+        await _write(vac, "region/set")
+        assert not lock.locked()
+
 
 class TestRead:
     async def test_returns_reply_without_judging_field_1(self) -> None:
@@ -188,13 +241,75 @@ class TestRead:
         vac = _vacuum()
         await _read(vac, "config/get", payload_hex="0a00", timeout=3)
         vac.coordinator.client.send_command.assert_awaited_once_with(
-            "config/get", bytes.fromhex("0a00"), timeout=3.0
+            "config/get", bytes.fromhex("0a00"), timeout=3.0, hold_place_on_timeout=False
         )
 
     async def test_fires_no_event(self) -> None:
         vac = _vacuum()
         await _read(vac)
         vac.hass.bus.async_fire.assert_not_called()
+
+    async def test_does_not_take_the_action_lock(self) -> None:
+        """A polled read on a sleeping robot must not delay stop or return."""
+        vac = _vacuum()
+        lock = vac.coordinator.dock_action_lock
+        await lock.acquire()
+        try:
+            response = await _read(vac)
+        finally:
+            lock.release()
+        assert response == {"response_hex": "0801", "response_bytes": 2}
+
+    async def test_wakes_without_the_action_lock(self) -> None:
+        vac = _vacuum()
+        lock = vac.coordinator.dock_action_lock
+        vac.coordinator.client.robot_awake = False
+
+        async def _wake(*_args, **_kwargs):
+            assert not lock.locked()
+
+        vac.coordinator.client.wake = AsyncMock(side_effect=_wake)
+        await _read(vac)
+        vac.coordinator.client.wake.assert_awaited_once()
+
+    async def test_data_in_field_1_is_returned(self) -> None:
+        vac = _vacuum(
+            CommandResponse(
+                result_code=CommandResult.SUCCESS,
+                data={"1": {"2": 3}},
+                raw_payload=bytes.fromhex("0a021003"),
+            )
+        )
+        assert await _read(vac) == {"response_hex": "0a021003", "response_bytes": 4}
+
+    async def test_current_task_read_is_allowed(self) -> None:
+        vac = _vacuum()
+        await _read(vac, "clean/current_clean_task/get")
+        vac.coordinator.client.send_command.assert_awaited_once_with(
+            "clean/current_clean_task/get", b"", timeout=5.0, hold_place_on_timeout=False
+        )
+
+
+
+_NATIVE_TOPICS = [
+    ("clean/plan/start", "vacuum.start or narwal.clean_rooms"),
+    ("clean/start_clean", "vacuum.start or narwal.clean_rooms"),
+    ("clean/easy_clean/start", "vacuum.start or narwal.clean_rooms"),
+    ("task/pause", "vacuum.pause"),
+    ("task/resume", "vacuum.start"),
+    ("task/force_end", "vacuum.stop"),
+    ("task/cancel", "vacuum.stop"),
+    ("supply/recall", "vacuum.return_to_base"),
+    ("supply/wash_mop", "the Wash mop switch"),
+    ("supply/wash_mop_by_robot_status", "the Wash mop switch"),
+    ("supply/dry_mop", "the Dry mop switch"),
+    ("supply/dry_dust_bag", "the Dry and disinfect dust bin switch"),
+    ("supply/dry_station_bag", "the Dry and disinfect dock bag switch"),
+    ("supply/dust_gathering", "the Empty dustbin switch"),
+    ("clean/set_fan_level", "vacuum.set_fan_speed"),
+    ("clean/set_mop_humidity", "the Mopping humidity select"),
+    ("supply/ambient_light_ctrl", "the Dock light entity"),
+]
 
 
 async def _call(vac, action: str, topic: str, **params):
@@ -206,17 +321,49 @@ async def _call(vac, action: str, topic: str, **params):
 
 @pytest.mark.parametrize("action", ["write", "read"])
 class TestShared:
-    async def test_holds_the_action_lock_while_sending(self, action: str) -> None:
+    @pytest.mark.parametrize(("topic", "instead"), _NATIVE_TOPICS)
+    async def test_native_topic_is_refused(self, action: str, topic: str, instead: str) -> None:
+        """A raw copy would skip the coordinator bookkeeping of the native action."""
         vac = _vacuum()
-        lock = vac.coordinator.dock_action_lock
+        with pytest.raises(_HomeAssistantError) as err:
+            await _call(vac, action, topic)
+        assert topic in str(err.value)
+        assert f"use {instead}" in str(err.value)
+        vac.coordinator.client.send_command.assert_not_awaited()
 
-        async def _send(*_args, **_kwargs):
-            assert lock.locked()
-            return CommandResponse(result_code=CommandResult.SUCCESS)
+    def test_native_topics_cover_the_mapping(self, action: str) -> None:
+        vac = _vacuum()
+        assert set(_vacuum_module(vac)._NATIVE_TOPICS) == {t for t, _ in _NATIVE_TOPICS}
 
-        vac.coordinator.client.send_command = AsyncMock(side_effect=_send)
-        await _call(vac, action, "region/get")
-        assert not lock.locked()
+    @pytest.mark.parametrize(
+        "topic", ["clean/foo", "clean/plan/get_all", "task/foo", "task/get_status"]
+    )
+    async def test_other_clean_and_task_topics_are_refused(
+        self, action: str, topic: str
+    ) -> None:
+        vac = _vacuum()
+        with pytest.raises(_HomeAssistantError, match=f"{topic} is refused"):
+            await _call(vac, action, topic)
+        vac.coordinator.client.send_command.assert_not_awaited()
+
+    @pytest.mark.parametrize(
+        "topic", ["config/set", "config/get", "region/get", "common/reboot", "map/get_map"]
+    )
+    async def test_other_topics_are_sent(self, action: str, topic: str) -> None:
+        vac = _vacuum()
+        await _call(vac, action, topic)
+        vac.coordinator.client.send_command.assert_awaited_once_with(
+            topic, b"", timeout=5.0, hold_place_on_timeout=False
+        )
+
+    @pytest.mark.parametrize(("payload_hex", "body"), [(1234, b"\x12\x34"), (12, b"\x12")])
+    async def test_int_payload_is_read_as_hex_text(
+        self, action: str, payload_hex: int, body: bytes
+    ) -> None:
+        """An all-digit body from a template arrives as an int."""
+        vac = _vacuum()
+        await _call(vac, action, "config/set", payload_hex=payload_hex)
+        assert vac.coordinator.client.send_command.call_args.args[1] == body
 
     async def test_wakes_a_sleeping_robot_first(self, action: str) -> None:
         vac = _vacuum()
@@ -247,7 +394,12 @@ class TestShared:
         [
             ({"payload_hex": "zz"}, "not valid hex"),
             ({"payload_hex": "a0020"}, "not valid hex"),
-            ({"payload_hex": 100}, "quoted hex string"),
+            ({"payload_hex": 100}, "not valid hex"),
+            ({"payload_hex": True}, "quoted hex string"),
+            ({"payload_hex": False}, "quoted hex string"),
+            ({"payload_hex": 12.34}, "quoted hex string"),
+            ({"payload_hex": ["a0"]}, "quoted hex string"),
+            ({"payload_hex": None}, "quoted hex string"),
             ({"timeout": "soon"}, "must be a number"),
             ({"timeout": True}, "must be a number"),
             ({"timeout": False}, "must be a number"),
