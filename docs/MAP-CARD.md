@@ -62,3 +62,55 @@ creation time, origin and size), so after a map change, including a map that gre
 id, the answer carries the points again.
 
 The command only reads what the integration already holds and sends nothing to the robot.
+
+## Active map over the websocket API
+
+The integration fetches the robot's map at startup and when a clean is started from Home
+Assistant. A floor switched in the Narwal app is not picked up in between
+([#43](https://github.com/sjmotew/NarwalIntegration/issues/43)). A card that shows more than one
+floor can ask the robot which map is active with the websocket command `narwal/active_map`:
+
+```json
+{"type": "narwal/active_map", "entity_id": "vacuum.<robot>"}
+```
+
+`entity_id` is any entity of the robot; the config entry id is accepted as `entry_id` instead.
+Sending both is rejected with `invalid_format`. Without either, the command answers only when
+exactly one Narwal entry is configured (and enabled) and returns `target_required` otherwise, also
+while a second robot is still retrying its setup. An `entity_id` or `entry_id` that is not a
+loaded Narwal entry, or a robot that is configured but not loaded yet, returns `not_found`.
+
+Asking wakes the robot and replaces the map the entities show, so a user who is not an
+administrator needs control permission on the robot's vacuum entity, the same check the
+services make; without it the answer is `unauthorized`.
+
+The result:
+
+| Key | Shape | Meaning |
+|---|---|---|
+| `version` | `1` | Shape of this answer; raised on any incompatible change |
+| `entry_id` | string | Config entry that answered |
+| `held` | boolean | `false`: the robot was asked. `true`: a task is running, and this is the map the integration holds |
+| `map` | `{id, created_at, width, height}` or `null` | The active map; `null` only when `held` and no map is held yet |
+| `rooms` | `[{id, name}, ...]` | Its rooms (id > 0), with the names the integration shows |
+
+While a task runs (cleaning, paused, returning, remapping, or a finished task while the robot is
+not back on the dock), the robot is not asked and no lock is taken: the map is fixed for the
+duration of a task, and the answer is the held map with `held: true`.
+
+While the robot is docked or idle, the command takes the same lock the dock actions and a clean
+start take, wakes the robot if needed and sends the same `get_map` a clean start sends. A
+request that arrives during a clean start therefore waits for it; if that start began a task,
+the answer is the held map with `held: true` and the robot is not asked. Concurrent requests
+share one call, and a fetched answer is reused for 30 s unless the integration fetched the map
+itself in between. If waking or `get_map` fails, the error is `map_failed`, and for the next
+30 s further requests get the same error without asking the robot again, so a card polling a
+robot that does not answer cannot keep the lock busy.
+
+The fetched map replaces the one the integration holds, and the entities are updated at once,
+so the camera and the room list `narwal.clean_rooms` resolves against follow the active floor.
+When the fetched map is not the one the retained trail belongs to, that trail and the last
+robot position are cleared, as a clean start clears them; on the same floor they stay. A
+switch to another floor also raises the *segments changed* repair if your rooms are mapped to
+areas on one floor. Do not confirm it for a floor you only looked at, or the area mapping of
+your main floor is replaced.

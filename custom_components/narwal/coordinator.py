@@ -2423,6 +2423,25 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
         if self._pending_map_display_cache_snapshot is not None:
             self._schedule_map_display_cache_save(self.client.state, immediate=True)
 
+    async def async_align_trail_with_static_map(self) -> None:
+        """Align the retained trail with a static map fetched outside a clean start.
+
+        A docked robot sends no ``display_map`` packet, so the drop in
+        ``_retain_native_trajectory`` never runs for it: a trail retained on
+        another map (a floor switched in the Narwal app) is cleared here, the
+        same way a clean start clears it. Otherwise a trail cache that waited
+        for a static map is bound and restored, as the poll fallback does.
+        """
+        map_identity = self._static_map_identity(self.client.state)
+        if map_identity is None:
+            return
+        retained_identity = self._retained_map_identity
+        if retained_identity is not None and retained_identity != map_identity:
+            await self.async_clear_map_display_cache()
+            return
+        self._scope_pending_map_display_cache_snapshot()
+        self._restore_pending_map_display_cache()
+
     async def async_clear_map_display_cache(self) -> None:
         """Clear cached display-map trajectory after accepting a new clean."""
         self._begin_map_display_cache_clear()
