@@ -43,6 +43,7 @@ from .const import DOMAIN
 from .coordinator import is_clean_session_context
 from .map_geometry import (
     map_is_drawable,
+    map_placement,
     map_rotation,
     map_zoom,
     native_trajectory_grid_points,
@@ -264,21 +265,11 @@ def trail_signature(
 
     The grid points depend on the trail and on the map they are placed on, so
     both are in it: the trail's own signature (count and checksums, as the
-    camera caches on), then every map field the conversion reads. ``id`` and
-    ``created_at`` alone are not enough: a robot that never sends a creation
-    time leaves it at 0, and an extended map keeps its id but moves its origin.
+    camera caches on), then every map field the conversion reads.
     """
     if not map_is_drawable(static_map) or display is None or not display.has_trajectory:
         return None
-    return [
-        *display.trajectory_signature,
-        static_map.map_id,
-        static_map.created_at,
-        static_map.origin_x,
-        static_map.origin_y,
-        static_map.width,
-        static_map.height,
-    ]
+    return [*display.trajectory_signature, *map_placement(static_map)]
 
 
 def _answer(

@@ -112,14 +112,17 @@ share one call, and a fetched answer is reused for 30 s unless the integration f
 itself in between. If the robot or its connection fails (waking, `get_map`, a timeout), the
 error is `map_failed`, and for the next 30 s further requests get the same error without asking
 the robot again, so a card polling a robot that does not answer cannot keep the lock busy; a
-robot that failed asleep and has woken since is asked again at once. Any other error is a bug:
-it is logged with its traceback and answered as `unknown_error`.
+robot that failed asleep and has woken since is asked again at once. A request still waiting when
+the entry is unloaded gets `map_failed` too. Any other error is a bug: it is logged with its
+traceback and answered as `unknown_error`.
 
 Every fetch is a `get_map` to the robot, so call the command when a card opens, when it shows
 another floor, or before acting on a floor, rather than on a short timer.
 
 The fetched map replaces the one the integration holds, and the entities are updated at once,
-so the camera and the room list `narwal.clean_rooms` resolves against follow the active floor.
+so the camera and the room list `narwal.clean_rooms` resolves against follow the active floor,
+also on a robot that sends the same creation time for every floor. An entity that fails while
+being told is logged and does not fail the request.
 When the fetched map is not the one the retained trail belongs to, that trail and the last
 robot position are dropped from memory; on the same floor they stay. The stored trail is not
 written, since looking at a floor is no clean: it is restored the way startup restores it, only
