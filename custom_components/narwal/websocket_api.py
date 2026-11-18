@@ -72,9 +72,10 @@ def coordinator_for(hass: HomeAssistant, msg: dict[str, Any]) -> NarwalCoordinat
 
     A card holds an entity id, so ``entity_id`` (any entity of the robot) is
     resolved through the entity registry like the services do. Without a
-    target the command answers only when exactly one entry is configured and
-    enabled: counting loaded entries instead would answer for the other robot
-    while one is still retrying its setup after a restart.
+    target the command answers for the one entry that is configured and
+    enabled, ``target_required`` for several and ``not_found`` for none:
+    counting loaded entries instead would answer for the other robot while
+    one is still retrying its setup after a restart.
     """
     coordinators: dict[str, NarwalCoordinator] = hass.data.get(DOMAIN, {})
     if (entity_id := msg.get("entity_id")) is not None:

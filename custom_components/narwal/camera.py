@@ -24,10 +24,10 @@ from .coordinator import NarwalCoordinator
 from .entity import NarwalEntity
 from .map_geometry import (
     map_is_drawable,
-    map_rotation,
-    map_zoom,
     native_trajectory_grid_points,
 )
+from .map_geometry import map_rotation as rotation_option
+from .map_geometry import map_zoom as zoom_option
 from .narwal_client.const import WorkingStatus
 
 _LOGGER = logging.getLogger(__name__)
@@ -149,11 +149,11 @@ class NarwalMapCamera(NarwalEntity, Camera):
 
     def _map_rotation(self) -> int:
         """Return persisted clockwise map rotation in degrees."""
-        return map_rotation(self.coordinator.config_entry.options)
+        return rotation_option(self.coordinator.config_entry.options)
 
     def _map_zoom(self) -> float:
         """Return persisted map zoom factor."""
-        return map_zoom(self.coordinator.config_entry.options)
+        return zoom_option(self.coordinator.config_entry.options)
 
     async def async_camera_image(
         self, width: int | None = None, height: int | None = None,

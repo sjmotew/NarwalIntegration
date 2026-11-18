@@ -70,6 +70,8 @@ def native_trajectory_grid_points(
     """Return in-bounds grid points from Narwal's native trajectory."""
     converted: list[tuple[float, float]] = []
     pending_break = False
+    skipped = 0
+    first_skipped = (0.0, 0.0)
 
     for raw_x, raw_y in native_trajectory_render_points(
         points, max_points, tail_points,
@@ -87,14 +89,9 @@ def native_trajectory_grid_points(
             or grid_x >= static_map.width
             or grid_y >= static_map.height
         ):
-            _LOGGER.debug(
-                "Skipping native Narwal trail point outside map bounds: "
-                "%.1f, %.1f (%dx%d)",
-                grid_x,
-                grid_y,
-                static_map.width,
-                static_map.height,
-            )
+            if not skipped:
+                first_skipped = (grid_x, grid_y)
+            skipped += 1
             pending_break = bool(converted)
             continue
         point = (grid_x, grid_y)
@@ -107,6 +104,17 @@ def native_trajectory_grid_points(
         ) < NATIVE_TRAIL_MIN_GRID_DELTA:
             continue
         converted.append(point)
+    if skipped:
+        # Once per call: a map whose origin moved puts nearly every point out
+        # of bounds, and a trail can hold 50,000 of them.
+        _LOGGER.debug(
+            "Skipped %d native Narwal trail points outside map bounds (%dx%d), "
+            "first at %.1f, %.1f",
+            skipped,
+            static_map.width,
+            static_map.height,
+            *first_skipped,
+        )
     return converted
 
 
