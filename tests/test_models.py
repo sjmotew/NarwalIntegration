@@ -443,6 +443,37 @@ class TestNarwalState:
 
         assert not state.has_unmapped_active_dock_task
 
+    def test_timerless_dock_drying_is_not_unmapped(self) -> None:
+        """Dock drying without timers must not lock every control (#171).
+
+        The CX7 reports field 3 {1: 19, 18: 4} while drying the dock bag or the
+        dust bin and sends no drying timers at all, so the drying task set is
+        empty. Treating that as unmapped made the clean settings, the room
+        switches and the dock switches unavailable for the whole run.
+        """
+        state = NarwalState()
+        state.update_from_base_status({"3": {"1": 19, "18": 4}, "11": 2})
+
+        assert state.station_activity == 4
+        assert state.active_dock_drying_tasks == ()
+        assert not state.has_unmapped_active_dock_task
+
+    def test_timerless_dock_drying_reports_no_task_key(self) -> None:
+        """Which drying task is running is still unknown, so none is claimed."""
+        state = NarwalState()
+        state.update_from_base_status({"3": {"1": 19, "18": 4}, "11": 2})
+
+        assert state.active_dock_task_keys == ()
+        assert state.telemetry_dock_task_keys == ()
+
+    def test_unknown_station_activity_still_blocks_commands(self) -> None:
+        """Only the drying value is known; other station work stays unmapped."""
+        state = NarwalState()
+        state.update_from_base_status({"3": {"1": 19, "18": 7}, "11": 2})
+
+        assert state.station_activity == 7
+        assert state.has_unmapped_active_dock_task
+
     def test_unmapped_dock_timer_blocks_commands(self) -> None:
         """Unmapped active timer pairs are kept as a blocking safety signal."""
         state = NarwalState()

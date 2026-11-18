@@ -805,3 +805,26 @@ async def test_switch_blocks_command_when_preflight_refresh_fails() -> None:
         await switch.async_turn_on()
 
     coordinator.client.empty_dustbin.assert_not_awaited()
+
+
+def test_timerless_post_task_dock_drying_keeps_controls_available() -> None:
+    """CX7 dock-bag / dust-bin drying must not lock every control (#171).
+
+    The robot reports field 3 {1: 19, 18: 4} and no drying timers, so no task
+    key can be named. The clean settings and a dock start stay available
+    because both tasks the value can stand for are start-compatible; stopping
+    stays unavailable because the running task is still unknown.
+    """
+    from custom_components.narwal.coordinator import can_edit_pending_clean_settings
+    from narwal_client.models import NarwalState
+
+    state = NarwalState()
+    state.update_from_base_status({"3": {"1": 19, "18": 4}, "11": 2})
+
+    assert state.station_activity == 4
+    assert state.active_dock_task_keys == ()
+    assert not state.has_unmapped_active_dock_task
+
+    assert can_edit_pending_clean_settings(state)
+    assert can_start_dock_task(state)
+    assert not can_stop_dock_task(state)
