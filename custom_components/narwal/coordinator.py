@@ -2427,20 +2427,37 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
         """Align the retained trail with a static map fetched outside a clean start.
 
         A docked robot sends no ``display_map`` packet, so the drop in
-        ``_retain_native_trajectory`` never runs for it: a trail retained on
-        another map (a floor switched in the Narwal app) is cleared here, the
-        same way a clean start clears it. Otherwise a trail cache that waited
-        for a static map is bound and restored, as the poll fallback does.
+        ``_retain_native_trajectory`` never runs for it. A trail retained on
+        another map (a floor switched in the Narwal app) is dropped from
+        memory here, with the last robot position. The store is not written:
+        looking at a floor is no clean, so the last clean's trail stays saved,
+        and it is restored the way startup restores it, which takes it only on
+        its own map. Switching back to the floor it belongs to therefore shows
+        it again, as a restart would. Otherwise a trail cache that waited for
+        a static map is bound and restored, as the poll fallback does, and a
+        trail retained before any map was known is bound to this one, so the
+        next floor switch is recognised.
         """
         map_identity = self._static_map_identity(self.client.state)
         if map_identity is None:
             return
         retained_identity = self._retained_map_identity
         if retained_identity is not None and retained_identity != map_identity:
-            await self.async_clear_map_display_cache()
+            snapshot = self._pending_map_display_cache_snapshot
+            self._reset_map_display_cache_state(clear_memory=True)
+            if snapshot is not None and self._map_display_cache_snapshot_is_scoped(snapshot):
+                # A save still queued for the old map's trail goes to the store.
+                self._pending_map_display_cache_snapshot = snapshot
+            self._retained_map_identity = map_identity
+            try:
+                await self._async_restore_map_display_cache()
+            except Exception:
+                _LOGGER.debug("Could not restore display-map trajectory cache")
             return
         self._scope_pending_map_display_cache_snapshot()
         self._restore_pending_map_display_cache()
+        if self._retained_map_identity is None and self._has_current_map_display_trajectory():
+            self._retained_map_identity = map_identity
 
     async def async_clear_map_display_cache(self) -> None:
         """Clear cached display-map trajectory after accepting a new clean."""

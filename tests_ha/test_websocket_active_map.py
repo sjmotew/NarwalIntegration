@@ -87,6 +87,26 @@ async def test_active_map_errors(
     assert msg["error"]["code"] == "not_found"
 
 
+async def test_active_map_bug_is_logged_not_map_failed(
+    hass: HomeAssistant,
+    hass_ws_client,
+    flow_entry: MockConfigEntry,
+    silent_robot: dict,
+    caplog,
+) -> None:
+    """A programming error reaches HA's handler: unknown_error and a logged traceback."""
+    await _setup(hass, flow_entry)
+    silent_robot["get_map"].side_effect = AttributeError("no attribute")
+    client = await hass_ws_client(hass)
+
+    with patch(_WAKE, new=AsyncMock()):
+        await client.send_json_auto_id({"type": "narwal/active_map"})
+        msg = await client.receive_json()
+
+    assert msg["error"]["code"] == "unknown_error"
+    assert "AttributeError: no attribute" in caplog.text
+
+
 async def test_active_map_by_entity_and_held_during_a_clean(
     hass: HomeAssistant,
     hass_ws_client,
@@ -137,8 +157,9 @@ async def test_active_map_floor_switch_through_the_coordinator(
 ) -> None:
     """Docked on floor 1 with its trail, switched to floor 2 in the app.
 
-    The real coordinator drops floor 1's trail and pose, and the room entities
-    of floor 2 are registered at once, without waiting for a poll.
+    The real coordinator drops floor 1's trail and pose from memory but leaves
+    the stored trail alone, and the room entities of floor 2 are registered at
+    once, without waiting for a poll.
     """
     await _setup(hass, flow_entry)
     coordinator = flow_entry.runtime_data
@@ -180,14 +201,20 @@ async def test_active_map_floor_switch_through_the_coordinator(
 
     silent_robot["get_map"].side_effect = get_map
     client = await hass_ws_client(hass)
-    with patch(_WAKE, new=AsyncMock()):
+    store_writes = AsyncMock()
+    with (
+        patch(_WAKE, new=AsyncMock()),
+        patch.object(coordinator, "_async_write_map_display_cache", store_writes),
+    ):
         await client.send_json_auto_id({"type": "narwal/active_map"})
         msg = await client.receive_json()
-    await hass.async_block_till_done()
+        await hass.async_block_till_done()
 
     assert msg["success"], msg
     assert msg["result"]["map"]["id"] == 2
     assert state.map_display_data is None
+    # Looking at floor 2 is no clean: the stored trail is not emptied.
+    assert {} not in [written.args[0] for written in store_writes.await_args_list]
     # The room entities of floor 2 are created by the notify, not by a later poll.
     assert len(room_entities() - on_floor_1) == 2
 
@@ -246,5 +273,10 @@ async def test_active_map_needs_control_permission(
     await client.send_json_auto_id({"type": "narwal/active_map"})
     msg = await client.receive_json()
 
+    assert msg["error"]["code"] == "unauthorized"
+
+    # Permission before the target: an entry that does not exist answers the same.
+    await client.send_json_auto_id({"type": "narwal/active_map", "entry_id": "missing"})
+    msg = await client.receive_json()
     assert msg["error"]["code"] == "unauthorized"
     silent_robot["get_map"].assert_not_awaited()

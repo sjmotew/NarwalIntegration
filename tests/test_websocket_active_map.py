@@ -8,6 +8,7 @@ import weakref
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from websockets.exceptions import ConnectionClosedError
 
 import tests.ha_stubs
 
@@ -17,6 +18,10 @@ from homeassistant.exceptions import Unauthorized  # noqa: E402
 
 from custom_components.narwal import websocket_api as ws  # noqa: E402
 from custom_components.narwal.const import DOMAIN  # noqa: E402
+from custom_components.narwal.narwal_client import (  # noqa: E402
+    NarwalCommandError,
+    NarwalConnectionError,
+)
 from narwal_client.const import WorkingStatus  # noqa: E402
 from narwal_client.models import MapData, NarwalState, RoomInfo  # noqa: E402
 
@@ -52,6 +57,7 @@ class _Coordinator:
         self.client.wake = AsyncMock()
         self.dock_action_lock = asyncio.Lock()
         self.async_set_updated_data = MagicMock()
+        self.async_update_listeners = MagicMock()
         self.async_align_trail_with_static_map = AsyncMock()
         self.set_get_map(get_map)
 
@@ -112,10 +118,10 @@ def _registry(**entries: str | None) -> MagicMock:
 
 
 def _user(*, admin: bool = False, allowed: tuple[str, ...] = ()) -> MagicMock:
-    """A user holding control permission on the ``allowed`` entities only."""
+    """A user holding read and control permission on the ``allowed`` entities only."""
     user = MagicMock(is_admin=admin)
     user.permissions.check_entity = lambda entity_id, policy: (
-        policy == "control" and entity_id in allowed
+        policy in ("read", "control") and entity_id in allowed
     )
     return user
 
@@ -176,14 +182,16 @@ async def test_trail_is_aligned_and_entities_told_inside_the_lock() -> None:
     coordinator.async_align_trail_with_static_map.side_effect = lambda: order.append(
         f"align {coordinator.dock_action_lock.locked()} {coordinator.client.state.map_data.map_id}"
     )
-    coordinator.async_set_updated_data.side_effect = lambda state: order.append(
+    coordinator.async_update_listeners.side_effect = lambda: order.append(
         f"notify {coordinator.dock_action_lock.locked()}"
     )
 
     await ws.async_get_active_map(_hass_with(coordinator), coordinator)
 
     assert order == ["align True 2", "notify True"]
-    coordinator.async_set_updated_data.assert_called_once_with(coordinator.client.state)
+    coordinator.async_update_listeners.assert_called_once_with()
+    # async_set_updated_data would move the coordinator's 60 s poll on every fetch.
+    coordinator.async_set_updated_data.assert_not_called()
 
 
 async def test_a_sleeping_robot_is_woken_first() -> None:
@@ -206,6 +214,19 @@ async def test_a_sleeping_robot_is_woken_first() -> None:
     coordinator.client.wake.assert_awaited_once_with(timeout=ws.WAKE_TIMEOUT)
 
 
+async def test_a_docked_robot_is_not_woken() -> None:
+    """Docked and quiet is normal: get_map goes out without a wake burst (#90)."""
+    get_map, calls = _counting_get_map()
+    coordinator = _Coordinator("e1", get_map, awake=False)
+    coordinator.client.state.working_status = WorkingStatus.CHARGED
+    assert coordinator.client.state.is_docked
+
+    await ws.async_get_active_map(_hass_with(coordinator), coordinator)
+
+    coordinator.client.wake.assert_not_awaited()
+    assert calls == [1]
+
+
 async def test_an_awake_robot_is_not_woken() -> None:
     get_map, _ = _counting_get_map()
     coordinator = _Coordinator("e1", get_map, awake=True)
@@ -219,7 +240,9 @@ async def test_a_wake_that_fails_is_reported() -> None:
     """Not connected: wake raises, the answer is map_failed and get_map is not sent."""
     get_map, calls = _counting_get_map()
     coordinator = _Coordinator("e1", get_map, awake=False)
-    coordinator.client.wake = AsyncMock(side_effect=ConnectionError("Not connected to vacuum"))
+    coordinator.client.wake = AsyncMock(
+        side_effect=NarwalConnectionError("Not connected to vacuum")
+    )
     connection = MagicMock()
 
     await ws.ws_active_map(_hass_with(coordinator), connection, {"id": 2})
@@ -271,7 +294,7 @@ async def test_a_clean_started_while_waiting_answers_the_held_map() -> None:
     assert (answer["held"], answer["map"]["id"]) == (True, 1)
     assert calls == []
     coordinator.client.wake.assert_not_awaited()
-    coordinator.async_set_updated_data.assert_not_called()
+    coordinator.async_update_listeners.assert_not_called()
 
     # The held answer is not reused once the robot is docked again.
     coordinator.client.state.working_status = WorkingStatus.DOCKED
@@ -458,7 +481,74 @@ async def test_failure_is_reported_and_retried_after_a_pause() -> None:
         for msg_id in (4, 5, 6)
     ]
     assert calls == [1, 1]
-    coordinator.async_set_updated_data.assert_not_called()
+    coordinator.async_update_listeners.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        NarwalCommandError("get_map failed with code 3"),
+        NarwalConnectionError("Not connected to vacuum"),
+        TimeoutError(),
+        OSError("network unreachable"),
+        ConnectionClosedError(None, None),
+    ],
+    ids=["command", "connection", "timeout", "os", "socket closed"],
+)
+async def test_a_robot_that_does_not_answer_is_map_failed(error: Exception) -> None:
+    get_map, _ = _counting_get_map(error=error)
+    coordinator = _Coordinator("e1", get_map)
+    connection = MagicMock()
+
+    await ws.ws_active_map(_hass_with(coordinator), connection, {"id": 1})
+
+    assert connection.send_error.call_args.args[1] == ws.ERR_MAP_FAILED
+    assert ws._active_map_fetches[coordinator].failure is not None
+
+
+@pytest.mark.parametrize("where", ["get_map", "align"])
+async def test_a_bug_is_raised_not_reported_and_starts_no_back_off(where: str) -> None:
+    """A programming error reaches HA's handler, which logs its traceback."""
+    get_map, calls = _counting_get_map(
+        error=AttributeError("no attribute") if where == "get_map" else None
+    )
+    coordinator = _Coordinator("e1", get_map)
+    if where == "align":
+        coordinator.async_align_trail_with_static_map.side_effect = AttributeError("align")
+    hass = _hass_with(coordinator)
+    connection = MagicMock()
+
+    for msg_id in (1, 2):
+        with pytest.raises(AttributeError):
+            await ws.ws_active_map(hass, connection, {"id": msg_id})
+        for _ in range(3):
+            await asyncio.sleep(0)
+
+    connection.send_error.assert_not_called()
+    assert calls == [1, 1]
+    assert ws._active_map_fetches[coordinator].failure is None
+
+
+async def test_a_robot_that_woke_after_failing_asleep_is_asked_again() -> None:
+    """The wake timed out, then a late broadcast shows the robot awake: no back-off."""
+    get_map, calls = _counting_get_map()
+    coordinator = _Coordinator("e1", get_map, awake=False)
+    coordinator.client.wake = AsyncMock(side_effect=TimeoutError())
+    hass = _hass_with(coordinator)
+    connection = MagicMock()
+
+    await ws.ws_active_map(hass, connection, {"id": 1})
+    for _ in range(3):
+        await asyncio.sleep(0)
+    await ws.ws_active_map(hass, connection, {"id": 2})
+    assert calls == []
+    assert [c.args[0] for c in connection.send_error.call_args_list] == [1, 2]
+
+    coordinator.client.robot_awake = True
+    await ws.ws_active_map(hass, connection, {"id": 3})
+
+    assert calls == [1]
+    assert connection.send_result.call_args.args[0] == 3
 
 
 async def test_entries_are_cached_separately() -> None:
@@ -580,6 +670,23 @@ async def test_a_user_needs_control_of_the_robot() -> None:
 
     assert connection.send_result.call_args.args[1]["map"]["id"] == 2
     assert calls == [1]
+
+
+async def test_permission_is_checked_before_the_target() -> None:
+    """A restricted user cannot tell an unknown id from a robot it may not control."""
+    get_map, calls = _counting_get_map()
+    hass = _hass_with(_Coordinator("e1", get_map))
+    registry = _registry(**{"camera.upstairs_map": "e1"})
+    restricted = _user(allowed=("camera.upstairs_map",))
+
+    with patch("custom_components.narwal.websocket_api.er.async_get", return_value=registry):
+        for msg in ({"id": 1, "entity_id": "camera.gone"}, {"id": 2, "entry_id": "nope"}):
+            with pytest.raises(Unauthorized):
+                await ws.ws_active_map(hass, MagicMock(user=restricted), msg)
+            connection = MagicMock(user=_user(admin=True))
+            await ws.ws_active_map(hass, connection, msg)
+            assert connection.send_error.call_args.args[1] == "not_found"
+    assert calls == []
 
 
 async def test_a_robot_without_a_vacuum_entity_is_admin_only() -> None:
