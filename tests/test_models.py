@@ -474,6 +474,33 @@ class TestNarwalState:
         assert state.station_activity == 7
         assert state.has_unmapped_active_dock_task
 
+    def test_timer_capable_robot_still_fails_closed_after_timers_go_stale(self) -> None:
+        """A robot that has sent timers keeps the fail-closed path (#172 review).
+
+        has_dock_drying_timer_snapshot is cleared once the timers go stale on a
+        docked robot, so it cannot stand in for "this model never sends
+        timers". Without the sticky flag, a Flow whose timers had just been
+        cleared would take the timerless branch for the window between station
+        drying starting and the first timer packet of the new task.
+        """
+        state = NarwalState()
+        state.set_dock_drying_task(
+            DOCK_TASK_DRY_MOP,
+            elapsed=60,
+            target=180,
+            fields=("8", "9"),
+        )
+        state.has_sent_dock_drying_timers = True
+        state.clear_dock_drying_task()
+
+        assert not state.has_dock_drying_timer_snapshot
+        assert state.has_sent_dock_drying_timers
+
+        state.update_from_base_status({"3": {"1": 19, "18": 4}, "11": 2})
+
+        assert state.station_activity == 4
+        assert state.has_unmapped_active_dock_task
+
     def test_unmapped_dock_timer_blocks_commands(self) -> None:
         """Unmapped active timer pairs are kept as a blocking safety signal."""
         state = NarwalState()
