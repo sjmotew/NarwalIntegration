@@ -305,6 +305,24 @@
           "name": "청소 경로"
         }
       }
+    },
+    "get_topic_response": {
+      "name": "토픽 응답 가져오기",
+      "description": "로봇에 원시 토픽 하나를 보내고 응답을 해석하지 않은 채 16진수로 반환합니다. 설정을 변경하려면 vacuum.send_command를 사용하세요.",
+      "fields": {
+        "topic": {
+          "name": "토픽",
+          "description": "제품 키와 기기 ID를 뺀 짧은 토픽. \"/\"로 구분한 소문자 구간, 예: region/get."
+        },
+        "payload_hex": {
+          "name": "페이로드(16진수)",
+          "description": "Protobuf 요청 본문을 16진수 문자열로 입력합니다. 대부분의 조회에는 필요 없습니다."
+        },
+        "timeout": {
+          "name": "제한 시간",
+          "description": "응답을 기다릴 시간(초)."
+        }
+      }
     }
   }
 }
