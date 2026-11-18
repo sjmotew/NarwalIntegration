@@ -488,7 +488,9 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
         self._last_display_map_resub: float | None = None
         # Same reasoning: None until the first proactive active-clean renewal.
         self._last_active_clean_resub: float | None = None
-        self._last_topic_subscribe: float = 0.0
+        # None until the first subscribe, for the same reason: a 0.0 start would
+        # throttle the first subscription on a host up for less than the window.
+        self._last_topic_subscribe: float | None = None
         self._consecutive_failures = 0
         self._max_failures = 5  # 5 * 60s = 5 minutes before entities go unavailable
         self._dock_status_refresh_failed = True
@@ -3028,7 +3030,11 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
         # nothing ever re-subscribes (#73).
         if (
             self.client.supports_broadcasts
-            and time.monotonic() - self._last_topic_subscribe > TOPIC_RESUBSCRIBE_AFTER
+            and (
+                self._last_topic_subscribe is None
+                or time.monotonic() - self._last_topic_subscribe
+                > TOPIC_RESUBSCRIBE_AFTER
+            )
         ):
             try:
                 await self.client.subscribe_to_topics()
