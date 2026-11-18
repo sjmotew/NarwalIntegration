@@ -39,9 +39,14 @@ state. The error names what to use instead:
 | `clean/set_mop_humidity` | Mopping humidity select |
 | `supply/ambient_light_ctrl` | Dock light |
 
+`common/active_robot_publish` and `common/notify_app_event` are refused by both actions too.
+The integration sends them to keep its own connection awake and subscribed. A raw copy can end
+that subscription without the integration knowing, so status updates stop. There is no other
+action for them.
+
 Any other topic under `clean/` or `task/` is refused as well. The one exception is the read
 `clean/current_clean_task/get`, which `narwal.get_topic_response` may send. Other topics,
-such as `config/*`, `region/*`, `map/*` and `common/reboot`, are not restricted.
+such as `config/*`, `region/*`, `map/*` and `common/reboot`, are not refused.
 
 ## Change a setting
 
@@ -133,19 +138,18 @@ Freo 20, product key `fjhpiem4ba`, firmware v01.00.21.05:
   answers blocks other commands, polls included, until its timeout. Topics known never to be
   answered are refused up front, but a mistyped topic the robot ignores still causes this. That
   is why the timeout is capped at 10 s.
-- **A late reply.** A raw request to a topic the integration itself uses and knows is answered
+- **A late reply.** A raw request to a topic the integration itself sends and waits on
   (`map/get_map` and the like) keeps its place after a timeout, so a late reply is dropped. A
   request to any other topic gives up its place at once, so the next command's reply is not
   discarded. A reply to it that arrives after the timeout can be taken for the next command's
   answer, if one is in flight. A cancelled request (a restarted automation) gives up its place
   the same way.
-- **Writes make other actions wait.** `vacuum.send_command` holds the same lock as start, stop,
-  pause, return to dock, locate, `narwal.clean_rooms` and the dock tasks, so those wait until
-  it finishes: up to 10 s to wake the robot plus the timeout. `narwal.get_topic_response` does
-  not take or wait for that lock. A read still goes through the one-command-at-a-time queue, so
-  another command can wait up to the read's timeout. Only the wait for the wake is gone.
-- **Reads skip the action lock.** `narwal.get_topic_response` sends whatever topic it is given
-  without that lock, so use `vacuum.send_command` for anything that changes a setting.
+- **Raw requests make other actions wait.** Each `vacuum.send_command` and
+  `narwal.get_topic_response` request holds the same lock as start, stop, pause, return to
+  dock, locate, `narwal.clean_rooms` and the dock tasks while it is sent and answered. Those
+  wait at most its timeout. The robot is woken before the lock is taken, so waking a sleeping
+  robot does not add to that wait. The lock is taken for every topic, because the action cannot
+  tell a read from a write.
 - **No undo.** Any user who can control the vacuum can send any topic that is not refused,
   including `common/reboot` and `common/shutdown`. Read a setting before changing it so you can put it
   back.

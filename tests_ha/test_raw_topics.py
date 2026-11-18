@@ -174,3 +174,27 @@ async def test_native_topics_are_refused_by_both_actions(
             return_response=True,
         )
     send_command.assert_not_awaited()
+
+
+@pytest.mark.parametrize("topic", ["common/active_robot_publish", "common/notify_app_event"])
+async def test_session_topics_are_refused_by_both_actions(
+    hass: HomeAssistant, robot: tuple[str, AsyncMock], topic: str
+) -> None:
+    """A raw copy can end the integration's own subscription (#73)."""
+    entity_id, send_command = robot
+    with pytest.raises(HomeAssistantError, match=f"{topic} keeps the integration's own"):
+        await hass.services.async_call(
+            "vacuum",
+            "send_command",
+            {"entity_id": entity_id, "command": topic},
+            blocking=True,
+        )
+    with pytest.raises(HomeAssistantError, match=f"{topic} keeps the integration's own"):
+        await hass.services.async_call(
+            DOMAIN,
+            SERVICE_GET_TOPIC_RESPONSE,
+            {"entity_id": entity_id, "topic": topic},
+            blocking=True,
+            return_response=True,
+        )
+    send_command.assert_not_awaited()
