@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import copy
+import logging
 import sys
 import time
 from array import array
@@ -47,6 +48,8 @@ from .map_geometry import (
     native_trajectory_grid_points,
 )
 from .narwal_client import NarwalCommandError, NarwalConnectionError
+
+_LOGGER = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from homeassistant.auth.models import User
@@ -429,9 +432,6 @@ async def _async_fetch_active_map(
                 await client.wake(timeout=WAKE_TIMEOUT)
             map_data = await client.get_map()
             await coordinator.async_align_trail_with_static_map()
-            # Tell the entities without async_set_updated_data, which would move
-            # the 60 s poll on every fetch and starve it under a polling card.
-            coordinator.async_update_listeners()
     except FETCH_ERRORS as err:
         # Only a robot that did not answer starts the back-off, never a bug.
         fetch.failure = _describe(err)
@@ -443,6 +443,15 @@ async def _async_fetch_active_map(
     fetch.answered_at = time.monotonic()
     fetch.map_data = client.state.map_data
     fetch.failure = None
+    # Told only once the fetch is recorded, and guarded: HA does not guard
+    # listener callbacks, and the map and trail have already been swapped, so
+    # an entity that raises must not turn this fetch into a failure that is
+    # neither cached nor backed off. Without async_set_updated_data, which
+    # would move the 60 s poll on every fetch and starve it under a polling card.
+    try:
+        coordinator.async_update_listeners()
+    except Exception:
+        _LOGGER.exception("Error telling the Narwal entities about the fetched map")
     return answer
 
 

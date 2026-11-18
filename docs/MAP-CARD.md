@@ -75,16 +75,18 @@ floor can ask the robot which map is active with the websocket command `narwal/a
 ```
 
 `entity_id` is any entity of the robot; the config entry id is accepted as `entry_id` instead.
-Sending both is rejected with `invalid_format`. Without either, the command answers only when
-exactly one Narwal entry is configured (and enabled) and returns `target_required` otherwise, also
-while a second robot is still retrying its setup. An `entity_id` or `entry_id` that is not a
-loaded Narwal entry, or a robot that is configured but not loaded yet, returns `not_found`.
+Sending both is rejected with `invalid_format`. Without either, the command answers for the one
+Narwal entry that is configured (and enabled). With several it returns `target_required`, also
+while a second robot is still retrying its setup; with none it returns `not_found`. An `entity_id`
+or `entry_id` that is not a loaded Narwal entry, or a robot that is configured but not loaded yet,
+returns `not_found` too.
 
 Asking can wake the robot and replaces the map the entities show, so a user who is not an
 administrator needs control permission on the robot's vacuum entity, the same check the
 services make; without it the answer is `unauthorized`. As in the services, permission is
 checked first: such a user also needs read permission on the `entity_id` sent, and gets
-`unauthorized` rather than `not_found` for an `entry_id` that is not loaded.
+`unauthorized` rather than `not_found` for an `entry_id` that is not loaded or for no target
+without a loaded robot.
 
 The result:
 

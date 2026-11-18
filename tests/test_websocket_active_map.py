@@ -174,7 +174,7 @@ async def test_answer_comes_from_get_map_under_the_dock_lock() -> None:
     assert answer["held"] is False
 
 
-async def test_trail_is_aligned_and_entities_told_inside_the_lock() -> None:
+async def test_trail_is_aligned_and_entities_told_once_recorded() -> None:
     """After get_map: the old floor's trail goes, then camera, selects and segments follow."""
     order: list[str] = []
     get_map, _ = _counting_get_map()
@@ -183,7 +183,7 @@ async def test_trail_is_aligned_and_entities_told_inside_the_lock() -> None:
         f"align {coordinator.dock_action_lock.locked()} {coordinator.client.state.map_data.map_id}"
     )
     coordinator.async_update_listeners.side_effect = lambda: order.append(
-        f"notify {coordinator.dock_action_lock.locked()}"
+        f"notify {ws._active_map_fetches[coordinator].answer is not None}"
     )
 
     await ws.async_get_active_map(_hass_with(coordinator), coordinator)
@@ -192,6 +192,29 @@ async def test_trail_is_aligned_and_entities_told_inside_the_lock() -> None:
     coordinator.async_update_listeners.assert_called_once_with()
     # async_set_updated_data would move the coordinator's 60 s poll on every fetch.
     coordinator.async_set_updated_data.assert_not_called()
+
+
+async def test_a_raising_entity_does_not_undo_the_fetch(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """HA does not guard listeners; the fetched map stands, is cached and logged."""
+    get_map, calls = _counting_get_map()
+    coordinator = _Coordinator("e1", get_map)
+    coordinator.async_update_listeners.side_effect = RuntimeError("entity broke")
+    hass = _hass_with(coordinator)
+    connection = MagicMock()
+
+    for msg_id in (1, 2):
+        await ws.ws_active_map(hass, connection, {"id": msg_id})
+
+    assert [c.args[0] for c in connection.send_result.call_args_list] == [1, 2]
+    assert connection.send_result.call_args.args[1]["map"]["id"] == 2
+    connection.send_error.assert_not_called()
+    # The second request reuses the recorded answer instead of asking the robot again.
+    assert calls == [1]
+    assert ws._active_map_fetches[coordinator].failure is None
+    assert "Error telling the Narwal entities" in caplog.text
+    assert "RuntimeError: entity broke" in caplog.text
 
 
 async def test_a_sleeping_robot_is_woken_first() -> None:

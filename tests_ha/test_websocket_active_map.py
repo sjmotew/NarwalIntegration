@@ -107,6 +107,36 @@ async def test_active_map_bug_is_logged_not_map_failed(
     assert "AttributeError: no attribute" in caplog.text
 
 
+async def test_active_map_survives_a_raising_entity(
+    hass: HomeAssistant,
+    hass_ws_client,
+    flow_entry: MockConfigEntry,
+    silent_robot: dict,
+    caplog,
+) -> None:
+    """A listener that raises is logged; the fetch still answers and is cached."""
+    await _setup(hass, flow_entry)
+    silent_robot["get_map"].reset_mock()
+    silent_robot["get_map"].return_value = MapData(map_id=2, created_at=42, width=100, height=80)
+
+    def _broken_entity() -> None:
+        raise RuntimeError("entity broke")
+
+    flow_entry.runtime_data.async_add_listener(_broken_entity)
+    client = await hass_ws_client(hass)
+
+    with patch(_WAKE, new=AsyncMock()):
+        for _ in range(2):
+            await client.send_json_auto_id({"type": "narwal/active_map"})
+            msg = await client.receive_json()
+            assert msg["success"], msg
+            assert msg["result"]["map"]["id"] == 2
+
+    silent_robot["get_map"].assert_awaited_once()
+    assert "Error telling the Narwal entities" in caplog.text
+    assert "RuntimeError: entity broke" in caplog.text
+
+
 async def test_active_map_by_entity_and_held_during_a_clean(
     hass: HomeAssistant,
     hass_ws_client,
