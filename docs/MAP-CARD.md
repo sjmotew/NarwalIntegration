@@ -35,7 +35,10 @@ still retrying its setup. An `entity_id` or `entry_id` that is not a loaded Narw
 robot that is configured but not loaded yet, returns `not_found`.
 
 The trail shows where the robot went, so a user who is not an administrator needs read
-permission on the robot's vacuum entity; without it the answer is `unauthorized`.
+permission on the robot's vacuum entity; without it the answer is `unauthorized`. As in the
+services, permission is checked first: such a user also needs read permission on the
+`entity_id` sent, and gets `unauthorized` rather than `not_found` for an `entry_id` that is not
+loaded, so the answer does not tell which ids belong to a robot.
 
 The result:
 
@@ -47,12 +50,13 @@ The result:
 | `rotation`, `zoom` | `0`/`90`/`180`/`270`, `1.0`-`2.0` | The camera's view options, to place the points on its image |
 | `signature` | list of integers or `null` | Identifies these points, trail and map together; send it back unchanged. `null` when the answer carries no points |
 | `unchanged` | boolean | `true` when the request's `signature` is the current one; `count`, `x` and `y` are then left out |
-| `count` | integer | Number of points, breaks included. Not bounded by the trail's 50,000-point cap: the cap keeps every break, and a `NaN` pair is added where the route leaves the map (moves under a quarter grid cell are dropped). Size buffers on `count` |
+| `count` | integer | Number of points, breaks included. Every retained point is converted, none is decimated, so `count` can exceed the trail's 50,000-point cap: each break and each place where the route leaves the map adds a `NaN` pair (moves under a quarter grid cell are dropped). Size buffers on `count` |
 | `x`, `y` | base64 | `count` little-endian float32 values each; a `NaN` pair marks a break in the route |
 
 A card that polls sends the `signature` of the points it holds. While it is current, the answer
 carries `unchanged: true` with `map`, `rotation` and `zoom`, and no points; nothing is decoded and
-the points are not sent again. The signature covers the map the points are placed on, so after
-a map change the answer carries the points again.
+the points are not sent again. The signature covers the map fields the points depend on (id,
+creation time, origin and size), so after a map change, including a map that grew and kept its
+id, the answer carries the points again.
 
 The command only reads what the integration already holds and sends nothing to the robot.

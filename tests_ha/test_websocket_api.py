@@ -79,7 +79,8 @@ async def test_trajectory_over_the_websocket(
         "resolution_mm": 60,
     }
     assert result["count"] == 3
-    assert result["signature"] == [3, 1, 2, 1, 42]
+    # Trail (count, checksums), then map id, created_at, origin and size.
+    assert result["signature"] == [3, 1, 2, 1, 42, 0, 0, 50, 40]
     assert struct.unpack("<3f", base64.b64decode(result["x"])) == (1.0, 2.0, 3.0)
     assert struct.unpack("<3f", base64.b64decode(result["y"])) == (4.0, 5.0, 6.0)
 
@@ -219,3 +220,9 @@ async def test_trajectory_needs_read_permission_on_the_vacuum(
     await camera_only.send_json_auto_id({"type": "narwal/trajectory"})
     msg = await camera_only.receive_json()
     assert msg["error"]["code"] == "unauthorized"
+
+    # Permission before the target: an unknown id answers like a robot the user may not read.
+    for target in ({"entity_id": "camera.gone"}, {"entry_id": "nope"}):
+        await camera_only.send_json_auto_id({"type": "narwal/trajectory", **target})
+        msg = await camera_only.receive_json()
+        assert msg["error"]["code"] == "unauthorized", target

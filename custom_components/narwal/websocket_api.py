@@ -11,7 +11,8 @@ so an unchanged trail is not sent again.
 from __future__ import annotations
 
 import base64
-import struct
+import sys
+from array import array
 from typing import TYPE_CHECKING, Any
 
 import voluptuous as vol
@@ -108,6 +109,35 @@ def coordinator_for(hass: HomeAssistant, msg: dict[str, Any]) -> NarwalCoordinat
 
 
 @callback
+def authorized_coordinator(
+    hass: HomeAssistant, user: User, msg: dict[str, Any], policy: str
+) -> NarwalCoordinator:
+    """Return the requested robot's coordinator once the user may use it.
+
+    Permission comes first, as in the services: a named entity is checked for
+    read permission before it is resolved, and a restricted user who names no
+    entity gets ``unauthorized`` instead of ``not_found``, so an answer never
+    tells such a user which ids belong to a loaded robot. ``policy`` is then
+    checked on the robot's vacuum, since the named entity may be its camera.
+    """
+    entity_id = msg.get("entity_id")
+    if (
+        not user.is_admin
+        and entity_id is not None
+        and not user.permissions.check_entity(entity_id, POLICY_READ)
+    ):
+        raise Unauthorized(entity_id=entity_id, permission=POLICY_READ)
+    try:
+        coordinator = coordinator_for(hass, msg)
+    except TargetError as err:
+        if user.is_admin or entity_id is not None or err.code != websocket_api.ERR_NOT_FOUND:
+            raise
+        raise Unauthorized(permission=policy) from None
+    check_robot_permission(hass, user, coordinator, policy)
+    return coordinator
+
+
+@callback
 def check_robot_permission(
     hass: HomeAssistant, user: User, coordinator: NarwalCoordinator, policy: str
 ) -> None:
@@ -133,9 +163,11 @@ def check_robot_permission(
             raise Unauthorized(entity_id=entity_id, permission=policy)
 
 
-def _pack(values: list[float]) -> str:
-    """Return little-endian float32 values as base64."""
-    return base64.b64encode(struct.pack(f"<{len(values)}f", *values)).decode("ascii")
+def _pack(values: array[float]) -> str:
+    """Return float32 values as little-endian base64."""
+    if sys.byteorder == "big":
+        values.byteswap()
+    return base64.b64encode(values.tobytes()).decode("ascii")
 
 
 def _map_block(static_map: MapData | None) -> dict[str, Any] | None:
@@ -158,11 +190,21 @@ def trail_signature(
 
     The grid points depend on the trail and on the map they are placed on, so
     both are in it: the trail's own signature (count and checksums, as the
-    camera caches on), then the map's ``id`` and ``created_at``.
+    camera caches on), then every map field the conversion reads. ``id`` and
+    ``created_at`` alone are not enough: a robot that never sends a creation
+    time leaves it at 0, and an extended map keeps its id but moves its origin.
     """
     if not map_is_drawable(static_map) or display is None or not display.has_trajectory:
         return None
-    return [*display.trajectory_signature, static_map.map_id, static_map.created_at]
+    return [
+        *display.trajectory_signature,
+        static_map.map_id,
+        static_map.created_at,
+        static_map.origin_x,
+        static_map.origin_y,
+        static_map.width,
+        static_map.height,
+    ]
 
 
 def _answer(
@@ -212,10 +254,15 @@ def trajectory_payload(
     answer.update(count=0, x="", y="")
     if signature is None or static_map is None or display is None:
         return answer
-    points = native_trajectory_grid_points(display.trajectory_render_points(), static_map)
+    render_points = display.trajectory_render_points()
+    # The coordinator caps the retained trail already; capping again here would
+    # count the inserted break pairs and drop real points from a full trail.
+    points = native_trajectory_grid_points(
+        render_points, static_map, max_points=len(render_points)
+    )
     answer["count"] = len(points)
-    answer["x"] = _pack([x for x, _ in points])
-    answer["y"] = _pack([y for _, y in points])
+    answer["x"] = _pack(array("f", (x for x, _ in points)))
+    answer["y"] = _pack(array("f", (y for _, y in points)))
     return answer
 
 
@@ -234,12 +281,11 @@ async def ws_trajectory(
 ) -> None:
     """Answer the trail of the current clean for one Narwal entry."""
     try:
-        coordinator = coordinator_for(hass, msg)
+        # The trail shows where the robot went: whoever may read the robot may read it.
+        coordinator = authorized_coordinator(hass, connection.user, msg, POLICY_READ)
     except TargetError as err:
         connection.send_error(msg["id"], err.code, err.message)
         return
-    # The trail shows where the robot went: whoever may read the robot may read it.
-    check_robot_permission(hass, connection.user, coordinator, POLICY_READ)
     entry_id = coordinator.config_entry.entry_id
     options = dict(coordinator.config_entry.options)
     state = coordinator.client.state

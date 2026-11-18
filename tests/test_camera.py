@@ -466,3 +466,27 @@ def test_lost_map_clears_the_map_card_attributes(static_map: MapData | None) -> 
 
     assert camera.extra_state_attributes == {"render_count": 0}
     camera._async_render.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "static_map",
+    [
+        None,
+        MapData(map_id=2, width=0, height=10, compressed_map=b"\x01"),
+        MapData(map_id=2, width=10, height=10),
+    ],
+    ids=["no map", "zero width", "no image"],
+)
+async def test_render_skips_a_map_that_became_undrawable(static_map: MapData | None) -> None:
+    """A map replaced between scheduling and rendering is checked again, the same way."""
+    state = NarwalState()
+    state.map_data = static_map
+    camera = _camera(state)
+    camera._async_render = NarwalMapCamera._async_render.__get__(camera, NarwalMapCamera)
+    camera.hass.async_add_executor_job = AsyncMock()
+
+    await camera._async_render(MapDisplayData(robot_x=4.0, robot_y=6.0), ("key",))
+
+    camera.hass.async_add_executor_job.assert_not_called()
+    camera.async_write_ha_state.assert_called_once()
+    assert camera._cached_image is None

@@ -454,7 +454,7 @@ class NarwalMapCamera(NarwalEntity, Camera):
         """Render the map image in an executor thread."""
         state = self.coordinator.client.state
         static_map = state.map_data
-        if not static_map:
+        if not map_is_drawable(static_map):
             self.async_write_ha_state()
             return
 

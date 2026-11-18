@@ -5,6 +5,8 @@ from __future__ import annotations
 import base64
 import math
 import struct
+from array import array
+from dataclasses import replace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -25,14 +27,15 @@ from custom_components.narwal.websocket_api import (  # noqa: E402
     ANSWER_VERSION,
     ERR_TARGET_REQUIRED,
     TRAJECTORY_COMMAND,
+    _pack,
     trajectory_payload,
     ws_trajectory,
 )
 from narwal_client.models import MapData, MapDisplayData, NarwalState  # noqa: E402
 
 NAN = float("nan")
-#: The map's part of every signature in these tests: its id and created_at.
-MAP_KEY = [2, 1_700_000_000]
+#: The map's part of every signature in these tests: id, created_at, origin, size.
+MAP_KEY = [2, 1_700_000_000, 2, 4, 100, 80]
 
 
 def _float_stream(values: list[float]) -> bytes:
@@ -221,6 +224,29 @@ def test_payload_is_not_decimated_like_the_path_attribute() -> None:
     assert count < NATIVE_TRAJECTORY_MAX_POINTS
 
 
+def test_payload_keeps_every_point_of_a_full_trail() -> None:
+    """A trail at the retention cap keeps all its points although breaks add NaN pairs.
+
+    The coordinator caps the retained trail; capping again on the trail plus
+    its break markers would decimate the prefix and drop real points.
+    """
+    count = NATIVE_TRAJECTORY_MAX_POINTS
+    static_map = MapData(map_id=2, width=count + 10, height=10, compressed_map=b"\x01")
+    breaks = (10_000, 20_000, 30_000)
+    display = _display([float(i) for i in range(count)], [1.0] * count, breaks=breaks)
+
+    answer = trajectory_payload("e1", static_map, display, {})
+
+    xs = _unpack(answer["x"])
+    real = [x for x in xs if not math.isnan(x)]
+    assert real == [float(i) for i in range(count)]
+    assert answer["count"] == count + len(breaks) == len(xs)
+
+
+def test_pack_is_little_endian_float32() -> None:
+    assert base64.b64decode(_pack(array("f", [1.0, -2.5]))) == struct.pack("<2f", 1.0, -2.5)
+
+
 def test_payload_view_follows_the_camera_options() -> None:
     """Rotation and zoom are the camera's, with its fallbacks for bad values."""
     answer = trajectory_payload(
@@ -400,7 +426,35 @@ async def test_ws_trajectory_same_trail_on_another_map_is_not_unchanged() -> Non
 
     payload = connection.send_result.call_args.args[1]
     assert payload["unchanged"] is False
-    assert payload["signature"] == [2, 7, 9, 3, 1_700_000_000]
+    assert payload["signature"] == [2, 7, 9, 3, *MAP_KEY[1:]]
+    assert payload["count"] == 2
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"created_at": 0, "origin_x": 3},
+        {"created_at": 0, "origin_y": 5},
+        {"created_at": 0, "width": 120},
+        {"created_at": 0, "height": 90},
+    ],
+)
+async def test_ws_trajectory_same_map_id_with_other_geometry_is_not_unchanged(
+    change: dict,
+) -> None:
+    """A map that grew keeps its id; without a creation time only its geometry tells."""
+    state = _state_with_trail()
+    state.map_data = replace(_map(), created_at=0)
+    hass = _hass_with(_coordinator("e1", state))
+    connection = MagicMock()
+    await ws_trajectory(hass, connection, {"id": 1})
+    held = connection.send_result.call_args.args[1]["signature"]
+
+    state.map_data = replace(_map(), **change)
+    await ws_trajectory(hass, connection, {"id": 2, "signature": held})
+
+    payload = connection.send_result.call_args.args[1]
+    assert payload["unchanged"] is False
     assert payload["count"] == 2
 
 
@@ -464,6 +518,44 @@ async def test_ws_trajectory_needs_read_permission_on_the_robot() -> None:
         await ws_trajectory(hass, connection, {"id": 2})
 
     assert connection.send_result.call_args.args[1]["count"] == 2
+
+
+async def test_ws_trajectory_checks_permission_before_resolving_the_target() -> None:
+    """A restricted user cannot tell an unknown id from a robot it may not read."""
+    camera_only = _user(readable=("camera.upstairs_map",))
+    hass = _hass_with(_coordinator("e1", _state_with_trail()))
+    registry = _registry(**{"camera.upstairs_map": "e1", "camera.other": "foreign"})
+
+    with patch("custom_components.narwal.websocket_api.er.async_get", return_value=registry):
+        for msg in (
+            {"id": 1, "entity_id": "camera.gone"},
+            {"id": 2, "entity_id": "camera.other"},
+            {"id": 3, "entry_id": "nope"},
+        ):
+            with pytest.raises(Unauthorized):
+                await ws_trajectory(hass, MagicMock(user=camera_only), msg)
+            connection = MagicMock(user=_user(admin=True))
+            await ws_trajectory(hass, connection, msg)
+            assert connection.send_error.call_args.args[1] == "not_found"
+
+        # An entity the user may read but that is no Narwal robot is not found, as in the services.
+        connection = MagicMock(user=_user(readable=("camera.other",)))
+        await ws_trajectory(hass, connection, {"id": 4, "entity_id": "camera.other"})
+    assert connection.send_error.call_args.args[:2] == (4, "not_found")
+
+
+async def test_ws_trajectory_restricted_user_without_a_target() -> None:
+    """Without a target a restricted user still learns to name one, but not a missing entry."""
+    connection = MagicMock(user=_user())
+    await ws_trajectory(
+        _hass_with(_coordinator("e1", NarwalState()), _coordinator("e2", NarwalState())),
+        connection,
+        {"id": 1},
+    )
+    assert connection.send_error.call_args.args[:2] == (1, ERR_TARGET_REQUIRED)
+
+    with pytest.raises(Unauthorized):
+        await ws_trajectory(_hass_with(), MagicMock(user=_user()), {"id": 2})
 
 
 async def test_ws_trajectory_robot_without_a_vacuum_entity_is_admin_only() -> None:

@@ -9,7 +9,7 @@ instance and verified on hardware before it was pushed.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). **Breaking** marks a
 change that can alter the behaviour of an existing automation or dashboard.
 
-## [v1.0.13] - unreleased
+## [v1.0.13] — unreleased
 
 - **Added:** websocket command `narwal/trajectory` returns the full trail of the current clean as grid points, for map cards that draw the route themselves; the camera's `path` attribute stays decimated to 400 points. It takes the robot's `entity_id`, and a card that polls sends the `signature` it holds and gets only `unchanged: true` while the trail is the same ([#161](https://github.com/sjmotew/NarwalIntegration/pull/161); see [docs/MAP-CARD.md](docs/MAP-CARD.md#full-trail-over-the-websocket-api)).
 
