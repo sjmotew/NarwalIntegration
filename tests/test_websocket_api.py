@@ -473,6 +473,19 @@ async def test_ws_trajectory_signature_without_a_trail() -> None:
     assert payload["count"] == 0
 
 
+async def test_ws_trajectory_null_signature_sent_back_without_a_trail() -> None:
+    """The null a robot without a trail answers, sent back, gets a full answer."""
+    state = NarwalState()
+    state.map_data = _map()
+    hass = _hass_with(_coordinator("e1", state))
+    connection = MagicMock()
+
+    await ws_trajectory(hass, connection, {"id": 19, "signature": None})
+
+    payload = connection.send_result.call_args.args[1]
+    assert (payload["unchanged"], payload["signature"], payload["count"]) == (False, None, 0)
+
+
 async def test_ws_trajectory_signature_on_a_map_that_decoded_empty() -> None:
     """A trail on a zero-size map has no points to keep, so it is not unchanged."""
     state = _state_with_trail()

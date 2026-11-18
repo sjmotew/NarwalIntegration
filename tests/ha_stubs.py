@@ -36,6 +36,7 @@ def install() -> None:
     vol.Required = MagicMock(side_effect=lambda *a, **kw: a[0] if a else "key")  # type: ignore[attr-defined]
     vol.Optional = MagicMock(side_effect=lambda *a, **kw: a[0] if a else "key")  # type: ignore[attr-defined]
     vol.Exclusive = MagicMock(side_effect=lambda *a, **kw: a[0] if a else "key")  # type: ignore[attr-defined]
+    vol.Any = MagicMock()  # type: ignore[attr-defined]
     vol.In = MagicMock()  # type: ignore[attr-defined]
     vol.Invalid = type("Invalid", (Exception,), {})  # type: ignore[attr-defined]
 

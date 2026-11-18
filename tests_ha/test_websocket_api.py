@@ -85,6 +85,32 @@ async def test_trajectory_over_the_websocket(
     assert struct.unpack("<3f", base64.b64decode(result["y"])) == (4.0, 5.0, 6.0)
 
 
+async def test_trajectory_takes_back_a_null_signature(
+    hass: HomeAssistant,
+    hass_ws_client,
+    flow_entry: MockConfigEntry,
+    silent_robot: dict,
+) -> None:
+    """A card that polls before any clean sends back the null it got."""
+    await _setup(hass, flow_entry)
+    client = await hass_ws_client(hass)
+
+    await client.send_json_auto_id({"type": "narwal/trajectory"})
+    msg = await client.receive_json()
+    assert msg["success"], msg
+    assert msg["result"]["signature"] is None
+
+    await client.send_json_auto_id({"type": "narwal/trajectory", "signature": None})
+    msg = await client.receive_json()
+    assert msg["success"], msg
+    assert msg["result"]["unchanged"] is False
+    assert msg["result"]["signature"] is None
+
+    await client.send_json_auto_id({"type": "narwal/trajectory", "signature": "abc"})
+    msg = await client.receive_json()
+    assert msg["error"]["code"] == "invalid_format"
+
+
 async def test_trajectory_rejects_unknown_fields_and_entries(
     hass: HomeAssistant,
     hass_ws_client,

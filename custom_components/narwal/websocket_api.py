@@ -1,7 +1,8 @@
 """Websocket commands that hand map data to dashboard clients.
 
-``narwal/trajectory`` returns the trail of the current clean as data: the same
-grid points the map camera draws, from the coordinator's retained trail. The
+``narwal/trajectory`` returns the trail of the current clean as data: grid
+points converted the way the map camera converts them, from the coordinator's
+retained trail, every retained point included. The
 camera's ``path`` attribute carries a copy decimated to 400 points, because
 attributes go to every frontend on every frame; a client that draws the route
 itself asks for the full trail, and while polling sends the signature it holds
@@ -117,8 +118,10 @@ def authorized_coordinator(
     Permission comes first, as in the services: a named entity is checked for
     read permission before it is resolved, and a restricted user who names no
     entity gets ``unauthorized`` instead of ``not_found``, so an answer never
-    tells such a user which ids belong to a loaded robot. ``policy`` is then
-    checked on the robot's vacuum, since the named entity may be its camera.
+    tells such a user which ids belong to a loaded robot. A request without a
+    target still gets ``target_required`` when several robots are configured,
+    which names no id. ``policy`` is then checked on the robot's vacuum, since
+    the named entity may be its camera.
     """
     entity_id = msg.get("entity_id")
     if (
@@ -270,7 +273,8 @@ def trajectory_payload(
     {
         vol.Required("type"): TRAJECTORY_COMMAND,
         **TARGET_SCHEMA,
-        vol.Optional("signature"): [int],
+        # The answer's signature is null without a trail; sent back, it matches nothing.
+        vol.Optional("signature"): vol.Any(None, [int]),
     }
 )
 @websocket_api.async_response

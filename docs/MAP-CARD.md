@@ -19,8 +19,9 @@ read from a camera. These attributes change with every frame and are excluded fr
 
 `path` is a decimated copy because attributes go to every connected frontend on every frame. A
 card that draws the route itself can ask for the full trail with the websocket command
-`narwal/trajectory`. It returns the same grid points the camera draws, in the same coordinates as
-the attributes above.
+`narwal/trajectory`. It returns the trail as grid points converted the way the camera converts
+them, in the same coordinates as the attributes above. The camera caps a frame at 50,000 points,
+breaks included; this command converts every retained point.
 
 ```json
 {"type": "narwal/trajectory", "entity_id": "camera.<robot>_map"}
@@ -48,7 +49,7 @@ The result:
 | `entry_id` | string | Config entry that answered |
 | `map` | `{id, created_at, width, height, resolution_mm}` or `null` | The static map the points belong to; `null` before the first map arrives. On a map the camera draws no frame for (a width or height of `0`, which means the robot's reply decoded to no map, or no map image), the trail is empty |
 | `rotation`, `zoom` | `0`/`90`/`180`/`270`, `1.0`-`2.0` | The camera's view options, to place the points on its image |
-| `signature` | list of integers or `null` | Identifies these points, trail and map together; send it back unchanged. `null` when the answer carries no points |
+| `signature` | list of integers or `null` | Identifies these points, trail and map together; send it back unchanged, `null` included. `null` when there is no trail or the map is not drawable; a trail that lies entirely off the map has a signature and `count` `0` |
 | `unchanged` | boolean | `true` when the request's `signature` is the current one; `count`, `x` and `y` are then left out |
 | `count` | integer | Number of points, breaks included. Every retained point is converted, none is decimated, so `count` can exceed the trail's 50,000-point cap: each break and each place where the route leaves the map adds a `NaN` pair (moves under a quarter grid cell are dropped). Size buffers on `count` |
 | `x`, `y` | base64 | `count` little-endian float32 values each; a `NaN` pair marks a break in the route |
