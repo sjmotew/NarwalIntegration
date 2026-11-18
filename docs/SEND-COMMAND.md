@@ -64,7 +64,7 @@ data:
 |---|---|
 | `command` | Short topic without product key and device ID: lowercase `[a-z0-9_]` segments separated by `/`, e.g. `config/set` |
 | `params.payload_hex` | Request body as a quoted hex string. Empty by default |
-| `params.timeout` | Seconds to wait for the reply, 1 to 10. Default 5 |
+| `params.timeout` | Seconds to wait for the reply, 1 to 15. Default 5 |
 
 Field 1 of the reply is the result code. The action succeeds when the code is `SUCCESS` (1) or
 `APPLIED` (6), or when the reply carries no result code (no field 1, field 1 = 0, an empty
@@ -95,7 +95,10 @@ the result is keyed by entity id:
 |---|---|
 | `topic` | Short topic, same format as `command` above |
 | `payload_hex` | Request body as a quoted hex string. Most reads take none |
-| `timeout` | Seconds to wait for the reply, 1 to 10. Default 5 |
+| `timeout` | Seconds to wait for the reply, 1 to 15. Default 5 |
+
+Slow reads such as `map/get_map` can need the full 15 s. The integration gives its own map
+request 15 s.
 
 The response holds `response_hex` (the whole reply) and `response_bytes` (its length). Field 1 of
 a read reply can be data rather than a result code, so this action never judges the reply and
@@ -136,14 +139,12 @@ Freo 20, product key `fjhpiem4ba`, firmware v01.00.21.05:
 - **One command at a time.** Replies carry no topic and are matched to requests by send order
   ([#108](https://github.com/sjmotew/NarwalIntegration/issues/108)). A topic the robot never
   answers blocks other commands, polls included, until its timeout. Topics known never to be
-  answered are refused up front, but a mistyped topic the robot ignores still causes this. That
-  is why the timeout is capped at 10 s.
-- **A late reply.** A raw request to a topic the integration itself sends and waits on
-  (`map/get_map` and the like) keeps its place after a timeout, so a late reply is dropped. A
-  request to any other topic gives up its place at once, so the next command's reply is not
-  discarded. A reply to it that arrives after the timeout can be taken for the next command's
-  answer, if one is in flight. A cancelled request (a restarted automation) gives up its place
-  the same way.
+  answered are refused up front. The timeout is capped at 15 s.
+- **A request that times out keeps its place.** It holds its place in the reply order for 10 s
+  more, so a late reply is dropped and not taken for another command's answer. If the robot
+  ignored the topic (a typo, or a topic that model does not have), the next command's reply
+  inside that window is dropped instead, and that command times out. Entities can then show
+  unavailable until the next poll. Check the topic before putting it in an automation.
 - **Raw requests make other actions wait.** Each `vacuum.send_command` and
   `narwal.get_topic_response` request holds the same lock as start, stop, pause, return to
   dock, locate, `narwal.clean_rooms` and the dock tasks while it is sent and answered. Those

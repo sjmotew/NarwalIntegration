@@ -71,26 +71,16 @@ from .narwal_client.const import (
     TOPIC_CMD_DUST_GATHERING,
     TOPIC_CMD_EASY_CLEAN,
     TOPIC_CMD_FORCE_END,
-    TOPIC_CMD_GET_ALL_MAPS,
-    TOPIC_CMD_GET_BASE_STATUS,
-    TOPIC_CMD_GET_CONSUMABLE_INFO,
     TOPIC_CMD_GET_CURRENT_TASK,
-    TOPIC_CMD_GET_DEBUG_IMAGE,
-    TOPIC_CMD_GET_DEVICE_INFO,
-    TOPIC_CMD_GET_FEATURE_LIST,
-    TOPIC_CMD_GET_MAP,
     TOPIC_CMD_NOTIFY_APP_EVENT,
     TOPIC_CMD_PAUSE,
     TOPIC_CMD_PLAN_START,
     TOPIC_CMD_RECALL,
     TOPIC_CMD_RESUME,
     TOPIC_CMD_SET_FAN_LEVEL,
-    TOPIC_CMD_SET_LED,
     TOPIC_CMD_SET_MOP_HUMIDITY,
-    TOPIC_CMD_TAKE_PICTURE,
     TOPIC_CMD_WASH_MOP,
     TOPIC_CMD_WASH_MOP_BY_ROBOT_STATUS,
-    TOPIC_CMD_YELL,
     UNACKNOWLEDGED_TOPICS,
     fan_level_for_live_command,
 )
@@ -100,6 +90,10 @@ _LOGGER = logging.getLogger(__name__)
 _RAW_TOPIC = re.compile(r"[a-z0-9_]+(?:/[a-z0-9_]+)*")
 _SEND_COMMAND_PARAMS = frozenset({"payload_hex", "timeout"})
 _RAW_TIMEOUT_MIN = 1.0
+# The longest timeout the client gives its own requests (map/get_map,
+# consumable/get_consumable_info, map/get_all_reduced_maps and the developer
+# image reads use 15 s), so a raw request to one of those can wait as long.
+_RAW_TIMEOUT_MAX = 15.0
 
 # Topics the integration sends itself to change cleaning, task or dock state.
 # A raw copy would skip the bookkeeping the native action does (assumed clean,
@@ -131,25 +125,6 @@ _SESSION_TOPICS = frozenset({TOPIC_CMD_ACTIVE_ROBOT, TOPIC_CMD_NOTIFY_APP_EVENT}
 # through narwal.get_topic_response. vacuum.send_command gets none.
 _NATIVE_TOPIC_PREFIXES = ("clean/", "task/")
 _RAW_READ_ALLOWED_TOPICS = frozenset({TOPIC_CMD_GET_CURRENT_TASK})
-# The topics the client itself sends and waits on. A timeout on these means the
-# reply is late, so the request keeps its place as the client's own would and
-# the late reply is dropped. Any other topic gives up its place, because the
-# robot most likely ignored it. A test checks this set against the client source.
-_RAW_ANSWERED_TOPICS = frozenset(
-    {
-        TOPIC_CMD_YELL,
-        TOPIC_CMD_GET_DEVICE_INFO,
-        TOPIC_CMD_GET_FEATURE_LIST,
-        TOPIC_CMD_GET_BASE_STATUS,
-        TOPIC_CMD_GET_CONSUMABLE_INFO,
-        TOPIC_CMD_GET_CURRENT_TASK,
-        TOPIC_CMD_GET_MAP,
-        TOPIC_CMD_GET_ALL_MAPS,
-        TOPIC_CMD_TAKE_PICTURE,
-        TOPIC_CMD_SET_LED,
-        TOPIC_CMD_GET_DEBUG_IMAGE,
-    }
-)
 
 ATTR_TOPIC = "topic"
 ATTR_PAYLOAD_HEX = "payload_hex"
@@ -919,13 +894,15 @@ class NarwalVacuum(NarwalEntity, RestoreEntity, StateVacuumEntity):
             raise HomeAssistantError(
                 f"Narwal {action}: timeout must be a number"
             ) from err
-        # Capped like start/return: every request holds the dock action lock
-        # and the client's command lock while it waits, so a topic the robot
-        # ignores delays other commands for up to this long.
-        if not _RAW_TIMEOUT_MIN <= seconds <= self._ACTION_TIMEOUT:
+        # Capped: every request holds the dock action lock and the client's
+        # command lock while it waits, so a topic the robot ignores delays
+        # other commands for up to this long. After a timeout the request
+        # keeps its reply place for LATE_RESPONSE_GRACE more, so a reply in
+        # that window is dropped and the next command can time out too.
+        if not _RAW_TIMEOUT_MIN <= seconds <= _RAW_TIMEOUT_MAX:
             raise HomeAssistantError(
                 f"Narwal {action}: timeout must be "
-                f"{_RAW_TIMEOUT_MIN:g}-{self._ACTION_TIMEOUT:g} s"
+                f"{_RAW_TIMEOUT_MIN:g}-{_RAW_TIMEOUT_MAX:g} s"
             )
         return short_topic, payload, seconds
 
@@ -942,20 +919,18 @@ class NarwalVacuum(NarwalEntity, RestoreEntity, StateVacuumEntity):
         actions wait at most the request's timeout, which the client's
         one-command-at-a-time lock imposes anyway.
 
-        A topic in ``_RAW_ANSWERED_TOPICS`` keeps its reply place after a
-        timeout, as the client's own request would, so its late reply is
-        dropped. Any other topic gives up its place at once
-        (``hold_place_on_timeout=False``), because the robot most likely
-        ignored it.
+        Replies carry no topic and are matched by send order. A request that
+        times out keeps its place in that order for ``LATE_RESPONSE_GRACE``,
+        like any client command, so a late answer is dropped and not taken
+        for the next command's reply. The cost: if the robot ignored the
+        topic, the next command's reply in that window is dropped instead
+        and that command times out.
         """
         try:
             await self._ensure_awake()
             async with self.coordinator.dock_action_lock:
                 resp = await self.coordinator.client.send_command(
-                    topic,
-                    payload,
-                    timeout=timeout,
-                    hold_place_on_timeout=topic in _RAW_ANSWERED_TOPICS,
+                    topic, payload, timeout=timeout
                 )
         except (NarwalCommandError, NarwalConnectionError) as err:
             raise HomeAssistantError(f"Narwal {action} {topic}: {err}") from err

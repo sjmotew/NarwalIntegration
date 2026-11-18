@@ -1233,8 +1233,6 @@ class NarwalClient:
         short_topic: str,
         payload: bytes = b"",
         timeout: float = COMMAND_RESPONSE_TIMEOUT,
-        *,
-        hold_place_on_timeout: bool = True,
     ) -> CommandResponse:
         """Send a command and wait for the field5 response.
 
@@ -1248,15 +1246,6 @@ class NarwalClient:
             short_topic: Command topic without prefix/device_id.
             payload: Protobuf-encoded payload (empty for most commands).
             timeout: Seconds to wait for response.
-            hold_place_on_timeout: If False, a command that times out gives up
-                its place at once, so the next response goes to the next
-                request. A late answer is then discarded if no request is owed
-                one, but taken as the answer to the next request in line.
-                Only for user-supplied topics not known to be answered, where
-                a timeout most likely means the robot ignored the topic; keep
-                the default for any topic known to be answered. A cancelled
-                wait gives up the place the same way. See the comment at the
-                release path.
 
         Returns:
             CommandResponse with result code and decoded data.
@@ -1275,51 +1264,30 @@ class NarwalClient:
             future: asyncio.Future[NarwalMessage] = (
                 asyncio.get_running_loop().create_future()
             )
-            expected = _ExpectedResponse(
-                short_topic,
-                time.monotonic() + timeout + LATE_RESPONSE_GRACE,
-                future,
-            )
             try:
-                await self._send_expecting(short_topic, frame, expected)
+                await self._send_expecting(
+                    short_topic,
+                    frame,
+                    _ExpectedResponse(
+                        short_topic,
+                        time.monotonic() + timeout + LATE_RESPONSE_GRACE,
+                        future,
+                    ),
+                )
                 _LOGGER.debug("Sent command: %s (%d bytes)", short_topic, len(frame))
 
-                try:
-                    # If listener is running, it routes the response to our
-                    # future (avoid concurrent recv)
-                    if self._listener_active:
-                        try:
-                            msg = await asyncio.wait_for(future, timeout=timeout)
-                        except TimeoutError:
-                            raise NarwalCommandError(
-                                f"No response for command '{short_topic}' within {timeout}s"
-                            ) from None
-                    else:
-                        # No listener — read directly from websocket
-                        msg = await self._wait_for_field5_response(timeout, future)
-                except (NarwalCommandError, asyncio.CancelledError):
-                    # Replies carry no topic and are matched by send order, so
-                    # after a timeout both choices are wrong in one case.
-                    # Keeping the place (the default) means a reply that
-                    # arrives within LATE_RESPONSE_GRACE is dropped as this
-                    # request's late answer. If the robot ignored the topic,
-                    # that reply belongs to the next request, which loses it.
-                    # Giving up the place avoids that, but a late answer then
-                    # takes the next place in line and the replies behind it
-                    # shift by one, so an awaited request resolves with
-                    # another topic's payload. With no place in line it is
-                    # discarded.
-                    # So give up the place only when a timeout most likely
-                    # means the robot ignored the topic: a user-supplied topic
-                    # not known to be answered. Keep the default for a topic
-                    # known to be answered, where a timeout means the reply is
-                    # late.
-                    # Neither choice is fully safe. A reply that named its
-                    # topic would be.
-                    if not hold_place_on_timeout:
-                        with contextlib.suppress(ValueError):
-                            self._expected_responses.remove(expected)
-                    raise
+                # If listener is running, it routes the response to our future
+                # (avoid concurrent recv)
+                if self._listener_active:
+                    try:
+                        msg = await asyncio.wait_for(future, timeout=timeout)
+                    except TimeoutError:
+                        raise NarwalCommandError(
+                            f"No response for command '{short_topic}' within {timeout}s"
+                        ) from None
+                else:
+                    # No listener — read directly from websocket
+                    msg = await self._wait_for_field5_response(timeout, future)
             finally:
                 # A late answer now finds a done future and is discarded
                 future.cancel()

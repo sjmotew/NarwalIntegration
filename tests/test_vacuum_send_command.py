@@ -13,11 +13,9 @@ robot clock to Europe/Rome.
 
 from __future__ import annotations
 
-import ast
 import asyncio
 import importlib
 import sys
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -26,7 +24,7 @@ import tests.ha_stubs
 
 tests.ha_stubs.install()
 
-from narwal_client.const import UNACKNOWLEDGED_TOPICS, CommandResult  # noqa: E402
+from narwal_client.const import CommandResult  # noqa: E402
 from narwal_client.models import CommandResponse, NarwalState  # noqa: E402
 from tests.test_vacuum_segments import _make_vacuum  # noqa: E402
 
@@ -106,17 +104,17 @@ class TestWrite:
         vac = _vacuum()
         await _write(vac, payload_hex="a00200")
         vac.coordinator.client.send_command.assert_awaited_once_with(
-            "config/set", bytes.fromhex("a00200"), timeout=5.0, hold_place_on_timeout=False
+            "config/set", bytes.fromhex("a00200"), timeout=5.0
         )
 
     async def test_strips_slashes_and_defaults_to_empty_payload(self) -> None:
         vac = _vacuum()
         await vac.async_send_command("/region/set/")
         vac.coordinator.client.send_command.assert_awaited_once_with(
-            "region/set", b"", timeout=5.0, hold_place_on_timeout=False
+            "region/set", b"", timeout=5.0
         )
 
-    @pytest.mark.parametrize("timeout", [1, 8, 10, 7.5])
+    @pytest.mark.parametrize("timeout", [1, 8, 10, 7.5, 12.5, 15])
     async def test_timeout_within_the_action_cap(self, timeout) -> None:
         vac = _vacuum()
         await _write(vac, timeout=timeout)
@@ -250,7 +248,7 @@ class TestRead:
         vac = _vacuum()
         await _read(vac, "config/get", payload_hex="0a00", timeout=3)
         vac.coordinator.client.send_command.assert_awaited_once_with(
-            "config/get", bytes.fromhex("0a00"), timeout=3.0, hold_place_on_timeout=False
+            "config/get", bytes.fromhex("0a00"), timeout=3.0
         )
 
     async def test_fires_no_event(self) -> None:
@@ -272,7 +270,7 @@ class TestRead:
         vac = _vacuum()
         await _read(vac, "clean/current_clean_task/get")
         vac.coordinator.client.send_command.assert_awaited_once_with(
-            "clean/current_clean_task/get", b"", timeout=5.0, hold_place_on_timeout=True
+            "clean/current_clean_task/get", b"", timeout=5.0
         )
 
 
@@ -337,34 +335,12 @@ class TestShared:
         ["config/set", "region/set", "common/reboot", "config/gett", "config/get", "region/get"],
     )
     async def test_other_topics_are_sent(self, action: str, topic: str) -> None:
-        """A topic the client does not send itself gives up its place on a timeout."""
+        """Topics outside the refused groups are sent as given."""
         vac = _vacuum()
         await _call(vac, action, topic)
         vac.coordinator.client.send_command.assert_awaited_once_with(
-            topic, b"", timeout=5.0, hold_place_on_timeout=False
+            topic, b"", timeout=5.0
         )
-
-    @pytest.mark.parametrize(
-        "topic",
-        ["map/get_map", "common/get_device_info", "common/yell", "developer/led_control"],
-    )
-    async def test_answered_topics_keep_their_place(self, action: str, topic: str) -> None:
-        """A timeout on a topic the client itself waits on means a late reply, not none."""
-        vac = _vacuum()
-        await _call(vac, action, topic)
-        vac.coordinator.client.send_command.assert_awaited_once_with(
-            topic, b"", timeout=5.0, hold_place_on_timeout=True
-        )
-
-    def test_answered_topics_can_be_sent(self, action: str) -> None:
-        module = _vacuum_module(_vacuum())
-        answered = module._RAW_ANSWERED_TOPICS
-        assert answered
-        assert not answered & set(module._NATIVE_TOPICS)
-        assert not answered & UNACKNOWLEDGED_TOPICS
-        assert not answered & module._SESSION_TOPICS
-        for topic in answered - module._RAW_READ_ALLOWED_TOPICS:
-            assert not topic.startswith(module._NATIVE_TOPIC_PREFIXES)
 
     @pytest.mark.parametrize(
         "topic", ["common/active_robot_publish", "common/notify_app_event"]
@@ -484,11 +460,11 @@ class TestShared:
             ({"timeout": "soon"}, "must be a number"),
             ({"timeout": True}, "must be a number"),
             ({"timeout": False}, "must be a number"),
-            ({"timeout": 0}, "1-10 s"),
-            ({"timeout": 0.5}, "1-10 s"),
-            ({"timeout": 10.5}, "1-10 s"),
-            ({"timeout": 15}, "1-10 s"),
-            ({"timeout": 45}, "1-10 s"),
+            ({"timeout": 0}, "1-15 s"),
+            ({"timeout": 0.5}, "1-15 s"),
+            ({"timeout": 15.5}, "1-15 s"),
+            ({"timeout": 20}, "1-15 s"),
+            ({"timeout": 45}, "1-15 s"),
         ],
     )
     async def test_invalid_values(self, action: str, params: dict, message: str) -> None:
@@ -496,6 +472,14 @@ class TestShared:
         with pytest.raises(_HomeAssistantError, match=message):
             await _call(vac, action, "config/set", **params)
         vac.coordinator.client.send_command.assert_not_awaited()
+
+    async def test_client_gets_only_topic_payload_and_timeout(self, action: str) -> None:
+        """No other keyword reaches the client, so a stray one cannot come back unseen."""
+        vac = _vacuum()
+        await _call(vac, action, "map/get_map", payload_hex="0a00", timeout=15)
+        call = vac.coordinator.client.send_command.await_args
+        assert call.args == ("map/get_map", bytes.fromhex("0a00"))
+        assert call.kwargs == {"timeout": 15.0}
 
     @pytest.mark.parametrize("error_name", ["NarwalCommandError", "NarwalConnectionError"])
     async def test_client_errors_become_service_errors(
@@ -530,248 +514,49 @@ def _client_topic_constants(const) -> dict[str, str]:
     }
 
 
-def _awaited_topic_names(client_source: str) -> tuple[set[str], set[str]]:
-    """TOPIC_CMD_* names the client passes to self.send_command, and the rest.
-
-    Resolved (first set): a direct ``self.send_command(TOPIC_CMD_X, ...)``
-    call, and a call ``self.<forwarder>(TOPIC_CMD_X, ...)`` to a method that
-    passes one of its own positional parameters straight to
-    ``self.send_command`` (today only _start_dock_task, called with the dock
-    task topics). Topics are matched by name only, positionally or by keyword.
-
-    Reported (second set), never resolved, so a new indirect path fails the
-    test instead of being missed:
-    - a send_command or forwarder call whose topic argument is anything but
-      a TOPIC_CMD_* name (or, inside a forwarder, its own parameter);
-    - a forwarder that assigns to its topic parameter anywhere in its body;
-    - a forwarder with no ``self.<forwarder>(...)`` call site;
-    - send_command or a forwarder referenced other than as the callee of a
-      call (``functools.partial(self.send_command, ...)``, a callback, bound
-      to a variable), or named as the string ``"send_command"``;
-    - a send_command or forwarder call on a receiver other than ``self``.
-    """
-    tree = ast.parse(client_source)
-
-    def _topic_arg(call: ast.Call, index: int, keyword: str) -> ast.AST | None:
-        if len(call.args) > index:
-            return call.args[index]
-        return next((k.value for k in call.keywords if k.arg == keyword), None)
-
-    def _method_calls(node: ast.AST, attr: str):
-        """Every call ``<receiver>.attr(...)`` under node, as (call, on_self)."""
-        for call in ast.walk(node):
-            if (
-                isinstance(call, ast.Call)
-                and isinstance(call.func, ast.Attribute)
-                and call.func.attr == attr
-            ):
-                receiver = call.func.value
-                yield call, isinstance(receiver, ast.Name) and receiver.id == "self"
-
-    found: set[str] = set()
-    unresolved: set[str] = set()
-    forwarders: dict[str, tuple[int, str]] = {}
-    for func in ast.walk(tree):
-        if not isinstance(func, ast.FunctionDef | ast.AsyncFunctionDef):
-            continue
-        params = [a.arg for a in func.args.args]
-        for node, on_self in _method_calls(func, "send_command"):
-            arg = _topic_arg(node, 0, "short_topic")
-            shown = ast.unparse(arg) if arg else None
-            if not on_self:
-                unresolved.add(f"{func.name}: {ast.unparse(node.func)}({shown})")
-            elif isinstance(arg, ast.Name) and arg.id.startswith("TOPIC_CMD_"):
-                found.add(arg.id)
-            elif isinstance(arg, ast.Name) and arg.id in params and func.name != "send_command":
-                rebound = any(
-                    isinstance(n, ast.Name) and n.id == arg.id and isinstance(n.ctx, ast.Store)
-                    for n in ast.walk(func)
-                )
-                if rebound:
-                    unresolved.add(f"{func.name}: assigns to its topic parameter {arg.id}")
-                else:
-                    # Index among call arguments, excluding self.
-                    forwarders[func.name] = (params.index(arg.id) - 1, arg.id)
-            else:
-                unresolved.add(f"{func.name}: {shown}")
-    for name, (index, keyword) in forwarders.items():
-        sites = 0
-        for node, on_self in _method_calls(tree, name):
-            arg = _topic_arg(node, index, keyword)
-            shown = ast.unparse(arg) if arg else None
-            if not on_self:
-                unresolved.add(f"{name} call: {ast.unparse(node.func)}({shown})")
-                continue
-            sites += 1
-            if isinstance(arg, ast.Name) and arg.id.startswith("TOPIC_CMD_"):
-                found.add(arg.id)
-            else:
-                unresolved.add(f"{name} call: {shown}")
-        if not sites:
-            unresolved.add(f"{name}: forwarder with no self.{name}(...) call site")
-    # A reference that is not the callee of a call escapes the checks above.
-    callees = {id(n.func) for n in ast.walk(tree) if isinstance(n, ast.Call)}
-    watched = {"send_command", *forwarders}
-    for node in ast.walk(tree):
-        if (
-            isinstance(node, ast.Attribute)
-            and node.attr in watched
-            and id(node) not in callees
-        ):
-            unresolved.add(f"reference: {ast.unparse(node)}")
-        elif isinstance(node, ast.Constant) and node.value in watched:
-            unresolved.add(f"reference: {node.value!r}")
-    return found, unresolved
-
-
 class TestTopicClassification:
-    """Every client topic is classified, so a new one cannot slip through."""
-
-    # Defined in const.py but never sent by the client, so nothing awaits them.
-    _UNRESTRICTED = ("TOPIC_CMD_REBOOT", "TOPIC_CMD_SHUTDOWN", "TOPIC_CMD_PING")
-
     def test_every_client_topic_is_in_exactly_one_group(self) -> None:
+        """A new client topic must be consciously refused or allowed raw.
+
+        Every TOPIC_CMD_* constant is refused as native, refused as a session
+        topic, refused as never answered, or named in the sendable list here.
+        """
         module = _vacuum_module(_vacuum())
         const = _client_const(module)
         constants = _client_topic_constants(const)
         assert len(constants) > 30
+        sendable = {
+            "TOPIC_CMD_YELL",
+            "TOPIC_CMD_REBOOT",
+            "TOPIC_CMD_SHUTDOWN",
+            "TOPIC_CMD_GET_DEVICE_INFO",
+            "TOPIC_CMD_GET_FEATURE_LIST",
+            "TOPIC_CMD_GET_BASE_STATUS",
+            "TOPIC_CMD_GET_CONSUMABLE_INFO",
+            "TOPIC_CMD_GET_CURRENT_TASK",
+            "TOPIC_CMD_GET_MAP",
+            "TOPIC_CMD_GET_ALL_MAPS",
+            "TOPIC_CMD_TAKE_PICTURE",
+            "TOPIC_CMD_SET_LED",
+            "TOPIC_CMD_GET_DEBUG_IMAGE",
+            "TOPIC_CMD_PING",
+        }
+        assert sendable <= set(constants)
         groups = {
             "native": set(module._NATIVE_TOPICS),
             "session": set(module._SESSION_TOPICS),
             "unacknowledged": set(module.UNACKNOWLEDGED_TOPICS),
-            "answered": set(module._RAW_ANSWERED_TOPICS),
-            "unrestricted": {getattr(const, name) for name in self._UNRESTRICTED},
+            "sendable": {constants[name] for name in sendable},
         }
         for name, topic in constants.items():
             homes = [group for group, topics in groups.items() if topic in topics]
             assert len(homes) == 1, f"{name} ({topic}) is in {homes or 'no group'}"
 
-    def test_every_awaited_client_topic_is_refused_or_answered(self) -> None:
-        module = _vacuum_module(_vacuum())
-        const = _client_const(module)
-        source = Path(const.__file__).with_name("client.py").read_text(encoding="utf-8")
-        names, unresolved = _awaited_topic_names(source)
-        assert not unresolved, unresolved
-        # The scan must reach both direct calls and the dock task helper.
-        assert {"TOPIC_CMD_GET_MAP", "TOPIC_CMD_WASH_MOP"} <= names
-        allowed = set(module._NATIVE_TOPICS) | module._RAW_ANSWERED_TOPICS
-        missing = sorted(name for name in names if getattr(const, name) not in allowed)
-        assert not missing, missing
-
-    def test_answered_topics_are_exactly_the_awaited_client_topics(self) -> None:
-        """Fully set by the client source: every topic it awaits that is not native."""
-        module = _vacuum_module(_vacuum())
-        const = _client_const(module)
-        source = Path(const.__file__).with_name("client.py").read_text(encoding="utf-8")
-        names, unresolved = _awaited_topic_names(source)
-        assert not unresolved, unresolved
-        awaited = {getattr(const, name) for name in names}
-        assert awaited - set(module._NATIVE_TOPICS) == module._RAW_ANSWERED_TOPICS
-
-    def test_read_allowed_topics_are_answered_clean_or_task_reads(self) -> None:
+    def test_read_allowed_topics_are_clean_or_task_reads(self) -> None:
         module = _vacuum_module(_vacuum())
         allowed = module._RAW_READ_ALLOWED_TOPICS
         assert allowed == {"clean/current_clean_task/get"}
-        assert allowed <= module._RAW_ANSWERED_TOPICS
+        assert all(topic.startswith(module._NATIVE_TOPIC_PREFIXES) for topic in allowed)
         assert not allowed & set(module._NATIVE_TOPICS)
         assert not allowed & module._SESSION_TOPICS
         assert not allowed & module.UNACKNOWLEDGED_TOPICS
-
-
-_SCAN_HEADER = "TOPIC_CMD_A = 'a'\n"
-
-
-class TestAwaitedTopicScan:
-    """The scan reports every shape it cannot resolve instead of missing it."""
-
-    @pytest.mark.parametrize(
-        "source",
-        [
-            pytest.param(
-                """
-class C:
-    async def go(self):
-        await self.send_command(TOPIC_CMD_A)
-""",
-                id="direct",
-            ),
-            pytest.param(
-                """
-class C:
-    async def _fwd(self, topic, payload=b""):
-        await self.send_command(topic, payload)
-
-    async def go(self):
-        await self._fwd(TOPIC_CMD_A)
-""",
-                id="forwarder",
-            ),
-        ],
-    )
-    def test_resolves(self, source: str) -> None:
-        assert _awaited_topic_names(_SCAN_HEADER + source) == ({"TOPIC_CMD_A"}, set())
-
-    @pytest.mark.parametrize(
-        "source",
-        [
-            pytest.param(
-                """
-class C:
-    async def _fwd(self, topic):
-        topic = topic + "/x"
-        await self.send_command(topic)
-
-    async def go(self):
-        await self._fwd(TOPIC_CMD_A)
-""",
-                id="forwarder-reassigns-parameter",
-            ),
-            pytest.param(
-                """
-class C:
-    async def _fwd(self, topic):
-        await self.send_command(topic)
-""",
-                id="forwarder-without-call-site",
-            ),
-            pytest.param(
-                """
-import functools
-
-class C:
-    async def go(self):
-        send = functools.partial(self.send_command, TOPIC_CMD_A)
-        await send()
-""",
-                id="partial",
-            ),
-            pytest.param(
-                """
-class C:
-    def go(self, loop):
-        loop.call_soon(self.send_command, TOPIC_CMD_A)
-""",
-                id="callback",
-            ),
-            pytest.param(
-                """
-class C:
-    async def go(self):
-        send = self.send_command
-        await send(TOPIC_CMD_A)
-""",
-                id="bound-to-variable",
-            ),
-            pytest.param(
-                """
-class C:
-    async def go(self, other):
-        await other.send_command(TOPIC_CMD_A)
-""",
-                id="other-receiver",
-            ),
-        ],
-    )
-    def test_reports_unresolved(self, source: str) -> None:
-        _found, unresolved = _awaited_topic_names(_SCAN_HEADER + source)
-        assert unresolved

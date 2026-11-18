@@ -80,7 +80,7 @@ async def test_read_returns_the_reply_keyed_by_entity(
     )
     assert response == {entity_id: {"response_hex": "0802", "response_bytes": 2}}
     send_command.assert_awaited_once_with(
-        "map/get_map", b"", timeout=3.0, hold_place_on_timeout=True
+        "map/get_map", b"", timeout=3.0
     )
 
 
@@ -97,15 +97,30 @@ async def test_read_takes_an_all_digit_payload_given_as_int(
         return_response=True,
     )
     send_command.assert_awaited_once_with(
-        "config/get", b"\x12\x34", timeout=5.0, hold_place_on_timeout=False
+        "config/get", b"\x12\x34", timeout=5.0
     )
+
+
+async def test_read_accepts_the_15_s_cap(
+    hass: HomeAssistant, robot: tuple[str, AsyncMock]
+) -> None:
+    """15 s passes the schema and reaches the client as a float."""
+    entity_id, send_command = robot
+    await hass.services.async_call(
+        DOMAIN,
+        SERVICE_GET_TOPIC_RESPONSE,
+        {"entity_id": entity_id, "topic": "map/get_map", "timeout": 15},
+        blocking=True,
+        return_response=True,
+    )
+    send_command.assert_awaited_once_with("map/get_map", b"", timeout=15.0)
 
 
 @pytest.mark.parametrize(
     "data",
     [
         {"topic": "region/get", "timeout": True},
-        {"topic": "region/get", "timeout": 15},
+        {"topic": "region/get", "timeout": 20},
         {"topic": "region/get", "payload_hex": 100},
         {"topic": "region/get", "payload_hex": ["a0"]},
         {"topic": "Region/Get"},
@@ -140,7 +155,7 @@ async def test_send_command_writes_and_raises_on_refusal(
         blocking=True,
     )
     send_command.assert_awaited_once_with(
-        "config/set", bytes.fromhex("a00200"), timeout=5.0, hold_place_on_timeout=False
+        "config/set", bytes.fromhex("a00200"), timeout=5.0
     )
 
     send_command.return_value = CommandResponse(result_code=CommandResult.NOT_APPLICABLE)
