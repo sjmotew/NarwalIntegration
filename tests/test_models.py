@@ -443,6 +443,64 @@ class TestNarwalState:
 
         assert not state.has_unmapped_active_dock_task
 
+    def test_timerless_dock_drying_is_not_unmapped(self) -> None:
+        """Dock drying without timers must not lock every control (#171).
+
+        The CX7 reports field 3 {1: 19, 18: 4} while drying the dock bag or the
+        dust bin and sends no drying timers at all, so the drying task set is
+        empty. Treating that as unmapped made the clean settings, the room
+        switches and the dock switches unavailable for the whole run.
+        """
+        state = NarwalState()
+        state.update_from_base_status({"3": {"1": 19, "18": 4}, "11": 2})
+
+        assert state.station_activity == 4
+        assert state.active_dock_drying_tasks == ()
+        assert not state.has_unmapped_active_dock_task
+
+    def test_timerless_dock_drying_reports_no_task_key(self) -> None:
+        """Which drying task is running is still unknown, so none is claimed."""
+        state = NarwalState()
+        state.update_from_base_status({"3": {"1": 19, "18": 4}, "11": 2})
+
+        assert state.active_dock_task_keys == ()
+        assert state.telemetry_dock_task_keys == ()
+
+    def test_unknown_station_activity_still_blocks_commands(self) -> None:
+        """Only the drying value is known; other station work stays unmapped."""
+        state = NarwalState()
+        state.update_from_base_status({"3": {"1": 19, "18": 7}, "11": 2})
+
+        assert state.station_activity == 7
+        assert state.has_unmapped_active_dock_task
+
+    def test_timer_capable_robot_still_fails_closed_after_timers_go_stale(self) -> None:
+        """A robot that has sent timers keeps the fail-closed path (#172 review).
+
+        has_dock_drying_timer_snapshot is cleared once the timers go stale on a
+        docked robot, so it cannot stand in for "this model never sends
+        timers". Without the sticky flag, a Flow whose timers had just been
+        cleared would take the timerless branch for the window between station
+        drying starting and the first timer packet of the new task.
+        """
+        state = NarwalState()
+        state.set_dock_drying_task(
+            DOCK_TASK_DRY_MOP,
+            elapsed=60,
+            target=180,
+            fields=("8", "9"),
+        )
+        state.has_sent_dock_drying_timers = True
+        state.clear_dock_drying_task()
+
+        assert not state.has_dock_drying_timer_snapshot
+        assert state.has_sent_dock_drying_timers
+
+        state.update_from_base_status({"3": {"1": 19, "18": 4}, "11": 2})
+
+        assert state.station_activity == 4
+        assert state.has_unmapped_active_dock_task
+
     def test_unmapped_dock_timer_blocks_commands(self) -> None:
         """Unmapped active timer pairs are kept as a blocking safety signal."""
         state = NarwalState()
