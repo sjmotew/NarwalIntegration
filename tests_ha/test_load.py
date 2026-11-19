@@ -28,7 +28,14 @@ from .conftest import DEVICE_ID
 # to notice a platform that silently failed to set up, not to pin the count.
 MIN_REGISTERED_ENTITIES = 40
 
-MODULES = [*(str(p) for p in PLATFORMS), "config_flow", "diagnostics", "entity"]
+MODULES = [
+    *(str(p) for p in PLATFORMS),
+    "config_flow",
+    "diagnostics",
+    "entity",
+    "map_geometry",
+    "websocket_api",
+]
 
 
 @pytest.mark.parametrize("module", MODULES)

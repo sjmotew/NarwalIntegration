@@ -14,3 +14,51 @@ its own map or place markers on the camera image. All positions are map grid coo
 `calibration_points` follows the format map cards such as
 [lovelace-xiaomi-vacuum-map-card](https://github.com/PiotrMachowski/lovelace-xiaomi-vacuum-map-card)
 read from a camera. These attributes change with every frame and are excluded from the recorder.
+
+## Full trail over the websocket API
+
+`path` is a decimated copy because attributes go to every connected frontend on every frame. A
+card that draws the route itself can ask for the full trail with the websocket command
+`narwal/trajectory`. It returns the trail as grid points converted the way the camera converts
+them, in the same coordinates as the attributes above. The camera caps a frame at 50,000 points,
+breaks included; this command converts every retained point.
+
+```json
+{"type": "narwal/trajectory", "entity_id": "camera.<robot>_map"}
+{"type": "narwal/trajectory", "entity_id": "camera.<robot>_map", "signature": [...]}
+```
+
+`entity_id` is any entity of the robot, usually the map camera the card already shows; the
+config entry id is accepted as `entry_id` instead. Sending both is rejected with
+`invalid_format`. Without either, the command answers for the one Narwal entry that is configured
+(and enabled). With several it returns `target_required`, also while a second robot is still
+retrying its setup; with none it returns `not_found`. An `entity_id` or `entry_id` that is not a
+loaded Narwal entry, or a robot that is configured but not loaded yet, returns `not_found` too.
+
+The trail shows where the robot went, so a user who is not an administrator needs read
+permission on the robot's vacuum entity; without it the answer is `unauthorized`. As in the
+services, permission is checked first: such a user also needs read permission on the
+`entity_id` sent, and gets `unauthorized` rather than `not_found` for an `entry_id` that is not
+loaded or for no target without a loaded robot, so the answer does not tell which ids belong to a
+robot.
+
+The result:
+
+| Key | Shape | Meaning |
+|---|---|---|
+| `version` | `1` | Shape of this answer; raised on any incompatible change |
+| `entry_id` | string | Config entry that answered |
+| `map` | `{id, created_at, width, height, resolution_mm}` or `null` | The static map the points belong to; `null` before the first map arrives. On a map the camera draws no frame for (a width or height of `0`, which means the robot's reply decoded to no map, or no map image), the trail is empty |
+| `rotation`, `zoom` | `0`/`90`/`180`/`270`, `1.0`-`2.0` | The camera's view options, to place the points on its image |
+| `signature` | list of integers or `null` | Identifies these points, trail and map together; send it back unchanged, `null` included. `null` when there is no trail or the map is not drawable; a trail that lies entirely off the map has a signature and `count` `0` |
+| `unchanged` | boolean | `true` when the request's `signature` is the current one; `count`, `x` and `y` are then left out |
+| `count` | integer | Number of points, breaks included. Every retained point is converted, none is decimated, so `count` can exceed the trail's 50,000-point cap: each break and each place where the route leaves the map adds a `NaN` pair (moves under a quarter grid cell are dropped). Size buffers on `count` |
+| `x`, `y` | base64 | `count` little-endian float32 values each; a `NaN` pair marks a break in the route |
+
+A card that polls sends the `signature` of the points it holds. While it is current, the answer
+carries `unchanged: true` with `map`, `rotation` and `zoom`, and no points; nothing is decoded and
+the points are not sent again. The signature covers the map fields the points depend on (id,
+creation time, origin and size), so after a map change, including a map that grew and kept its
+id, the answer carries the points again.
+
+The command only reads what the integration already holds and sends nothing to the robot.
