@@ -4110,3 +4110,143 @@ class TestTopicSubscriptionRenewal:
         c.client.subscribe_to_topics = AsyncMock(side_effect=RuntimeError("ws closed"))
         state = await c._async_update_data()
         assert state is c.client.state
+
+
+def _coordinator_with_retained_trail(map_identity: tuple[int, int]) -> NarwalCoordinator:
+    """A docked robot holding a trail that was retained on ``map_identity``."""
+    coordinator = _new_coordinator()
+    coordinator.client = MagicMock()
+    coordinator.client.state = _trajectory_state()
+    coordinator._retained_map_display = coordinator.client.state.map_display_data
+    coordinator._retained_map_identity = map_identity
+    coordinator._map_display_cache_store = _FakeStore({"old": "trail"})
+    coordinator._map_display_cache_clear_event = asyncio.Event()
+    coordinator._map_display_cache_clear_event.set()
+    return coordinator
+
+
+async def test_align_trail_drops_a_trail_of_another_map_but_keeps_the_store() -> None:
+    """A floor switched in the app: the old floor's trail and pose leave memory.
+
+    Looking at a floor is no clean, so the stored trail of the last clean stays;
+    a restart restores it only on its own map.
+    """
+    coordinator = _coordinator_with_retained_trail((11, 33))
+
+    await coordinator.async_align_trail_with_static_map()
+
+    assert coordinator.client.state.map_display_data is None
+    assert coordinator._retained_map_display is None
+    assert coordinator._retained_map_identity == (12, 34)
+    assert coordinator._map_display_cache_store.saved == []
+    assert coordinator._map_display_cache_clear_pending is False
+
+
+async def test_align_trail_switching_back_restores_the_stored_trail() -> None:
+    """Floor 1 cleaned and saved, floor 2 looked at, back on floor 1: its trail shows again."""
+    stored_state = _trajectory_state()
+    coordinator = _coordinator_with_retained_trail((11, 33))
+    coordinator._map_display_cache_store = _FakeStore(
+        coordinator._map_display_cache_payload_from_snapshot(
+            coordinator._map_display_cache_snapshot(stored_state)
+        )
+    )
+    coordinator.client.state.map_display_data = None
+    coordinator._retained_map_display = None
+
+    await coordinator.async_align_trail_with_static_map()
+
+    restored = coordinator.client.state.map_display_data
+    assert restored is not None
+    assert restored.trajectory_points() == stored_state.map_display_data.trajectory_points()
+    assert coordinator._retained_map_identity == (12, 34)
+    assert coordinator._map_display_cache_store.saved == []
+
+
+async def test_align_trail_keeps_a_queued_save_of_the_old_map() -> None:
+    """A save already queued for the old floor still goes to the store, with its map."""
+    coordinator = _coordinator_with_retained_trail((11, 33))
+    snapshot = replace(
+        coordinator._map_display_cache_snapshot(coordinator.client.state),
+        map_id=11,
+        map_created_at=33,
+    )
+    coordinator._pending_map_display_cache_snapshot = snapshot
+
+    await coordinator.async_align_trail_with_static_map()
+
+    assert coordinator._pending_map_display_cache_snapshot is snapshot
+
+
+async def test_align_trail_drops_a_queued_save_without_a_map() -> None:
+    """A snapshot that never knew its map would be bound to the new floor: it goes."""
+    coordinator = _coordinator_with_retained_trail((11, 33))
+    snapshot = replace(
+        coordinator._map_display_cache_snapshot(coordinator.client.state),
+        map_id=0,
+        map_created_at=0,
+    )
+    coordinator._pending_map_display_cache_snapshot = snapshot
+
+    await coordinator.async_align_trail_with_static_map()
+
+    assert coordinator._pending_map_display_cache_snapshot is None
+
+
+async def test_align_trail_binds_a_trail_retained_before_any_map() -> None:
+    """get_map failed at startup mid-clean: the trail is bound to the first map fetched,
+    so the next floor switch is recognised and drops it."""
+    coordinator = _coordinator_with_retained_trail((12, 34))
+    coordinator._retained_map_identity = None
+
+    await coordinator.async_align_trail_with_static_map()
+    assert coordinator._retained_map_identity == (12, 34)
+    assert coordinator.client.state.map_display_data is not None
+
+    coordinator.client.state.map_data = replace(
+        coordinator.client.state.map_data, map_id=13
+    )
+    await coordinator.async_align_trail_with_static_map()
+
+    assert coordinator.client.state.map_display_data is None
+    assert coordinator._retained_map_identity == (13, 34)
+
+
+async def test_align_trail_keeps_the_trail_of_the_same_map() -> None:
+    coordinator = _coordinator_with_retained_trail((12, 34))
+    trail = coordinator.client.state.map_display_data
+
+    await coordinator.async_align_trail_with_static_map()
+
+    assert coordinator.client.state.map_display_data is trail
+    assert coordinator._map_display_cache_store.saved == []
+
+
+async def test_align_trail_restores_a_cache_waiting_for_the_map() -> None:
+    """A first map fetched by a dashboard restores the trail cache, as a poll would."""
+    coordinator = _new_coordinator()
+    coordinator.client = MagicMock()
+    state = _trajectory_state()
+    payload = coordinator._map_display_cache_payload_from_snapshot(
+        coordinator._map_display_cache_snapshot(state)
+    )
+    coordinator.client.state = NarwalState()
+    coordinator._retained_map_display = None
+    coordinator._retained_map_identity = None
+    coordinator._map_display_cache_store = _FakeStore()
+    coordinator._pending_map_display_cache_snapshot = None
+    coordinator._pending_map_display_cache_restore = dict(payload)
+
+    await coordinator.async_align_trail_with_static_map()
+    assert coordinator._pending_map_display_cache_restore is not None
+
+    coordinator.client.state.map_data = state.map_data
+    await coordinator.async_align_trail_with_static_map()
+
+    assert coordinator._pending_map_display_cache_restore is None
+    assert coordinator.client.state.map_display_data is not None
+    assert coordinator.client.state.map_display_data.trajectory_points() == (
+        state.map_display_data.trajectory_points()
+    )
+    assert coordinator._retained_map_identity == (12, 34)
+    assert coordinator._map_display_cache_store.saved == []

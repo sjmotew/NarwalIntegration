@@ -7,30 +7,50 @@ camera's ``path`` attribute carries a copy decimated to 400 points, because
 attributes go to every frontend on every frame; a client that draws the route
 itself asks for the full trail, and while polling sends the signature it holds
 so an unchanged trail is not sent again.
+
+``narwal/active_map`` asks the robot which map is active now and answers its
+id, size and rooms. The integration otherwise fetches the map only at startup
+and when a clean is started from Home Assistant, so a floor switched in the
+Narwal app stays invisible until then (#43). The command makes the same
+``get_map`` call a clean start makes, under the same lock, and tells the
+entities afterwards, so the camera and the room list follow the robot's floor.
 """
 
 from __future__ import annotations
 
+import asyncio
 import base64
+import copy
+import logging
 import sys
+import time
 from array import array
+from dataclasses import dataclass
+from functools import partial
 from typing import TYPE_CHECKING, Any
+from weakref import WeakKeyDictionary
 
 import voluptuous as vol
-from homeassistant.auth.permissions.const import POLICY_READ
+from homeassistant.auth.permissions.const import POLICY_CONTROL, POLICY_READ
 from homeassistant.components import websocket_api
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import Unauthorized
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import entity_registry as er
+from websockets.exceptions import WebSocketException
 
 from .const import DOMAIN
+from .coordinator import is_clean_session_context
 from .map_geometry import (
     map_is_drawable,
+    map_placement,
     map_rotation,
     map_zoom,
     native_trajectory_grid_points,
 )
+from .narwal_client import NarwalCommandError, NarwalConnectionError
+
+_LOGGER = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from homeassistant.auth.models import User
@@ -39,10 +59,20 @@ if TYPE_CHECKING:
     from .narwal_client.models import MapData, MapDisplayData
 
 TRAJECTORY_COMMAND = f"{DOMAIN}/trajectory"
+ACTIVE_MAP_COMMAND = f"{DOMAIN}/active_map"
 #: Version of the answers' shape; bumped on any incompatible change.
 ANSWER_VERSION = 1
+#: A successful answer younger than this (monotonic seconds) is reused, so
+#: dashboards polling the command do not turn into a stream of get_map calls.
+ACTIVE_MAP_TTL = 30.0
+#: After a failed fetch the robot is not asked again for this long, so a card
+#: polling a robot that does not answer cannot keep the dock lock busy.
+ACTIVE_MAP_FAILURE_BACKOFF = 30.0
+ERR_MAP_FAILED = "map_failed"
 #: Error code when several entries are configured and the request names none.
 ERR_TARGET_REQUIRED = "target_required"
+#: Seconds to wait for a sleeping robot to start broadcasting, as the vacuum does.
+WAKE_TIMEOUT = 10.0
 
 #: Request keys that pick the robot; at most one of them per request.
 TARGET_SCHEMA = {
@@ -60,10 +90,51 @@ class TargetError(Exception):
         self.message = message
 
 
+class ActiveMapError(Exception):
+    """The active map could not be fetched."""
+
+
+#: What a robot that does not answer raises: the client's own errors, a bare
+#: timeout, and the socket's errors that ``send`` lets through. Anything else
+#: is a bug; it propagates, so Home Assistant logs it with its traceback.
+FETCH_ERRORS: tuple[type[BaseException], ...] = (
+    ActiveMapError,
+    NarwalCommandError,
+    NarwalConnectionError,
+    TimeoutError,
+    OSError,
+    WebSocketException,
+)
+
+
+@dataclass
+class _ActiveMapFetch:
+    """Per-entry fetch state: the running request and the last outcome."""
+
+    task: asyncio.Task[dict[str, Any]] | None = None
+    answer: dict[str, Any] | None = None
+    answered_at: float = 0.0
+    #: The coordinator's ``map_data`` object the answer was built from.
+    map_data: Any = None
+    #: The last failure as text, never the exception: its traceback holds the
+    #: coordinator, which would keep this entry's key alive after an unload.
+    failure: str | None = None
+    failed_at: float = 0.0
+    #: Whether the robot was asleep when the fetch failed.
+    failed_asleep: bool = False
+
+
+# Keyed by coordinator, so an unloaded entry takes its state with it.
+_active_map_fetches: WeakKeyDictionary[NarwalCoordinator, _ActiveMapFetch] = (
+    WeakKeyDictionary()
+)
+
+
 @callback
 def async_setup_websocket_api(hass: HomeAssistant) -> None:
     """Register the Narwal websocket commands."""
     websocket_api.async_register_command(hass, ws_trajectory)
+    websocket_api.async_register_command(hass, ws_active_map)
 
 
 @callback
@@ -194,21 +265,11 @@ def trail_signature(
 
     The grid points depend on the trail and on the map they are placed on, so
     both are in it: the trail's own signature (count and checksums, as the
-    camera caches on), then every map field the conversion reads. ``id`` and
-    ``created_at`` alone are not enough: a robot that never sends a creation
-    time leaves it at 0, and an extended map keeps its id but moves its origin.
+    camera caches on), then every map field the conversion reads.
     """
     if not map_is_drawable(static_map) or display is None or not display.has_trajectory:
         return None
-    return [
-        *display.trajectory_signature,
-        static_map.map_id,
-        static_map.created_at,
-        static_map.origin_x,
-        static_map.origin_y,
-        static_map.width,
-        static_map.height,
-    ]
+    return [*display.trajectory_signature, *map_placement(static_map)]
 
 
 def _answer(
@@ -306,3 +367,176 @@ async def ws_trajectory(
         trajectory_payload, entry_id, static_map, state.map_display_data, options
     )
     connection.send_result(msg["id"], payload)
+
+
+def active_map_payload(entry_id: str, map_data: Any, *, held: bool) -> dict[str, Any]:
+    """Build the ``narwal/active_map`` answer.
+
+    ``held`` marks a map the integration already held instead of one the robot
+    was asked for (during a task); ``map`` is null when none is held yet.
+    """
+    return {
+        "version": ANSWER_VERSION,
+        "entry_id": entry_id,
+        "held": held,
+        "map": None
+        if map_data is None
+        else {
+            "id": map_data.map_id,
+            "created_at": map_data.created_at,
+            "width": map_data.width,
+            "height": map_data.height,
+        },
+        "rooms": []
+        if map_data is None
+        else [
+            {"id": room.room_id, "name": room.display_name}
+            for room in map_data.rooms
+            if room.room_id > 0
+        ],
+    }
+
+
+def _held_payload(coordinator: NarwalCoordinator) -> dict[str, Any]:
+    """Answer the map the integration holds, without asking the robot."""
+    return active_map_payload(
+        coordinator.config_entry.entry_id, coordinator.client.state.map_data, held=True
+    )
+
+
+async def _async_fetch_active_map(
+    coordinator: NarwalCoordinator, fetch: _ActiveMapFetch
+) -> dict[str, Any]:
+    """Ask the robot for its active map; only a fetched answer is remembered."""
+    client = coordinator.client
+    try:
+        async with coordinator.dock_action_lock:
+            if is_clean_session_context(client.state):
+                # A clean started while this request waited for the lock.
+                return _held_payload(coordinator)
+            if not client.robot_awake and not client.state.is_docked:
+                # Off the dock a robot asleep answers nothing; vacuum.start would
+                # wake it too. A docked robot answers get_map without a burst, as
+                # it answers the 60 s get_status poll, and bursting each fetch at
+                # a robot that stops broadcasting while docked would bring back
+                # the bursts #90 removed.
+                await client.wake(timeout=WAKE_TIMEOUT)
+            map_data = await client.get_map()
+            await coordinator.async_align_trail_with_static_map()
+    except FETCH_ERRORS as err:
+        # Only a robot that did not answer starts the back-off, never a bug.
+        fetch.failure = _describe(err)
+        fetch.failed_at = time.monotonic()
+        fetch.failed_asleep = not client.robot_awake
+        raise
+    answer = active_map_payload(coordinator.config_entry.entry_id, map_data, held=False)
+    fetch.answer = answer
+    fetch.answered_at = time.monotonic()
+    fetch.map_data = client.state.map_data
+    fetch.failure = None
+    # Told only once the fetch is recorded, and guarded: HA does not guard
+    # listener callbacks, and the map and trail have already been swapped, so
+    # an entity that raises must not turn this fetch into a failure that is
+    # neither cached nor backed off. Without async_set_updated_data, which
+    # would move the 60 s poll on every fetch and starve it under a polling card.
+    try:
+        coordinator.async_update_listeners()
+    except Exception:
+        _LOGGER.exception("Error telling the Narwal entities about the fetched map")
+    return answer
+
+
+def _describe(err: BaseException) -> str:
+    """Return an error text that is never empty (a bare TimeoutError has none)."""
+    return str(err) or type(err).__name__
+
+
+def _fetch_done(fetch: _ActiveMapFetch, task: asyncio.Task[Any]) -> None:
+    """Drop the finished task.
+
+    Dropping it lets an unloaded coordinator go: a kept task keeps its
+    exception, whose traceback holds the coordinator. Retrieving the
+    exception keeps asyncio from logging it when nobody awaits the fetch any
+    more; whoever does await it gets it raised.
+    """
+    if fetch.task is task:
+        fetch.task = None
+    if not task.cancelled():
+        task.exception()
+
+
+async def async_get_active_map(
+    hass: HomeAssistant, coordinator: NarwalCoordinator
+) -> dict[str, Any]:
+    """Return the robot's active map, sharing one request among concurrent callers."""
+    state = coordinator.client.state
+    if is_clean_session_context(state):
+        # The map is fixed for the duration of a task, and a get_map during a
+        # clean is unmeasured: answer the held map instead of asking the robot.
+        return _held_payload(coordinator)
+    # No await before the task is stored, so concurrent callers cannot race here.
+    fetch = _active_map_fetches.setdefault(coordinator, _ActiveMapFetch())
+    now = time.monotonic()
+    if (
+        fetch.answer is not None
+        and now - fetch.answered_at < ACTIVE_MAP_TTL
+        # A clean start or setup that fetched the map since makes this answer stale.
+        and fetch.map_data is state.map_data
+    ):
+        return copy.deepcopy(fetch.answer)
+    task = fetch.task
+    if task is None:
+        if (
+            fetch.failure is not None
+            and now - fetch.failed_at < ACTIVE_MAP_FAILURE_BACKOFF
+            # A robot that failed asleep and has woken since is worth asking again.
+            and not (fetch.failed_asleep and coordinator.client.robot_awake)
+        ):
+            raise ActiveMapError(fetch.failure)
+        # Tied to the entry: an unload cancels it, so nothing more is sent to
+        # the robot or told to the entities of an unloaded entry, and whoever
+        # still waits gets map_failed.
+        task = fetch.task = coordinator.config_entry.async_create_background_task(
+            hass,
+            _async_fetch_active_map(coordinator, fetch),
+            f"{DOMAIN}_active_map",
+        )
+        task.add_done_callback(partial(_fetch_done, fetch))
+    try:
+        # A client that disconnects must not cancel the request others wait for.
+        answer = await asyncio.shield(task)
+    except asyncio.CancelledError:
+        current = asyncio.current_task()
+        if task.cancelled() and (current is None or not current.cancelling()):
+            raise ActiveMapError("Narwal entry was unloaded") from None
+        raise
+    return copy.deepcopy(answer)
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): ACTIVE_MAP_COMMAND,
+        **TARGET_SCHEMA,
+    }
+)
+@websocket_api.async_response
+async def ws_active_map(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Answer the robot's active map (id, size, rooms) for one Narwal entry."""
+    try:
+        # Asking wakes the robot and replaces the map the entities show: control.
+        coordinator = authorized_coordinator(hass, connection.user, msg, POLICY_CONTROL)
+    except TargetError as err:
+        connection.send_error(msg["id"], err.code, err.message)
+        return
+    try:
+        answer = await async_get_active_map(hass, coordinator)
+    except FETCH_ERRORS as err:
+        connection.send_error(
+            msg["id"], ERR_MAP_FAILED, f"Narwal map could not be fetched: {_describe(err)}"
+        )
+        return
+    connection.send_result(msg["id"], answer)
