@@ -1,0 +1,310 @@
+{
+  "config": {
+    "flow_title": "Robot aspirador Narwal ({host})",
+    "step": {
+      "user": {
+        "title": "Conectar con el robot aspirador Narwal",
+        "description": "Introduce la dirección IP de tu robot aspirador Narwal y selecciona el modelo.",
+        "data": {
+          "host": "Dirección IP",
+          "port": "Puerto",
+          "model": "Modelo"
+        }
+      },
+      "device_id": {
+        "title": "Introducir el ID del dispositivo",
+        "description": "La detección automática no está disponible. Introduce el ID del dispositivo de 32 caracteres que la nube asignó al robot aspirador, o marca la casilla para volver a intentar la detección automática, algo útil si el robot estaba en reposo en el primer intento. Consulta la documentación de la integración para saber cómo obtenerlo.",
+        "data": {
+          "device_id": "ID del dispositivo",
+          "retry_auto_detect": "Volver a intentar la detección automática"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "No se pudo conectar con el robot aspirador. Comprueba la dirección IP y que el robot esté encendido.",
+      "unknown": "Se ha producido un error inesperado.",
+      "device_id_required": "Introduce un ID del dispositivo o marca «Volver a intentar la detección automática»."
+    },
+    "abort": {
+      "already_configured": "Este robot aspirador ya está configurado."
+    }
+  },
+  "entity": {
+    "vacuum": {
+      "vacuum": {
+        "name": "Robot aspirador"
+      }
+    },
+    "sensor": {
+      "cleaning_area": {
+        "name": "Superficie limpiada"
+      },
+      "cleaning_time": {
+        "name": "Tiempo de limpieza"
+      },
+      "remaining_time": {
+        "name": "Tiempo restante"
+      },
+      "firmware_version": {
+        "name": "Versión del firmware"
+      },
+      "dust_bag_health": {
+        "name": "Estado de la bolsa de polvo"
+      },
+      "detergent_remaining": {
+        "name": "Detergente restante"
+      },
+      "last_clean_result": {
+        "name": "Resultado de la última limpieza",
+        "state": {
+          "normal_end": "Completada",
+          "user_force_end": "Detenida por el usuario",
+          "shutdown_force_end": "Finalizada (apagado)",
+          "low_battery_force_end": "Finalizada (batería baja)",
+          "overflow_force_end": "Finalizada (depósito desbordado)",
+          "pause_too_long_force_end": "Finalizada (pausa demasiado larga)",
+          "system_error_force_end": "Finalizada (error del sistema)",
+          "user_force_end_on_station": "Detenida en la base",
+          "user_force_end_on_app": "Detenida desde la app",
+          "recall_end": "Finalizada (vuelta a la base)",
+          "normal_end_replenish_map_fail": "Completada (no se pudo actualizar el mapa)",
+          "map_unmatched_force_end": "Finalizada (el mapa no coincide)",
+          "relocation_fail_with_station_force_end": "Finalizada (fallo de relocalización)",
+          "relocation_fail_without_station_force_end": "Finalizada (fallo de relocalización, sin base)",
+          "pretask_error_force_end": "Finalizada (error antes de empezar)",
+          "schedule_task_force_end": "Finalizada (programación)",
+          "unexecuted": "No ejecutada",
+          "not_find_pet": "Mascota no encontrada"
+        }
+      },
+      "charging_state": {
+        "name": "Estado de carga",
+        "state": {
+          "charging": "Cargando",
+          "fully_charged": "Carga completa",
+          "not_charging": "No está cargando"
+        }
+      }
+    },
+    "binary_sensor": {
+      "docked": {
+        "name": "En la base",
+        "state": {
+          "on": "En la base",
+          "off": "Fuera de la base"
+        }
+      },
+      "error": {
+        "name": "Error",
+        "state": {
+          "on": "Problema",
+          "off": "OK"
+        }
+      },
+      "clean_water_tank": {
+        "name": "Depósito de agua limpia"
+      },
+      "sewage_tank": {
+        "name": "Depósito de agua sucia"
+      },
+      "dust_box": {
+        "name": "Depósito de polvo"
+      },
+      "dust_bag": {
+        "name": "Bolsa de polvo"
+      },
+      "station_bag": {
+        "name": "Bolsa de polvo de la base"
+      },
+      "maintenance_required": {
+        "name": "Mantenimiento necesario"
+      },
+      "replacement_required": {
+        "name": "Sustitución necesaria"
+      }
+    },
+    "select": {
+      "work_mode": {
+        "name": "Modo de limpieza",
+        "state": {
+          "vacuum": "Aspirar",
+          "mop": "Fregar",
+          "vacuum_then_mop": "Aspirar y después fregar",
+          "vacuum_and_mop": "Aspirar y fregar"
+        }
+      },
+      "water": {
+        "name": "Humedad del fregado",
+        "state": {
+          "dry": "Ligeramente seco",
+          "normal": "Normal",
+          "wet": "Ligeramente húmedo"
+        }
+      },
+      "mop_strength": {
+        "name": "Intensidad de fregado",
+        "state": {
+          "normal": "Normal",
+          "high": "Alta"
+        }
+      },
+      "legacy_mode": {
+        "name": "Modo"
+      },
+      "legacy_suction": {
+        "name": "Succión"
+      },
+      "legacy_water": {
+        "name": "Nivel de agua"
+      },
+      "legacy_scrub": {
+        "name": "Fregado"
+      },
+      "legacy_route": {
+        "name": "Ruta"
+      },
+      "legacy_passes": {
+        "name": "Pasadas"
+      },
+      "room_mode": {
+        "name": "Modo de {room_name}"
+      },
+      "room_suction": {
+        "name": "Succión de {room_name}"
+      },
+      "room_water": {
+        "name": "Nivel de agua de {room_name}"
+      },
+      "room_scrub": {
+        "name": "Fregado de {room_name}"
+      },
+      "room_route": {
+        "name": "Ruta de {room_name}"
+      },
+      "room_passes": {
+        "name": "Pasadas de {room_name}"
+      }
+    },
+    "number": {
+      "passes": {
+        "name": "Pasadas de limpieza"
+      }
+    },
+    "light": {
+      "dock_light": {
+        "name": "Luz de la base"
+      }
+    },
+    "switch": {
+      "empty_dustbin": {
+        "name": "Vaciar depósito de polvo"
+      },
+      "wash_mop": {
+        "name": "Lavar mopa"
+      },
+      "dry_mop": {
+        "name": "Secar mopa"
+      },
+      "dry_dust_bin": {
+        "name": "Secar y desinfectar depósito de polvo"
+      },
+      "dry_dock_bag": {
+        "name": "Secar y desinfectar bolsa de la base"
+      },
+      "show_room_labels": {
+        "name": "Mostrar nombres de habitaciones"
+      },
+      "show_furniture": {
+        "name": "Mostrar muebles"
+      },
+      "show_furniture_labels": {
+        "name": "Mostrar nombres de muebles"
+      },
+      "room_selected": {
+        "name": "Seleccionar {room_name}"
+      }
+    },
+    "camera": {
+      "map": {
+        "name": "Mapa"
+      },
+      "carpet_map": {
+        "name": "Mapa de alfombras"
+      }
+    }
+  },
+  "device": {
+    "dock": {
+      "name": "Base de {name}"
+    }
+  },
+  "selector": {
+    "clean_mode": {
+      "options": {
+        "vacuum": "Aspirar",
+        "mop": "Fregar",
+        "vacuum_then_mop": "Aspirar y después fregar",
+        "vacuum_and_mop": "Aspirar y fregar"
+      }
+    },
+    "suction": {
+      "options": {
+        "ai": "IA",
+        "quiet": "Silencioso",
+        "standard": "Estándar",
+        "strong": "Fuerte",
+        "super_powerful": "Superpotente",
+        "ultra_powerful": "Ultrapotente"
+      }
+    },
+    "water": {
+      "options": {
+        "dry": "Seco",
+        "normal": "Normal",
+        "wet": "Húmedo"
+      }
+    },
+    "mop_strength": {
+      "options": {
+        "normal": "Normal",
+        "high": "Alta"
+      }
+    },
+    "route": {
+      "options": {
+        "standard": "Estándar",
+        "meticulous": "Minuciosa"
+      }
+    }
+  },
+  "services": {
+    "clean_rooms": {
+      "name": "Limpiar habitaciones",
+      "description": "Inicia una limpieza por habitaciones con el comando local de Narwal clean/start_clean.",
+      "fields": {
+        "rooms": {
+          "name": "Habitaciones",
+          "description": "ID de las habitaciones de Narwal que se van a limpiar, en orden, o \"all\" (tal cual, en inglés) para todas las habitaciones del mapa actual."
+        },
+        "mode": {
+          "name": "Modo"
+        },
+        "suction": {
+          "name": "Succión"
+        },
+        "water": {
+          "name": "Nivel de agua"
+        },
+        "mop_strength": {
+          "name": "Intensidad de fregado"
+        },
+        "passes": {
+          "name": "Pasadas"
+        },
+        "route": {
+          "name": "Ruta"
+        }
+      }
+    }
+  }
+}
