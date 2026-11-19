@@ -61,6 +61,23 @@ def map_is_drawable(static_map: MapData | None) -> TypeGuard[MapData]:
     )
 
 
+def map_placement(static_map: MapData) -> tuple[int, int, int, int, int, int]:
+    """Return every field that places points on this map.
+
+    ``map_id`` and ``created_at`` alone do not identify a map: a robot that
+    never sends a creation time leaves it at 0 on every floor, and an extended
+    map keeps its id but moves its origin.
+    """
+    return (
+        static_map.map_id,
+        static_map.created_at,
+        static_map.origin_x,
+        static_map.origin_y,
+        static_map.width,
+        static_map.height,
+    )
+
+
 def native_trajectory_grid_points(
     points: list[tuple[float, float]],
     static_map: MapData,
