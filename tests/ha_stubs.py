@@ -37,6 +37,7 @@ def install() -> None:
     vol.Optional = MagicMock(side_effect=lambda *a, **kw: a[0] if a else "key")  # type: ignore[attr-defined]
     vol.Exclusive = MagicMock(side_effect=lambda *a, **kw: a[0] if a else "key")  # type: ignore[attr-defined]
     vol.Any = MagicMock()  # type: ignore[attr-defined]
+    vol.All = MagicMock()  # type: ignore[attr-defined]
     vol.In = MagicMock()  # type: ignore[attr-defined]
     vol.Invalid = type("Invalid", (Exception,), {})  # type: ignore[attr-defined]
 
@@ -137,7 +138,9 @@ def install() -> None:
     ha_cv = _mod("homeassistant.helpers.config_validation", ha_helpers)
     ha_cv.comp_entity_ids = MagicMock()  # type: ignore[attr-defined]
     ha_cv.entity_ids = MagicMock()  # type: ignore[attr-defined]
+    ha_cv.has_at_least_one_key = MagicMock()  # type: ignore[attr-defined]
     ha_cv.ensure_list = MagicMock()  # type: ignore[attr-defined]
+    ha_cv.boolean = MagicMock()  # type: ignore[attr-defined]
     ha_cv.entity_id = str  # type: ignore[attr-defined]
     ha_cv.config_entry_only_config_schema = MagicMock()  # type: ignore[attr-defined]
 
@@ -203,6 +206,9 @@ def install() -> None:
 
     ha_dr = _mod("homeassistant.helpers.device_registry", ha_helpers)
     ha_dr.DeviceInfo = dict  # type: ignore[attr-defined]
+
+    ha_ar = _mod("homeassistant.helpers.area_registry", ha_helpers)
+    ha_ar.async_get = MagicMock()  # type: ignore[attr-defined]
 
     ha_er = _mod("homeassistant.helpers.entity_registry", ha_helpers)
     ha_er.async_get = MagicMock()  # type: ignore[attr-defined]
