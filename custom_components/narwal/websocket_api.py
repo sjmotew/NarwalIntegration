@@ -7,6 +7,15 @@ camera's ``path`` attribute carries a copy decimated to 400 points, because
 attributes go to every frontend on every frame; a client that draws the route
 itself asks for the full trail, and while polling sends the signature it holds
 so an unchanged trail is not sent again.
+
+``narwal/active_map`` asks the robot which map is active now and answers its
+id, size and rooms. Between its own start and a clean started from Home
+Assistant, the integration finds a floor switched in the Narwal app only on
+its poll, and not on a model that does not broadcast (#43); a client that
+shows more than one floor, or is about to act on one, asks when it needs to
+know. The command is a caller of
+``NarwalCoordinator.async_refresh_active_map``, which owns the lock, the wake,
+the fetch, the trail, the entities and the failure policy.
 """
 
 from __future__ import annotations
@@ -17,7 +26,7 @@ from array import array
 from typing import TYPE_CHECKING, Any
 
 import voluptuous as vol
-from homeassistant.auth.permissions.const import POLICY_READ
+from homeassistant.auth.permissions.const import POLICY_CONTROL, POLICY_READ
 from homeassistant.components import websocket_api
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import Unauthorized
@@ -25,6 +34,7 @@ from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import entity_registry as er
 
 from .const import DOMAIN
+from .coordinator import ActiveMapError
 from .map_geometry import (
     map_is_drawable,
     map_placement,
@@ -40,8 +50,10 @@ if TYPE_CHECKING:
     from .narwal_client.models import MapData, MapDisplayData
 
 TRAJECTORY_COMMAND = f"{DOMAIN}/trajectory"
+ACTIVE_MAP_COMMAND = f"{DOMAIN}/active_map"
 #: Version of the answers' shape; bumped on any incompatible change.
 ANSWER_VERSION = 1
+ERR_MAP_FAILED = "map_failed"
 #: Error code when several entries are configured and the request names none.
 ERR_TARGET_REQUIRED = "target_required"
 
@@ -65,6 +77,7 @@ class TargetError(Exception):
 def async_setup_websocket_api(hass: HomeAssistant) -> None:
     """Register the Narwal websocket commands."""
     websocket_api.async_register_command(hass, ws_trajectory)
+    websocket_api.async_register_command(hass, ws_active_map)
 
 
 @callback
@@ -297,3 +310,65 @@ async def ws_trajectory(
         trajectory_payload, entry_id, static_map, state.map_display_data, options
     )
     connection.send_result(msg["id"], payload)
+
+
+def active_map_payload(entry_id: str, map_data: MapData | None, *, held: bool) -> dict[str, Any]:
+    """Build the ``narwal/active_map`` answer.
+
+    ``held`` marks a map the integration already held instead of one the robot
+    was asked for (during a task); ``map`` is null when none is held yet.
+    """
+    return {
+        "version": ANSWER_VERSION,
+        "entry_id": entry_id,
+        "held": held,
+        "map": None
+        if map_data is None
+        else {
+            "id": map_data.map_id,
+            "created_at": map_data.created_at,
+            "width": map_data.width,
+            "height": map_data.height,
+        },
+        "rooms": []
+        if map_data is None
+        else [
+            {"id": room.room_id, "name": room.display_name}
+            for room in map_data.rooms
+            if room.room_id > 0
+        ],
+    }
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): ACTIVE_MAP_COMMAND,
+        **TARGET_SCHEMA,
+    }
+)
+@websocket_api.async_response
+async def ws_active_map(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Answer the robot's active map (id, size, rooms) for one Narwal entry."""
+    try:
+        # Asking wakes the robot and replaces the map the entities show: control.
+        coordinator = authorized_coordinator(hass, connection.user, msg, POLICY_CONTROL)
+    except TargetError as err:
+        connection.send_error(msg["id"], err.code, err.message)
+        return
+    try:
+        refresh = await coordinator.async_refresh_active_map()
+    except ActiveMapError as err:
+        # The robot did not answer. Anything else is a bug and goes on to Home
+        # Assistant's handler, which logs it and answers unknown_error.
+        connection.send_error(
+            msg["id"], ERR_MAP_FAILED, f"Narwal map could not be fetched: {err}"
+        )
+        return
+    connection.send_result(
+        msg["id"],
+        active_map_payload(coordinator.config_entry.entry_id, refresh.map_data, held=refresh.held),
+    )

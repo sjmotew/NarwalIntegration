@@ -71,7 +71,7 @@ to a report: [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md).
 | [CHANGELOG.md](CHANGELOG.md) | Every release, newest first, breaking changes flagged |
 | [docs/SETUP.md](docs/SETUP.md) | Discovery, VLANs, the CX7 Device ID |
 | [docs/ROOM-CLEANING.md](docs/ROOM-CLEANING.md) | Area mapping, per-room profiles, actions, automation example |
-| [docs/MAP-CARD.md](docs/MAP-CARD.md) | Map camera attributes and the full-trail websocket command for dashboard cards |
+| [docs/MAP-CARD.md](docs/MAP-CARD.md) | Map camera attributes and the websocket commands for dashboard cards (full trail, active map) |
 | [docs/MODELS.md](docs/MODELS.md) | Compatibility evidence per model |
 | [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | Quick fixes, limitations, diagnostics |
 | [docs/PROTOCOL.md](docs/PROTOCOL.md) | The local WebSocket protocol, for contributors |
