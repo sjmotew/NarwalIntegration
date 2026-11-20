@@ -84,7 +84,8 @@ def is_clean_session_context(state: NarwalState | None) -> bool:
     if state is None:
         return False
     return (
-        state.is_cleaning
+        state.has_native_clean_task
+        or state.is_cleaning
         or state.has_assumed_robot_clean
         or state.working_status in ACTIVE_CLEANING_STATUSES
         or (
@@ -102,7 +103,8 @@ def is_robot_work_context(state: NarwalState | None) -> bool:
     if state is None:
         return False
     return (
-        state.is_cleaning
+        state.has_native_clean_task
+        or state.is_cleaning
         or state.has_assumed_robot_clean
         or state.working_status in ACTIVE_CLEANING_STATUSES
         or state.has_recent_active_working_status
