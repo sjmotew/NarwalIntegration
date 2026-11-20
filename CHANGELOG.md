@@ -12,6 +12,7 @@ change that can alter the behaviour of an existing automation or dashboard.
 ## [v1.0.13] — unreleased
 
 - **Added:** websocket command `narwal/trajectory` returns the full trail of the current clean as grid points, for map cards that draw the route themselves; the camera's `path` attribute stays decimated to 400 points. It takes the robot's `entity_id`, and a card that polls sends the `signature` it holds and gets `unchanged: true` without the points while they are the same ([#161](https://github.com/sjmotew/NarwalIntegration/pull/161), @Bezkeroon; see [docs/MAP-CARD.md](docs/MAP-CARD.md#full-trail-over-the-websocket-api)).
+- **Added:** the integration follows a floor switched in the Narwal app instead of holding the map of the last Home Assistant start: while the robot is on no task, the status poll asks it for its active map every five minutes, and the camera, the room entities and the rooms `narwal.clean_rooms` resolves against follow the switch. The previous floor's trail leaves the camera; the stored trail is not touched. The robot is never woken for this and not asked during a task, and a model that does not broadcast is not asked by the poll; a floor switch can raise the *segments changed* repair (refs [#43](https://github.com/sjmotew/NarwalIntegration/issues/43), @Bezkeroon; see [docs/ROOM-CLEANING.md](docs/ROOM-CLEANING.md#more-than-one-floor)).
 
 ## [v1.0.12] — 2026-11-13
 

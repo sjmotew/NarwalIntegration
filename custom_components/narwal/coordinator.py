@@ -14,9 +14,10 @@ from dataclasses import dataclass, fields, replace
 from datetime import timedelta
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+from websockets.exceptions import ConnectionClosed
 
 from .clean_profiles import (
     MOP_STRENGTH_OPTIONS,
@@ -43,10 +44,12 @@ from .narwal_client import (
     CleaningRoute,
     CommandResponse,
     FanLevel,
+    MapData,
     MapDisplayData,
     MopHumidity,
     MopStrengthLevel,
     NarwalClient,
+    NarwalCommandError,
     NarwalConnectionError,
     NarwalState,
     RoomCleanSettings,
@@ -89,6 +92,21 @@ TOPIC_RESUBSCRIBE_AFTER = 240.0
 # while a clean is active: docked broadcasts are stimulus-driven and must be
 # left alone (#90, #113).
 ACTIVE_CLEAN_RESUBSCRIBE_AFTER = 20.0
+#: A refreshed active map younger than this (monotonic seconds) is answered
+#: again without asking the robot, so a caller that polls sends no stream of
+#: get_map calls.
+ACTIVE_MAP_TTL = 30.0
+#: After a failed refresh the robot is not asked again for this long.
+ACTIVE_MAP_FAILURE_BACKOFF = 30.0
+#: How often the poll asks a robot that is on no task for its active map (#43).
+#: Neither a status reply nor a broadcast names the map, so a floor switched
+#: in the Narwal app shows only in get_map.
+ACTIVE_MAP_POLL_INTERVAL = 300.0
+#: Seconds to wait for a sleeping robot to start broadcasting, as the vacuum does.
+ACTIVE_MAP_WAKE_TIMEOUT = 10.0
+#: Seconds get_map may take, the client's own timeout for it. Here it also
+#: covers the wait for a command already on its way, so it bounds the lock.
+ACTIVE_MAP_FETCH_TIMEOUT = 15.0
 ROOM_CLEAN_SETTING_ATTRS = frozenset(field.name for field in fields(RoomCleanSettings))
 ROOM_CLEAN_SETTING_VALUE_TYPES = {
     "work_mode": WorkMode,
@@ -118,6 +136,69 @@ class _MapDisplayCacheSnapshot:
     def trajectory_signature(self) -> tuple[int, int, int] | tuple[()]:
         """Return the native trajectory signature for this snapshot."""
         return self.display.trajectory_signature
+
+
+class ActiveMapError(Exception):
+    """The robot's active map could not be fetched."""
+
+
+#: What a robot that does not answer raises: the client's own errors, a bare
+#: timeout, and what ``send`` lets through when the connection drops under it.
+#: Anything else is a bug and is raised as it is, so its traceback is logged.
+ACTIVE_MAP_FETCH_ERRORS: tuple[type[Exception], ...] = (
+    NarwalCommandError,
+    NarwalConnectionError,
+    TimeoutError,
+    OSError,
+    ConnectionClosed,
+)
+
+#: Trail state a fetched map can change. ``_apply_fetched_map`` saves it before
+#: the swap and puts it back if aligning the trail fails; a field added to
+#: ``_reset_map_display_cache_state`` belongs here too.
+_TRAIL_STATE_ATTRS = (
+    "_pending_map_display_cache_snapshot",
+    "_pending_map_display_cache_restore",
+    "_map_display_cache_signature",
+    "_map_display_cache_active_clean",
+    "_map_display_cache_restored",
+    "_map_display_cache_restored_from_active",
+    "_map_display_cache_restored_at",
+    "_retained_map_display",
+    "_retained_map_identity",
+)
+
+
+@dataclass(frozen=True)
+class ActiveMapRefresh:
+    """What ``NarwalCoordinator.async_refresh_active_map`` answers."""
+
+    #: The map the integration holds now; None only when ``held`` and none is held yet.
+    map_data: MapData | None
+    #: True when a task is in session: the map is the held one, not a fetched one.
+    held: bool
+
+
+@dataclass(frozen=True)
+class _ActiveMapOutcome:
+    """How the last refresh of the active map ended; the next one replaces it."""
+
+    at: float
+    #: The map object a successful refresh stored.
+    map_data: MapData | None = None
+    #: A failure as text, never the exception: its traceback would keep the
+    #: frames of the refresh alive for as long as the outcome is remembered.
+    failure: str | None = None
+    #: Whether the robot was asleep when it failed to answer.
+    failed_asleep: bool = False
+    #: Whether the robot failed to answer a refresh that left out the wake a
+    #: caller's would have sent (the poll's, at a quiet robot off the dock).
+    skipped_wake: bool = False
+
+
+def _describe(err: BaseException) -> str:
+    """Return an error text that is never empty (a bare TimeoutError has none)."""
+    return str(err) or type(err).__name__
 
 
 def _status_payload(response: CommandResponse) -> dict[str, object] | None:
@@ -521,6 +602,12 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
         self._map_display_cache_restored_from_active = False
         self._map_display_cache_restored_at = 0.0
         self.dock_action_lock = asyncio.Lock()
+        self._active_map_task: asyncio.Task[ActiveMapRefresh] | None = None
+        self._active_map_task_wakes = False
+        self._active_map_outcome: _ActiveMapOutcome | None = None
+        # The poll's interval starts here: setup fetches the map right after.
+        self._active_map_checked_at = time.monotonic()
+        self._active_map_closed = False
 
     @property
     def has_fresh_state(self) -> bool:
@@ -2425,6 +2512,80 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
         if self._pending_map_display_cache_snapshot is not None:
             self._schedule_map_display_cache_save(self.client.state, immediate=True)
 
+    def _bind_trail_to_static_map(self) -> None:
+        """Bind trail state that waited for a static map to the one held now.
+
+        A snapshot queued before any map was known gets this map's identity, a
+        trail cache that waited for a map is restored, and a trail retained
+        without an identity is bound to this map, so the next floor switch is
+        recognised.
+        """
+        self._scope_pending_map_display_cache_snapshot()
+        self._restore_pending_map_display_cache()
+        map_identity = self._static_map_identity(self.client.state)
+        if (
+            map_identity is not None
+            and self._retained_map_identity is None
+            and self._has_current_map_display_trajectory()
+        ):
+            self._retained_map_identity = map_identity
+
+    def _align_trail_with_static_map(self) -> None:
+        """Align the retained trail with a static map fetched outside a clean start.
+
+        ``_retain_native_trajectory`` drops a trail whose map has changed and
+        clears the store with it, which suits a packet that arrives while the
+        map changes under a clean. A floor switched in the Narwal app is no
+        clean, so here the trail retained on another map is dropped from
+        memory only, with the last robot position. The store is neither
+        written nor read: the last clean's trail stays saved and comes back
+        the way it always has, at startup on its own map. A save still queued
+        for it goes out as well.
+
+        The trail is not brought back when the robot returns to the floor,
+        either. A trail carries the map that was held when its clean began,
+        and for a clean started in the app right after a switch that is the
+        wrong one (the robot is not asked during a task), so restoring by
+        that label here would draw a trail on a floor it was not recorded on.
+
+        On the same map, a trail cache that waited for a static map is bound
+        and restored instead.
+        """
+        map_identity = self._static_map_identity(self.client.state)
+        if map_identity is None:
+            return
+        retained_identity = self._retained_map_identity
+        if retained_identity is None or retained_identity == map_identity:
+            self._bind_trail_to_static_map()
+            return
+        queued = self._pending_map_display_cache_snapshot
+        self._reset_map_display_cache_state(clear_memory=True)
+        self._retained_map_identity = map_identity
+        if queued is not None and self._map_display_cache_snapshot_is_scoped(queued):
+            # A snapshot that never knew its map goes instead: scoping it later
+            # would bind the old floor's trail to this one.
+            self._pending_map_display_cache_snapshot = queued
+
+    def _apply_fetched_map(self, map_data: MapData) -> None:
+        """Make a fetched map the held one and align the trail, or change nothing.
+
+        Synchronous on purpose: nothing runs between the swap and the
+        alignment and no cancellation lands there. If aligning raises, the map
+        and the trail state are put back, so a floor switch is never half
+        applied.
+        """
+        state = self.client.state
+        held = (state.map_data, state.map_display_data)
+        trail_state = {name: getattr(self, name) for name in _TRAIL_STATE_ATTRS}
+        try:
+            state.map_data = map_data
+            self._align_trail_with_static_map()
+        except BaseException:
+            state.map_data, state.map_display_data = held
+            for name, value in trail_state.items():
+                setattr(self, name, value)
+            raise
+
     async def async_clear_map_display_cache(self) -> None:
         """Clear cached display-map trajectory after accepting a new clean."""
         self._begin_map_display_cache_clear()
@@ -2815,8 +2976,7 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
             _LOGGER.debug("Map fetch failed — will retry on next broadcast")
             self._map_fetch_pending = False
             return
-        self._scope_pending_map_display_cache_snapshot()
-        self._restore_pending_map_display_cache()
+        self._bind_trail_to_static_map()
         if self.client.supports_broadcasts:
             try:
                 await self.client.subscribe_to_topics()
@@ -2824,6 +2984,246 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
             except Exception:
                 _LOGGER.debug("Topic subscription failed after map load")
         self.async_set_updated_data(self.client.state)
+
+    async def async_refresh_active_map(self) -> ActiveMapRefresh:
+        """Ask the robot which map is active and make it the integration's map.
+
+        The integration otherwise fetches the map only at startup and when a
+        clean is started from Home Assistant, so a floor switched in the
+        Narwal app goes unnoticed (#43). The poll starts the same refresh for
+        a robot that is on no task; a caller that needs the answer now awaits
+        this.
+
+        Concurrent callers share one request. While a task is in session the
+        robot is not asked and the held map is answered with ``held`` set: the
+        map is fixed for the duration of a task. A clean that begins while the
+        robot is woken or asked ends in the same answer. A refresh younger than
+        ``ACTIVE_MAP_TTL`` is answered again unless the map was fetched some
+        other way since, and for ``ACTIVE_MAP_FAILURE_BACKOFF`` after a failed
+        one the robot is not asked again, unless it failed asleep and has
+        woken since, or the failed refresh was the poll's and left out the
+        wake this one sends.
+
+        Raises ActiveMapError when the robot or its connection fails, during
+        the back-off, and when the entry is unloaded. Any other exception is a
+        bug and is raised as it is; it starts the back-off too.
+        """
+        while True:
+            state = self.client.state
+            if self._active_map_closed:
+                raise ActiveMapError("Narwal entry was unloaded")
+            if is_clean_session_context(state):
+                return ActiveMapRefresh(state.map_data, held=True)
+            # No await before the task is stored, so concurrent callers cannot race here.
+            task = self._running_active_map_refresh()
+            if task is None:
+                outcome = self._active_map_outcome
+                age = time.monotonic() - outcome.at if outcome is not None else 0.0
+                if outcome is not None and outcome.failure is not None:
+                    if age < ACTIVE_MAP_FAILURE_BACKOFF and not (
+                        # A robot that failed asleep and has woken since is
+                        # worth asking again, and so is one that nobody has
+                        # tried to wake yet.
+                        (outcome.failed_asleep and self.client.robot_awake)
+                        or outcome.skipped_wake
+                    ):
+                        raise ActiveMapError(outcome.failure)
+                elif (
+                    outcome is not None
+                    and age < ACTIVE_MAP_TTL
+                    # A clean start or setup that fetched the map since makes it stale.
+                    and outcome.map_data is state.map_data
+                ):
+                    return ActiveMapRefresh(state.map_data, held=False)
+                task = self._async_start_active_map_refresh(wake=True)
+            wakes = self._active_map_task_wakes
+            try:
+                # A caller that goes away must not cancel the request others wait for.
+                return await asyncio.shield(task)
+            except ActiveMapError:
+                if wakes:
+                    raise
+                # The refresh this caller joined was the poll's, which wakes no
+                # robot. It is over now, so the next round decides from its
+                # outcome: the back-off, or this caller's own attempt.
+            except asyncio.CancelledError:
+                current = asyncio.current_task()
+                if task.cancelled() and (current is None or not current.cancelling()):
+                    raise ActiveMapError("Narwal entry was unloaded") from None
+                raise
+
+    def _running_active_map_refresh(self) -> asyncio.Task[ActiveMapRefresh] | None:
+        """Return the refresh that is under way, if any."""
+        task = self._active_map_task
+        return None if task is None or task.done() else task
+
+    @callback
+    def _async_start_active_map_refresh(
+        self, *, wake: bool
+    ) -> asyncio.Task[ActiveMapRefresh]:
+        """Start the one refresh every caller shares."""
+        # Tied to the entry as well, so nothing outlives it whatever unloads it.
+        self._active_map_task_wakes = wake
+        task = self._active_map_task = self.config_entry.async_create_background_task(
+            self.hass,
+            self._async_refresh_active_map(wake=wake),
+            f"{DOMAIN}_active_map",
+        )
+        task.add_done_callback(self._active_map_refresh_done)
+        return task
+
+    @callback
+    def _active_map_refresh_done(self, task: asyncio.Task[ActiveMapRefresh]) -> None:
+        """Drop the finished refresh and log how it failed.
+
+        Whoever awaits the refresh gets the exception raised as well, but
+        nobody may be waiting (the poll's refresh, or one whose caller went
+        away), so a bug is logged here with its traceback in every case.
+        Retrieving the exception also keeps asyncio from reporting it as
+        never retrieved.
+        """
+        if self._active_map_task is task:
+            self._active_map_task = None
+        if task.cancelled() or (err := task.exception()) is None:
+            return
+        if isinstance(err, ActiveMapError):
+            _LOGGER.debug("Active map refresh failed: %s", err)
+        else:
+            _LOGGER.error("Unexpected error refreshing the active Narwal map", exc_info=err)
+
+    @callback
+    def _async_poll_active_map(self) -> None:
+        """Start a refresh of the active map when the poll is due one (#43).
+
+        Reached only after the robot answered this poll's get_status, and
+        never with a wake burst: a docked robot answers get_map as it answered
+        that request, and bursting at a robot that stops broadcasting on the
+        dock would bring back the bursts #90 removed. The poll does not wait
+        for the answer; the entities are told when it is in.
+
+        A model that does not broadcast is left alone: its status does not say
+        whether a clean is running (see ``NarwalVacuum._trusts_state``), so a
+        get_map could reach it in the middle of one.
+        """
+        if (
+            self._active_map_closed
+            or not self.client.supports_broadcasts
+            or self._running_active_map_refresh() is not None
+            or time.monotonic() - self._active_map_checked_at < ACTIVE_MAP_POLL_INTERVAL
+            or is_clean_session_context(self.client.state)
+        ):
+            return
+        self._async_start_active_map_refresh(wake=False)
+
+    async def _async_refresh_active_map(self, *, wake: bool) -> ActiveMapRefresh:
+        """Fetch the robot's active map and apply it."""
+        client = self.client
+        skipped_wake = False
+        try:
+            # The lock a clean start holds: neither a wake burst nor a get_map
+            # goes out while a clean is being started, and the map is not
+            # swapped under a clean start or a pending-profiles transaction.
+            # Held while the robot is asked and for the swap.
+            async with self.dock_action_lock:
+                if is_clean_session_context(client.state):
+                    # A clean started while this waited for the lock.
+                    return ActiveMapRefresh(client.state.map_data, held=True)
+                # Off the dock a robot asleep answers nothing; vacuum.start
+                # would wake it too. A docked robot answers get_map without a
+                # burst, as it answers the 60 s get_status poll, and bursting
+                # each refresh at a robot that stops broadcasting while docked
+                # would bring back the bursts #90 removed.
+                asleep_off_dock = not client.robot_awake and not client.state.is_docked
+                needs_wake = wake and asleep_off_dock
+                skipped_wake = not wake and asleep_off_dock
+                previous = self._static_map_identity(client.state)
+                # One limit for asking the robot, so the lock is never held
+                # longer for it: get_map can queue behind a command that is
+                # on its way, and its own timeout starts only after that.
+                limit = ACTIVE_MAP_FETCH_TIMEOUT + (ACTIVE_MAP_WAKE_TIMEOUT if needs_wake else 0.0)
+                try:
+                    async with asyncio.timeout(limit) as asking:
+                        if needs_wake:
+                            await client.wake(timeout=ACTIVE_MAP_WAKE_TIMEOUT)
+                            if is_clean_session_context(client.state):
+                                # A clean began in the app meanwhile: no get_map into it.
+                                return ActiveMapRefresh(client.state.map_data, held=True)
+                        # Nothing is changed before the map is in: a failure
+                        # up to there leaves the held floor as it is.
+                        map_data = await client.fetch_map()
+                except TimeoutError:
+                    if asking.expired():
+                        raise TimeoutError(
+                            f"No answer from the robot within {limit:.0f} s"
+                        ) from None
+                    raise
+                if is_clean_session_context(client.state):
+                    # A clean began while the robot was asked: the map is not
+                    # swapped under a task, the held one stays.
+                    return ActiveMapRefresh(client.state.map_data, held=True)
+                self._apply_fetched_map(map_data)
+                self._record_active_map_outcome(
+                    _ActiveMapOutcome(at=time.monotonic(), map_data=map_data)
+                )
+        except Exception as err:
+            robot_failed = isinstance(err, ACTIVE_MAP_FETCH_ERRORS)
+            if robot_failed and is_clean_session_context(client.state):
+                # A clean began while the robot was woken or asked, and it did
+                # not answer: as for any request during a task, the held map.
+                return ActiveMapRefresh(client.state.map_data, held=True)
+            # Every failure starts the back-off, a bug included, so the robot
+            # is not asked again on each request while it lasts. A cancelled
+            # refresh (the entry is unloaded) is no failure and passes through.
+            self._record_active_map_outcome(
+                _ActiveMapOutcome(
+                    at=time.monotonic(),
+                    failure=_describe(err),
+                    # Neither exception from the back-off is for a bug.
+                    failed_asleep=robot_failed and not client.robot_awake,
+                    skipped_wake=robot_failed and skipped_wake,
+                )
+            )
+            if robot_failed:
+                raise ActiveMapError(_describe(err)) from err
+            raise
+        identity = self._static_map_identity(client.state)
+        if previous is not None and previous != identity:
+            _LOGGER.info(
+                "Narwal active map changed from %s to %s (map id, created at)",
+                previous,
+                identity,
+            )
+        # Told only once the refresh is recorded, and guarded: Home Assistant
+        # does not guard listener callbacks, and the map has been swapped, so
+        # an entity that raises must not turn this refresh into a failure.
+        # Without async_set_updated_data, which would move the 60 s poll on
+        # every refresh and starve it under a caller that polls.
+        try:
+            self.async_update_listeners()
+        except Exception:
+            _LOGGER.exception("Error telling the Narwal entities about the fetched map")
+        return ActiveMapRefresh(map_data, held=False)
+
+    def _record_active_map_outcome(self, outcome: _ActiveMapOutcome) -> None:
+        """Remember how a refresh that asked the robot ended.
+
+        The newest outcome replaces the last, so a failure is never hidden
+        behind an earlier success, and the poll's interval starts again. A
+        refresh that answered the held map asked nothing and records nothing.
+        """
+        self._active_map_outcome = outcome
+        self._active_map_checked_at = outcome.at
+
+    async def _async_close_active_map_refresh(self) -> None:
+        """Refuse further refreshes and end the running one before a shutdown."""
+        self._active_map_closed = True
+        task = self._active_map_task
+        if task is None or task.done():
+            return
+        task.cancel()
+        # wait() neither raises what the task raised nor swallows a
+        # cancellation of the shutdown itself.
+        await asyncio.wait([task])
 
     async def _resub_topics(self) -> None:
         """Re-send topic subscription to recover display_map during cleaning."""
@@ -3017,12 +3417,12 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
                 self._mark_dock_status_refresh_succeeded()
 
         # Retry map fetch if it failed during setup
-        if self.client.state.map_data is None:
+        map_was_held = self.client.state.map_data is not None
+        if not map_was_held:
             with contextlib.suppress(Exception):
                 await self.client.get_map()
         if self.client.state.map_data is not None:
-            self._scope_pending_map_display_cache_snapshot()
-            self._restore_pending_map_display_cache()
+            self._bind_trail_to_static_map()
 
         self._reconcile_map_display_after_status_refresh()
 
@@ -3067,10 +3467,18 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
                     self.update_interval = POLL_INTERVAL
 
         self._sync_active_clean_context(self.client.state)
+        if map_was_held:
+            # A map is held: ask now and then whether it is still the active
+            # one. Last, so its get_map does not go out among this poll's own
+            # commands.
+            self._async_poll_active_map()
         return self.client.state
 
     async def async_shutdown(self) -> None:
         """Disconnect from the vacuum."""
+        # First: a refresh of the active map must neither start nor change the
+        # trail state while that state is flushed to the store below.
+        await self._async_close_active_map_refresh()
         await self.client.disconnect()
         if self._listen_task and not self._listen_task.done():
             self._listen_task.cancel()
