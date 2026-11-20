@@ -921,6 +921,7 @@ class NarwalState:
     # Pause overlay (field 3 sub-field 2 = 1 means paused)
     is_paused: bool = False
     pause_state_generation: int = 0
+    paused_unclassified_task: bool = False
 
     # Dock sub-state (field 3 sub-field 10: 1=docked, 2=docking in progress)
     dock_sub_state: int = 0
@@ -1000,6 +1001,24 @@ class NarwalState:
             time.monotonic() - self.last_terminal_working_status_time
             <= _TERMINAL_WORKING_STATUS_TTL
         )
+
+    @staticmethod
+    def is_paused_unclassified_status(decoded: dict[str, Any]) -> bool:
+        """Recognise the captured paused task without assigning a task kind."""
+        status = decoded.get("3")
+        if isinstance(status, list):
+            status = status[0] if status else None
+        return (
+            isinstance(status, dict)
+            and status.get("1") == 2
+            and status.get("2") == 1
+            and status.get("4") == 8
+        )
+
+    @property
+    def has_paused_unclassified_task(self) -> bool:
+        """A captured paused task blocks new work, without implying resumability."""
+        return self.is_paused and self.paused_unclassified_task
 
     @property
     def has_paused_clean_task_context(self) -> bool:
@@ -1453,6 +1472,7 @@ class NarwalState:
     def clear_task_details(self) -> None:
         """Clear active robot-task detail fields."""
         self.is_paused = False
+        self.paused_unclassified_task = False
         self.cleaning_area = 0.0
         self.cleaning_time = 0
         self.task_progress_percent = None
@@ -1550,6 +1570,23 @@ class NarwalState:
         not area — reading it as area is why the sensor was stuck at 1.8 m².
         """
         self.raw_working_status = decoded
+        has_robot_side_drying = False
+        if _has_dock_drying_timer_fields(decoded):
+            timers = _dock_drying_timers(decoded)
+            has_robot_side_drying = bool(
+                timers.keys() & {DOCK_TASK_DRY_MOP, DOCK_TASK_DRY_DUST_BIN}
+            )
+            self.dock_drying_tasks = timers
+            self.has_dock_drying_timer_snapshot = True
+            self.has_unmapped_dock_drying_timer = _has_unmapped_dock_drying_timer(
+                decoded
+            )
+            self.dock_drying_status_time = time.monotonic()
+            if timers:
+                self.clear_assumed_dock_task()
+        if self.has_paused_unclassified_task:
+            # Counters alone cannot supersede an explicit paused task status.
+            return
         reported_task_details: dict[str, Any] = {}
         previous_task_metrics: dict[str, Any] = {
             "area": self.cleaning_area,
@@ -1574,20 +1611,6 @@ class NarwalState:
         if remaining is not None:
             self.task_remaining_time = max(0, remaining)
             reported_task_details["remaining"] = self.task_remaining_time
-        has_robot_side_drying = False
-        if _has_dock_drying_timer_fields(decoded):
-            timers = _dock_drying_timers(decoded)
-            has_robot_side_drying = bool(
-                timers.keys() & {DOCK_TASK_DRY_MOP, DOCK_TASK_DRY_DUST_BIN}
-            )
-            self.dock_drying_tasks = timers
-            self.has_dock_drying_timer_snapshot = True
-            self.has_unmapped_dock_drying_timer = _has_unmapped_dock_drying_timer(
-                decoded
-            )
-            self.dock_drying_status_time = time.monotonic()
-            if timers:
-                self.clear_assumed_dock_task()
         # Only a positive session counter is evidence of an active clean. Field
         # presence alone is not: a robot reporting timeConsuming=0 would
         # otherwise be flipped to CLEANING and shown as running while parked.
@@ -1853,6 +1876,14 @@ class NarwalState:
             )
         if isinstance(field3, dict):
             is_paused = bool(field3.get("2"))
+            if "1" not in field3 and self.has_paused_unclassified_task:
+                is_paused = True
+            paused_unclassified_task = self.is_paused_unclassified_status(decoded)
+            if "1" in field3:
+                self.paused_unclassified_task = paused_unclassified_task
+                if paused_unclassified_task:
+                    self.last_active_working_status_time = 0.0
+                    self.clear_assumed_robot_clean()
             current_presence = _optional_int(field3.get("3"))
             current_sub_state = _optional_int(field3.get("10"))
             current_dock_activity = _optional_int(field3.get("12"))
@@ -1929,13 +1960,16 @@ class NarwalState:
                 }
                 authoritative_terminal_dock = (
                     terminal_dock
+                    and not paused_unclassified_task
                     and previous_working_status in ACTIVE_CLEANING_STATUSES
                     and not self.has_explicit_off_dock_signal
                     and not self.has_recent_active_working_status
                     and not self.has_assumed_robot_clean
                 )
                 if terminal_robot or (
-                    terminal_dock and not self.has_explicit_off_dock_signal
+                    terminal_dock
+                    and not self.has_explicit_off_dock_signal
+                    and not paused_unclassified_task
                 ):
                     self.last_terminal_working_status_time = time.monotonic()
                     if not had_terminal_status:
@@ -2075,6 +2109,7 @@ class NarwalState:
         if (
             (terminal_robot or (terminal_docked and not self.has_explicit_off_dock_signal))
             and not self.has_assumed_robot_clean
+            and not self.has_paused_unclassified_task
         ):
             # The paused overlay can remain set after docking. A terminal
             # base-status packet is authoritative over retained task context.

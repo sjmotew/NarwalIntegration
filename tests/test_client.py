@@ -3422,3 +3422,22 @@ class TestConnectionUrl:
             with pytest.raises(NarwalConnectionError):
                 await client.connect()
         assert not client.connected
+
+
+@pytest.mark.parametrize("list_wrapped", [False, True])
+def test_paused_task_broadcast_supersedes_recent_clean_metrics(list_wrapped: bool) -> None:
+    client = NarwalClient("10.0.0.1")
+    client._update_from_working_status_broadcast({"3": 120})
+    assert client.state.has_recent_active_working_status
+    status = {"1": 2, "2": 1, "4": 8}
+    client._update_from_base_status_broadcast(
+        {"3": [status] if list_wrapped else status, "11": 2, "47": 3}
+    )
+    client._update_from_working_status_broadcast({"3": 900})
+    assert client.state.has_paused_unclassified_task
+    assert client.state.is_paused
+    assert client.state.is_docked
+    assert not client.state.has_recent_active_working_status
+    assert not client.state.is_cleaning
+    client._update_from_base_status_broadcast({"3": {"1": 1, "3": 1}})
+    assert not client.state.has_paused_unclassified_task

@@ -2408,3 +2408,72 @@ class TestAsyncStop:
             await vac.async_return_to_base()
 
         vac.coordinator.client.return_to_base.assert_not_awaited()
+
+
+def test_paused_unclassified_task_exposes_stop_without_resume_or_live_settings() -> None:
+    from custom_components.narwal.coordinator import (
+        can_resume_cleaning,
+        can_start_cleaning,
+        can_stop_cleaning,
+        is_live_clean_setting_available,
+    )
+
+    state = NarwalState()
+    state.update_from_base_status({"3": {"1": 2, "2": 1, "4": 8}, "11": 2, "47": 3})
+    vacuum = _make_vacuum(state)
+    assert vacuum.activity == VacuumActivity.PAUSED
+    assert vacuum.extra_state_attributes["task_status"] == "paused"
+    assert vacuum.supported_features & VacuumEntityFeature.STOP
+    assert not vacuum.supported_features & VacuumEntityFeature.START
+    assert can_stop_cleaning(state)
+    assert not can_start_cleaning(state)
+    assert not can_resume_cleaning(state)
+    assert not is_live_clean_setting_available(state)
+
+
+@pytest.mark.asyncio
+async def test_unclassified_task_requires_explicit_stop_before_start() -> None:
+    state = NarwalState()
+    state.update_from_base_status({"3": {"1": 2, "2": 1, "4": 8}, "11": 2, "47": 3})
+    vacuum = _make_vacuum(state)
+    vacuum.coordinator.client.start_rooms = AsyncMock()
+    vacuum.coordinator.client.resume = AsyncMock()
+    vacuum.coordinator.client.stop = AsyncMock(
+        return_value=CommandResponse(result_code=CommandResult.SUCCESS)
+    )
+    with pytest.raises(HomeAssistantError, match="end it with vacuum.stop"):
+        await vacuum.async_start()
+    vacuum.coordinator.client.start_rooms.assert_not_awaited()
+    vacuum.coordinator.client.resume.assert_not_awaited()
+    vacuum.coordinator.client.stop.assert_not_awaited()
+    await vacuum.async_stop()
+    vacuum.coordinator.client.stop.assert_awaited_once()
+
+
+def test_unclassified_pause_with_retained_metrics_does_not_enable_resume() -> None:
+    from custom_components.narwal.coordinator import (
+        can_resume_cleaning,
+        is_live_clean_setting_available,
+    )
+
+    state = NarwalState()
+    state.cleaning_time = 900
+    state.task_progress_percent = 30
+    state.update_from_base_status({"3": {"1": 2, "2": 1, "4": 8}, "11": 2, "47": 3})
+    assert state.has_paused_unclassified_task
+    assert not can_resume_cleaning(state)
+    assert not is_live_clean_setting_available(state)
+
+
+@pytest.mark.asyncio
+async def test_unclassified_task_remains_stoppable_with_dock_drying() -> None:
+    state = NarwalState()
+    state.update_from_base_status({"3": {"1": 2, "2": 1, "4": 8}, "11": 2, "47": 3})
+    state.update_from_working_status({"8": 600, "9": 1800})
+    vacuum = _make_vacuum(state)
+    vacuum.coordinator.client.stop = AsyncMock(
+        return_value=CommandResponse(result_code=CommandResult.SUCCESS)
+    )
+    assert vacuum.supported_features & VacuumEntityFeature.STOP
+    await vacuum.async_stop()
+    vacuum.coordinator.client.stop.assert_awaited_once()

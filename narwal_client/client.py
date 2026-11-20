@@ -135,6 +135,7 @@ def _clean_session_context(state: NarwalState) -> bool:
         )
         or state.has_recent_active_working_status
         or state.has_paused_clean_task_context
+        or state.has_paused_unclassified_task
         or state.is_returning
     )
 
@@ -147,6 +148,7 @@ def _robot_work_blocks_generic_dock_stop(state: NarwalState) -> bool:
         or state.working_status in ACTIVE_CLEANING_STATUSES
         or state.has_recent_active_working_status
         or state.has_paused_clean_task_context
+        or state.has_paused_unclassified_task
         or state.is_returning
     )
 
@@ -444,6 +446,7 @@ class NarwalClient:
         status = _base_status_working_status(decoded)
         if (
             self.state.has_recent_active_working_status
+            and not self.state.is_paused_unclassified_status(decoded)
             and status in _STALE_DOCK_BASE_STATUSES
         ):
             terminal_dock_status = status in {

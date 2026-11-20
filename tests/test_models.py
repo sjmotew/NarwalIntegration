@@ -2143,3 +2143,70 @@ class TestRoomInfoNames:
         map_data = MapData.from_response(decoded)
         names = [r.display_name for r in map_data.rooms]
         assert names == ["Master bedroom", "Bathroom 2"]
+
+
+class TestPausedUnclassifiedTask:
+    def test_docked_pause_survives_without_progress_metrics(self) -> None:
+        state = NarwalState()
+        packet = {"3": {"1": 2, "2": 1, "4": 8}, "11": 2, "47": 3}
+        for _ in range(2):
+            state.update_from_base_status(packet)
+            assert state.is_paused
+            assert state.has_paused_unclassified_task
+            assert state.is_docked
+            assert not state.is_cleaning
+            assert not state.has_paused_clean_task_context
+            assert not state.has_recent_terminal_working_status
+
+        state.update_from_base_status({"3": {"1": 1, "3": 1}, "11": 2, "47": 3})
+        assert not state.is_paused
+        assert not state.has_paused_unclassified_task
+
+    @pytest.mark.parametrize(
+        "status",
+        [
+            {"1": 2, "4": 8},
+            {"1": 2, "2": 1, "4": 1},
+            {"1": 10, "2": 1, "4": 8},
+            {"1": 2, "2": 1},
+        ],
+    )
+    def test_other_docked_packets_do_not_gain_task_context(self, status: dict) -> None:
+        state = NarwalState()
+        state.update_from_base_status({"3": status, "11": 2, "47": 3})
+        assert not state.has_paused_unclassified_task
+
+
+@pytest.mark.parametrize("battery_only", [True, False])
+def test_partial_status_does_not_forget_paused_unclassified_task(battery_only: bool) -> None:
+    state = NarwalState()
+    state.update_from_base_status({"3": {"1": 2, "2": 1, "4": 8}, "11": 2, "47": 3})
+    if battery_only:
+        state.update_battery_from_base_status({"3": {"1": 10}, "47": 3})
+    else:
+        state.update_from_base_status({"47": 3})
+    assert state.has_paused_unclassified_task
+    assert state.is_paused
+
+
+@pytest.mark.parametrize("partial", [{"12": 2}, {"3": 1}, {"2": 0}, {}])
+def test_partial_task_status_preserves_unclassified_pause(partial: dict) -> None:
+    state = NarwalState()
+    state.update_from_base_status({"3": {"1": 2, "2": 1, "4": 8}, "11": 2, "47": 3})
+    state.update_from_base_status({"3": partial})
+    assert state.has_paused_unclassified_task
+    assert state.is_paused
+    state.update_from_base_status({"3": {"1": 1, "3": 1}})
+    assert not state.has_paused_unclassified_task
+
+
+def test_unclassified_pause_still_updates_dock_timers() -> None:
+    state = NarwalState()
+    state.update_from_base_status({"3": {"1": 2, "2": 1, "4": 8}, "11": 2, "47": 3})
+    state.update_from_working_status({"8": 1200, "9": 1800, "3": 900})
+    assert state.has_paused_unclassified_task
+    assert state.has_dock_drying_timer_snapshot
+    assert state.dock_drying_tasks[DOCK_TASK_DRY_MOP].remaining == 600
+    state.update_from_working_status({"8": 0, "9": 1800})
+    assert state.has_paused_unclassified_task
+    assert not state.telemetry_dock_drying_tasks
