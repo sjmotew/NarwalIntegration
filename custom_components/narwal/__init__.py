@@ -17,6 +17,7 @@ from homeassistant.exceptions import (
     Unauthorized,
     UnknownUser,
 )
+from homeassistant.helpers import area_registry as ar
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
@@ -71,6 +72,8 @@ _LEGACY_REPLACED_SENSOR_SUFFIXES = (
 )
 
 FIELD_ROOMS = "rooms"
+FIELD_AREAS = "areas"
+FIELD_ALL_ROOMS = "all_rooms"
 FIELD_MODE = "mode"
 FIELD_SUCTION = "suction"
 FIELD_WATER = "water"
@@ -78,23 +81,33 @@ FIELD_MOP_STRENGTH = "mop_strength"
 FIELD_PASSES = "passes"
 FIELD_ROUTE = "route"
 
-CLEAN_ROOMS_SCHEMA = vol.Schema(
-    {
-        vol.Optional(ATTR_ENTITY_ID): cv.comp_entity_ids,
-        vol.Optional(ATTR_DEVICE_ID): cv.ensure_list,
-        vol.Optional(ATTR_AREA_ID): cv.ensure_list,
-        vol.Required(FIELD_ROOMS): cv.ensure_list,
-        vol.Optional(FIELD_MODE, default="vacuum_and_mop"): vol.In(WORK_MODE_OPTIONS),
-        vol.Optional(FIELD_SUCTION, default="standard"): vol.In(SUCTION_OPTIONS),
-        vol.Optional(FIELD_WATER, default="normal"): vol.In(WATER_OPTIONS),
-        vol.Optional(FIELD_MOP_STRENGTH, default="normal"): vol.In(
-            MOP_STRENGTH_OPTIONS
-        ),
-        vol.Optional(FIELD_PASSES, default=1): lambda value: _validate_pass_count(
-            value
-        ),
-        vol.Optional(FIELD_ROUTE): vol.In(ROUTE_OPTIONS),
-    }
+
+def _require_one_room_source(data: dict) -> dict:
+    """Rooms, Areas and All areas are alternatives; the UI cannot enforce that."""
+    given = [bool(data.get(key)) for key in (FIELD_ROOMS, FIELD_AREAS, FIELD_ALL_ROOMS)]
+    if sum(given) > 1:
+        raise vol.Invalid("Choose only one of Rooms, Areas or All areas")
+    return data
+
+CLEAN_ROOMS_SCHEMA = vol.All(
+    vol.Schema(
+        {
+            vol.Optional(ATTR_ENTITY_ID): cv.comp_entity_ids,
+            vol.Optional(ATTR_DEVICE_ID): cv.ensure_list,
+            vol.Optional(ATTR_AREA_ID): cv.ensure_list,
+            vol.Optional(FIELD_ROOMS): cv.ensure_list,
+            vol.Optional(FIELD_AREAS): cv.ensure_list,
+            vol.Optional(FIELD_ALL_ROOMS): cv.boolean,
+            vol.Optional(FIELD_MODE, default="vacuum_and_mop"): vol.In(WORK_MODE_OPTIONS),
+            vol.Optional(FIELD_SUCTION, default="standard"): vol.In(SUCTION_OPTIONS),
+            vol.Optional(FIELD_WATER, default="normal"): vol.In(WATER_OPTIONS),
+            vol.Optional(FIELD_MOP_STRENGTH, default="normal"): vol.In(MOP_STRENGTH_OPTIONS),
+            vol.Optional(FIELD_PASSES, default=1): lambda value: _validate_pass_count(value),
+            vol.Optional(FIELD_ROUTE): vol.In(ROUTE_OPTIONS),
+        }
+    ),
+    cv.has_at_least_one_key(FIELD_ROOMS, FIELD_AREAS, FIELD_ALL_ROOMS),
+    _require_one_room_source,
 )
 
 
@@ -171,21 +184,28 @@ def _validate_pass_count(value: object) -> int:
 
 
 def _room_tokens(raw_rooms: list) -> list[object]:
-    """Return room request tokens split the same way for all/all+room checks."""
+    """Return room request tokens split the same way for all/all+room checks.
+
+    A string that is not purely IDs and "all" is a room name and stays whole.
+    """
     tokens: list[object] = []
     for item in raw_rooms:
         if isinstance(item, str):
             cleaned = item.strip().strip("[]")
-            tokens.extend(cleaned.replace(",", " ").split())
+            parts = cleaned.replace(",", " ").split()
+            if all(part.isdecimal() or part.lower() == "all" for part in parts):
+                tokens.extend(parts)
+            elif item.strip():
+                tokens.append(item.strip())
         else:
             tokens.append(item)
     return tokens
 
 
-def _normalise_room_ids(raw_rooms: list) -> list[int]:
-    """Return room IDs from HA service data."""
-    room_ids: list[int] = []
-    seen: set[int] = set()
+def _normalise_room_ids(raw_rooms: list) -> list[int | str]:
+    """Return room IDs, plus room names left for map resolution, in order."""
+    room_ids: list[int | str] = []
+    seen: set[int | str] = set()
     for value in _room_tokens(raw_rooms):
         if isinstance(value, str) and value.lower() == "all":
             continue
@@ -200,6 +220,11 @@ def _normalise_room_ids(raw_rooms: list) -> list[int]:
                 room_id = value
             elif isinstance(value, str) and value.isdecimal():
                 room_id = int(value)
+            elif isinstance(value, str) and value:
+                if value not in seen:
+                    seen.add(value)
+                    room_ids.append(value)
+                continue
             else:
                 raise ValueError
         except (TypeError, ValueError) as err:
@@ -220,6 +245,80 @@ def _rooms_requested_all(raw_rooms: list) -> bool:
     )
 
 
+def _area_name(hass: HomeAssistant, area_id: str) -> str:
+    """Return an area's display name, falling back to its ID."""
+    area = ar.async_get(hass).async_get_area(area_id)
+    return area.name if area is not None else area_id
+
+
+def _room_ids_from_areas(
+    hass: HomeAssistant,
+    vacuum_entity_id: str,
+    area_ids: list[str],
+) -> list[int]:
+    """Map HA areas to room IDs with the vacuum entity's own area mapping."""
+    if not area_ids:
+        return []
+    entry = er.async_get(hass).async_get(vacuum_entity_id)
+    options = entry.options.get(VACUUM_DOMAIN) if entry is not None else None
+    area_mapping = options.get("area_mapping") if options else None
+    if not area_mapping:
+        raise HomeAssistantError(
+            f"No area mapping is configured for {vacuum_entity_id}. Map the Narwal "
+            "rooms to areas in the vacuum entity's settings first"
+        )
+    mapped_area_ids = []
+    for area_id in area_ids:
+        if area_mapping.get(area_id):
+            mapped_area_ids.append(area_id)
+        else:
+            _LOGGER.warning(
+                "Area %s is not mapped to a Narwal room of %s and is skipped; add it to "
+                "the area mapping in the vacuum entity's settings to clean it",
+                _area_name(hass, area_id),
+                vacuum_entity_id,
+            )
+    room_ids: list[int] = []
+    for area_id in mapped_area_ids:
+        for segment in area_mapping[area_id]:
+            try:
+                room_ids.append(int(segment))
+            except (TypeError, ValueError) as err:
+                raise HomeAssistantError(
+                    f"Area {_area_name(hass, area_id)} maps to an invalid Narwal room: {segment}"
+                ) from err
+    return room_ids
+
+
+def _resolve_room_requests(
+    requests: list[int | str],
+    rooms: list,
+) -> tuple[list[int], list[int | str]]:
+    """Resolve IDs and exact names against map rooms, keeping request order."""
+    known_ids = {room.room_id for room in rooms if room.room_id > 0}
+    resolved: list[int] = []
+    unknown: list[int | str] = []
+    for item in requests:
+        if isinstance(item, str):
+            matches = [
+                room.room_id for room in rooms if room.room_id > 0 and room.display_name == item
+            ]
+            if len(matches) > 1:
+                raise HomeAssistantError(f"Ambiguous Narwal room name: {item}; use a room ID")
+            if not matches:
+                unknown.append(item)
+                continue
+            room_id = matches[0]
+        elif item in known_ids:
+            room_id = item
+        else:
+            unknown.append(item)
+            continue
+        if room_id not in resolved:
+            resolved.append(room_id)
+    return resolved, unknown
+
+
 async def _async_room_ids_for_coordinator(
     coordinator: NarwalCoordinator,
     raw_rooms: list,
@@ -234,9 +333,9 @@ async def _async_room_ids_for_coordinator(
     # Explicit IDs already on the cached map leave nothing to resolve, so a
     # map refresh that times out must not abort the clean (#108).
     if room_ids and state.map_data is not None:
-        cached_ids = {room.room_id for room in state.map_data.rooms if room.room_id > 0}
-        if all(room_id in cached_ids for room_id in room_ids):
-            return room_ids
+        resolved, unknown = _resolve_room_requests(room_ids, state.map_data.rooms)
+        if not unknown:
+            return resolved
     try:
         await coordinator.client.get_map()
     except Exception as err:
@@ -255,12 +354,16 @@ async def _async_room_ids_for_coordinator(
             )
         return sorted(known_room_ids)
 
-    unknown_ids = [room_id for room_id in room_ids if room_id not in known_room_ids]
+    resolved, unknown = _resolve_room_requests(room_ids, state.map_data.rooms)
+    unknown_names = [item for item in unknown if isinstance(item, str)]
+    unknown_ids = [item for item in unknown if not isinstance(item, str)]
     if unknown_ids:
         raise HomeAssistantError(
             f"Unknown Narwal room ID: {', '.join(str(room_id) for room_id in unknown_ids)}"
         )
-    return room_ids
+    if unknown_names:
+        raise HomeAssistantError(f"Unknown Narwal room name: {', '.join(unknown_names)}")
+    return resolved
 
 
 async def _async_validate_target_permissions(
@@ -381,13 +484,19 @@ def _async_register_services(hass: HomeAssistant) -> None:
         passes = call.data[FIELD_PASSES]
         route_label = call.data.get(FIELD_ROUTE)
 
+        # all_rooms overrides rooms and areas, which are then not even resolved.
+        if call.data.get(FIELD_ALL_ROOMS):
+            raw_rooms = ["all"]
+        else:
+            raw_rooms = [
+                *call.data.get(FIELD_ROOMS, []),
+                *_room_ids_from_areas(hass, entity_ids[0], call.data.get(FIELD_AREAS, [])),
+            ]
+
         if not coordinator.client.robot_awake:
             await coordinator.client.wake(timeout=10.0)
 
-        room_ids = await _async_room_ids_for_coordinator(
-            coordinator,
-            call.data[FIELD_ROOMS],
-        )
+        room_ids = await _async_room_ids_for_coordinator(coordinator, raw_rooms)
         if not room_ids:
             raise HomeAssistantError("At least one room must be selected")
 
