@@ -518,6 +518,27 @@ def _enum_int_list(val: Any) -> list[int]:
     return out
 
 
+
+def feature_values(val: object) -> int | list[int]:
+    """Coerce one get_feature_list field to an int, or to the ids it packs.
+
+    The answer is not {id: value}: a firmware can pack the feature ids into a
+    repeated varint field, which blackboxprotobuf surfaces as a latin-1 str.
+    int() on that raises, and the ValueError escaped get_feature_list, so the
+    feature list was blank in every diagnostics download from such a robot
+    (#180) — the same packing that discarded the consumable alerts in #79.
+    """
+    if isinstance(val, bool):
+        return int(val)
+    if isinstance(val, int):
+        return val
+    if isinstance(val, (bytes, bytearray, str, list)):
+        return _enum_int_list(val)
+    try:
+        return int(val)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return []
+
 def _parse_obstacles(field32: dict) -> list[ObstacleInfo]:
     """Parse obstacle/furniture annotations from bbp-decoded field 2.32.
 

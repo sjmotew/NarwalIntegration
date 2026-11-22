@@ -3422,3 +3422,38 @@ class TestConnectionUrl:
             with pytest.raises(NarwalConnectionError):
                 await client.connect()
         assert not client.connected
+
+
+class TestFeatureListPacking:
+    """get_feature_list must survive packed feature ids (#180)."""
+
+    @staticmethod
+    def _client_answering(data):
+        from unittest.mock import AsyncMock
+
+        from narwal_client.client import NarwalClient
+        from narwal_client.models import CommandResponse
+
+        client = NarwalClient("10.0.0.9")
+        client.send_command = AsyncMock(
+            return_value=CommandResponse(result_code=0, data=data, raw_payload=b"")
+        )
+        return client
+
+    @pytest.mark.asyncio
+    async def test_packed_varint_field_decodes_to_ids(self) -> None:
+        """A latin-1 packed field is the ids it encodes, not a ValueError."""
+        client = self._client_answering({"1": "\x0f)*"})
+        assert await client.get_feature_list() == {1: [15, 41, 42]}
+
+    @pytest.mark.asyncio
+    async def test_scalar_fields_keep_their_value_including_zero(self) -> None:
+        """A scalar stays a scalar, so 'feature off' is not 'no data'."""
+        client = self._client_answering({"1": 1, "2": 0})
+        assert await client.get_feature_list() == {1: 1, 2: 0}
+
+    @pytest.mark.asyncio
+    async def test_non_numeric_key_is_skipped_not_raised(self) -> None:
+        """An unexpected key cannot blank the whole feature list."""
+        client = self._client_answering({"1": 1, "not_a_field": 2})
+        assert await client.get_feature_list() == {1: 1}
