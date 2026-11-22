@@ -38,18 +38,6 @@ firmware `1.12.10.02` and a `BYWBPqSxeC` identity. That key remains in discovery
 has not been proven to accept addressed local commands. Reports from more regions and firmware
 versions are needed before support can be called universal.
 
-## Under investigation
-
-### Freo Z10 (plain, non-Ultra / non-Pro)
-
-Advertises `_narwal_sweeper._tcp` over mDNS and is picked up by discovery, but port 9002
-returns `ECONNREFUSED` in every device state. The host is healthy and nothing is listening.
-Two units so far (firmware v01.04.50.01 on the second): every closed port answers RST and 22
-high ports between 33629 and 57609 are open, so the robot simply does not run the local server
-on 9002. Distinct from the Z10 Pro / Turbo and Z10 Ultra, both of which work
-([#92](https://github.com/sjmotew/NarwalIntegration/issues/92)). An `nmap -sV` fingerprint of
-the open ports and an app-to-robot capture would tell us what it listens on instead.
-
 ## Not compatible
 
 These use a different protocol or are cloud-only. This is a hardware / firmware limitation.
@@ -58,6 +46,7 @@ These use a different protocol or are cloud-only. This is a hardware / firmware 
 |---|---|
 | **Freo X Ultra** (AX18 / AX19) | ZeroMQ on port 6789 plus Tuya cloud, not WebSocket ([#4](https://github.com/sjmotew/NarwalIntegration/issues/4)). A product key and `nmap -p 9002` from an owner would settle it either way. |
 | **Freo X Plus** | Cloud-only; no local API. |
+| **Freo Z10 (plain, non-Ultra / non-Pro)** | No local server. It advertises `_narwal_sweeper._tcp` over mDNS (a record inherited from the models that do run one) and is picked up by discovery, but port 9002 answers `ECONNREFUSED` in every device state. Two units (one on firmware `v01.04.50.01`): every closed port resets, and a service scan of the 19 to 22 high ports open between 33629 and 57609 found no HTTP, WebSocket or TLS service on any of them. The set of open ports differs between units, so they are ephemeral sockets for outbound connections, not a relocated server ([#92](https://github.com/sjmotew/NarwalIntegration/issues/92), thanks to @nicobieri2000 and @Kidam7). Distinct from the Z10 Pro / Turbo and Z10 Ultra, which work. |
 | **Narwal J1** and its international twin the **T10** | No port 9002; port 8080 answers `501 Not Implemented`; the official app controls the robot only through Narwal's cloud (`usaclient` / `usawebsocket.narwaltech.com`). A full 65,535-port scan and an app capture are in [#44](https://github.com/sjmotew/NarwalIntegration/issues/44). |
 | **Narwal J4** | Cloud-only (Tuya). |
 
