@@ -21,6 +21,7 @@ from narwal_client.map_renderer import (
     render_base_map,
     render_map_png,
     render_overlay,
+    room_extents,
 )
 from narwal_client.models import ObstacleInfo
 
@@ -31,16 +32,18 @@ def _make_compressed_grid(width: int, height: int, fill_value: int = 0) -> bytes
     Builds a protobuf-style packed varint field (field 1, wire type 2)
     containing width*height varint-encoded pixel values.
     """
-    # Encode each pixel as a varint
+    return _make_compressed_pixels([fill_value] * (width * height))
+
+
+def _make_compressed_pixels(pixels: list[int]) -> bytes:
+    """Create a compressed map grid from an explicit list of pixel values."""
     raw_varints = bytearray()
-    for _ in range(width * height):
-        val = fill_value
+    for val in pixels:
         while val > 0x7F:
             raw_varints.append((val & 0x7F) | 0x80)
             val >>= 7
         raw_varints.append(val & 0x7F)
 
-    # Wrap in protobuf field 1 length-delimited header
     length = len(raw_varints)
     length_varint = bytearray()
     v = length
@@ -417,3 +420,53 @@ class TestCalibrationPoints:
         points = calibration_points(0, 0, 0)
 
         assert len(points) == 3
+
+
+class TestRoomExtents:
+    """Tests for room_extents() — bounding box and floor centroid extraction."""
+
+    def test_computes_bounds_including_walls_and_floor_centroid(self) -> None:
+        """Bounds span all room pixels (floor + wall); centroid uses floor only."""
+        width, height = 6, 6
+        pixels = [0] * (width * height)
+        # Room 1: outer wall ring from (1, 1) to (4, 4), interior floor from (2, 2) to (3, 3)
+        for y in range(1, 5):
+            for x in range(1, 5):
+                is_wall = x in (1, 4) or y in (1, 4)
+                pixels[y * width + x] = (1 << 8) | (0x10 if is_wall else 0x00)
+        # Room 2: wall-only cell at (5, 0) (no floor pixels)
+        pixels[0 * width + 5] = (2 << 8) | 0x10
+        # Unassigned floor/obstacle and empty pixels must be ignored
+        pixels[0 * width + 0] = 0x20
+        pixels[0 * width + 1] = 0x28
+
+        extents = room_extents(_make_compressed_pixels(pixels), width, height)
+
+        assert extents == {
+            1: (2.5, 2.5, 1, 1, 4, 4),
+            2: (5.0, 0.0, 5, 0, 5, 0),
+        }
+
+    def test_filters_by_requested_room_ids(self) -> None:
+        """Only room_ids in the filter set are returned."""
+        width, height = 4, 2
+        pixels = [
+            (1 << 8), (1 << 8), (2 << 8), (3 << 8),
+            (1 << 8), (2 << 8), (2 << 8), (3 << 8),
+        ]
+
+        extents = room_extents(
+            _make_compressed_pixels(pixels), width, height, room_ids={2}
+        )
+
+        assert list(extents) == [2]
+        assert extents[2] == (1.5, 0.5, 1, 0, 2, 1)
+
+    def test_handles_empty_or_invalid_inputs(self) -> None:
+        """Empty bytes, zero dimensions, or empty filter return empty dict."""
+        compressed = _make_room_grid(4, 4, room_id=1)
+
+        assert room_extents(b"", 4, 4) == {}
+        assert room_extents(compressed, 0, 4) == {}
+        assert room_extents(compressed, 4, 0) == {}
+        assert room_extents(compressed, 4, 4, room_ids=set()) == {}

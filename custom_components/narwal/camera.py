@@ -44,8 +44,49 @@ _PATH_ATTRIBUTE_TAIL_POINTS = 100
 
 # Map-card attributes change with every frame and are only useful live.
 _MAP_CARD_ATTRIBUTES = frozenset(
-    {"calibration_points", "vacuum_position", "charger", "path"}
+    {"calibration_points", "vacuum_position", "charger", "path", "rooms"}
 )
+
+
+def _build_rooms_attribute(static_map) -> dict[int, dict[str, Any]]:
+    """Build the ``rooms`` map-card attribute from static map data.
+
+    Returns ``{room_id: {x0, y0, x1, y1, pos_x, pos_y, name}}`` in map grid
+    coordinates using real room bounding boxes and centroids from the room mask.
+    Rooms without pixels on the mask are omitted.
+    """
+    if not static_map or not static_map.rooms:
+        return {}
+
+    from .narwal_client.map_renderer import room_extents
+
+    room_ids = {r.room_id for r in static_map.rooms}
+    extents = room_extents(
+        static_map.compressed_map,
+        static_map.width,
+        static_map.height,
+        room_ids,
+    )
+    if not extents:
+        return {}
+
+    rooms_attr: dict[int, dict[str, Any]] = {}
+    for room in static_map.rooms:
+        extent = extents.get(room.room_id)
+        if extent is None:
+            continue
+        cx, cy, x0, y0, x1, y1 = extent
+        rooms_attr[room.room_id] = {
+            "x0": x0,
+            "y0": y0,
+            "x1": x1,
+            "y1": y1,
+            "pos_x": round(cx, 1),
+            "pos_y": round(cy, 1),
+            "name": room.display_name,
+        }
+    return rooms_attr
+
 
 async def async_setup_entry(
     hass: HomeAssistant,
@@ -125,6 +166,7 @@ class NarwalMapCamera(NarwalEntity, Camera):
             MAP_OPTION_DEFAULTS[CONF_SHOW_FURNITURE_LABELS],
         )
         self._room_label_points: list[tuple[str, float, float]] = []
+        self._cached_rooms: dict[int, dict[str, Any]] = {}
         self._map_attributes: dict[str, Any] = {}
 
     @property
@@ -134,7 +176,9 @@ class NarwalMapCamera(NarwalEntity, Camera):
         ``render_count`` changes with every frame so HA publishes it. The other
         keys describe the same frame for vacuum map cards: ``calibration_points``
         (grid to image pixels), ``vacuum_position`` ({x, y, a}), ``charger``
-        ({x, y}) and ``path`` (segments of [x, y]), all in map grid coordinates.
+        ({x, y}), ``path`` (segments of [x, y]) and ``rooms``
+        ({id: {x0, y0, x1, y1, pos_x, pos_y, name}}), all in map grid
+        coordinates.
         """
         return {"render_count": self._render_count, **self._map_attributes}
 
@@ -199,6 +243,7 @@ class NarwalMapCamera(NarwalEntity, Camera):
         image_width: int,
         image_height: int,
         trail_points: list[tuple[float, float]] | None = None,
+        rooms: dict[int, dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         """Return the map-card attributes of a rendered frame (executor thread).
 
@@ -220,6 +265,8 @@ class NarwalMapCamera(NarwalEntity, Camera):
                 "x": round(static_map.dock_x, 1),
                 "y": round(static_map.dock_y, 1),
             }
+        if rooms:
+            attributes["rooms"] = rooms
         if not display:
             return attributes
 
@@ -278,6 +325,7 @@ class NarwalMapCamera(NarwalEntity, Camera):
         map_rotation: int,
         map_zoom: float,
         room_label_points: list[tuple[str, float, float]],
+        rooms: dict[int, dict[str, Any]] | None = None,
     ) -> tuple[bytes | None, dict[str, Any]]:
         """Render a frame and describe it for map cards (executor thread).
 
@@ -309,6 +357,7 @@ class NarwalMapCamera(NarwalEntity, Camera):
                 base_map_image.width,
                 base_map_image.height,
                 trail_points,
+                rooms,
             )
         except Exception:
             _LOGGER.exception("Failed to build map card attributes")
@@ -373,6 +422,7 @@ class NarwalMapCamera(NarwalEntity, Camera):
         if not map_is_drawable(static_map):
             # No map, no frame: do not keep describing the previous one.
             self._map_attributes = {}
+            self._cached_rooms = {}
             self.async_write_ha_state()
             return
 
@@ -475,9 +525,9 @@ class NarwalMapCamera(NarwalEntity, Camera):
             or static_ts != self._base_map_ts
             or map_options_key != self._base_map_options_key
         ):
-            room_names: dict[int, str] | None = None
+            visible_room_names: dict[int, str] | None = None
             if map_options_key[0] and static_map.rooms:
-                room_names = {
+                visible_room_names = {
                     r.room_id: r.display_name for r in static_map.rooms
                 }
             obstacles = static_map.obstacles if map_options_key[1] else None
@@ -488,7 +538,7 @@ class NarwalMapCamera(NarwalEntity, Camera):
                 static_map.height,
                 None,
                 None,
-                room_names,
+                visible_room_names,
                 obstacles,
                 static_map.origin_x,
                 static_map.origin_y,
@@ -505,7 +555,11 @@ class NarwalMapCamera(NarwalEntity, Camera):
                     static_map.compressed_map,
                     static_map.width,
                     static_map.height,
-                    room_names,
+                    visible_room_names,
+                )
+                self._cached_rooms = await self.hass.async_add_executor_job(
+                    _build_rooms_attribute,
+                    static_map,
                 )
                 _LOGGER.info(
                     "Base map rendered (ts=%d, %dx%d)",
@@ -526,6 +580,7 @@ class NarwalMapCamera(NarwalEntity, Camera):
                 self._map_rotation(),
                 self._map_zoom(),
                 self._room_label_points,
+                self._cached_rooms,
             )
 
             if png_bytes:

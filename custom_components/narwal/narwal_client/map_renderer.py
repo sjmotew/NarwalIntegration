@@ -384,6 +384,70 @@ def lookup_room_at_grid(
     return (room_id, f"room_{room_id}{wall}")
 
 
+def room_extents(
+    compressed: bytes,
+    width: int,
+    height: int,
+    room_ids: set[int] | None = None,
+) -> dict[int, tuple[float, float, int, int, int, int]]:
+    """Return {room_id: (centre_x, centre_y, x0, y0, x1, y1)} in grid pixels.
+
+    One pass over the room mask: the centroid room_label_points already
+    computes, plus the room's real bounding box. Wall pixels (ptype & 0x10)
+    stay out of the centroid, as before, but count towards the bounds, so the
+    box covers the room as it is drawn.
+    """
+    if not compressed or width <= 0 or height <= 0:
+        return {}
+    decompressed = decompress_map(compressed)
+    if not decompressed:
+        return {}
+
+    pixels = _decode_packed_varints(decompressed)
+    expected = width * height
+    if len(pixels) < expected:
+        pixels.extend([0] * (expected - len(pixels)))
+    elif len(pixels) > expected:
+        pixels = pixels[:expected]
+
+    sum_x: dict[int, int] = {}
+    sum_y: dict[int, int] = {}
+    count: dict[int, int] = {}
+    box: dict[int, list[int]] = {}
+    for i, val in enumerate(pixels):
+        if val == 0 or val in (0x20, 0x28):
+            continue
+        room_id = val >> 8
+        if room_ids is not None and room_id not in room_ids:
+            continue
+        x = i % width
+        y = i // width
+        bounds = box.get(room_id)
+        if bounds is None:
+            box[room_id] = [x, y, x, y]
+        else:
+            bounds[0] = min(bounds[0], x)
+            bounds[1] = min(bounds[1], y)
+            bounds[2] = max(bounds[2], x)
+            bounds[3] = max(bounds[3], y)
+        if (val & 0xFF) & 0x10:
+            continue
+        sum_x[room_id] = sum_x.get(room_id, 0) + x
+        sum_y[room_id] = sum_y.get(room_id, 0) + y
+        count[room_id] = count.get(room_id, 0) + 1
+
+    extents: dict[int, tuple[float, float, int, int, int, int]] = {}
+    for room_id, bounds in box.items():
+        n = count.get(room_id, 0)
+        if n:
+            cx, cy = sum_x[room_id] / n, sum_y[room_id] / n
+        else:
+            cx = (bounds[0] + bounds[2]) / 2
+            cy = (bounds[1] + bounds[3]) / 2
+        extents[room_id] = (cx, cy, bounds[0], bounds[1], bounds[2], bounds[3])
+    return extents
+
+
 def room_label_points(
     compressed: bytes,
     width: int,
