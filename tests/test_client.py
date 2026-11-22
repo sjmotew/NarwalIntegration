@@ -1183,6 +1183,34 @@ class TestWholeHouseStart:
         mock_send.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_fetch_map_returns_the_map_without_storing_it(self) -> None:
+        """A caller with more to do before the swap gets the map and nothing changes."""
+        client = self._connected_client()
+        cached = MapData(map_id=7, rooms=[RoomInfo(room_id=2)])
+        client.state.map_data = cached
+
+        with patch.object(client, "send_command", new_callable=AsyncMock) as mock_send:
+            mock_send.return_value = CommandResponse(data={"2": {"1": 8, "4": 30, "5": 20}})
+            fetched = await client.fetch_map()
+
+        assert (fetched.map_id, fetched.width, fetched.height) == (8, 30, 20)
+        assert client.state.map_data is cached
+        mock_send.assert_awaited_once_with(TOPIC_CMD_GET_MAP, timeout=15.0)
+
+    @pytest.mark.asyncio
+    async def test_get_map_stores_the_fetched_map(self) -> None:
+        client = self._connected_client()
+        client.state.map_data = MapData(map_id=7, rooms=[RoomInfo(room_id=2)])
+
+        with patch.object(client, "send_command", new_callable=AsyncMock) as mock_send:
+            mock_send.return_value = CommandResponse(data={"2": {"1": 8, "4": 30, "5": 20}})
+            fetched = await client.get_map()
+
+        assert fetched.map_id == 8
+        assert client.state.map_data is fetched
+        mock_send.assert_awaited_once_with(TOPIC_CMD_GET_MAP, timeout=15.0)
+
+    @pytest.mark.asyncio
     async def test_get_map_rejection_preserves_cache_but_raises(self) -> None:
         """A rejected refresh leaves display data intact but fails validation."""
         client = self._connected_client()

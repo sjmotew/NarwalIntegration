@@ -24,6 +24,7 @@ from .coordinator import NarwalCoordinator
 from .entity import NarwalEntity
 from .map_geometry import (
     map_is_drawable,
+    map_placement,
     native_trajectory_grid_points,
 )
 from .map_geometry import map_rotation as rotation_option
@@ -118,7 +119,8 @@ class NarwalMapCamera(NarwalEntity, Camera):
         self._render_task: asyncio.Task[None] | None = None
         # Cached base map (PIL Image) — only re-rendered when static map changes
         self._base_map_image = None  # PIL Image or None
-        self._base_map_ts: int = 0  # created_at of the static map used for base
+        # Placement of the static map the base was rendered from
+        self._base_map_placement: tuple[int, ...] = ()
         self._base_map_options_key: tuple[bool, bool, bool] = (
             MAP_OPTION_DEFAULTS[CONF_SHOW_ROOM_LABELS],
             MAP_OPTION_DEFAULTS[CONF_SHOW_FURNITURE],
@@ -376,7 +378,7 @@ class NarwalMapCamera(NarwalEntity, Camera):
             self.async_write_ha_state()
             return
 
-        static_ts = static_map.created_at or 0
+        placement = map_placement(static_map)
         map_options_key = (
             self._map_option(CONF_SHOW_ROOM_LABELS),
             self._map_option(CONF_SHOW_FURNITURE),
@@ -385,7 +387,7 @@ class NarwalMapCamera(NarwalEntity, Camera):
         view_options_key = (self._map_rotation(), self._map_zoom())
         if display:
             new_key = (
-                static_ts,
+                placement,
                 map_options_key,
                 view_options_key,
                 display.robot_x,
@@ -394,7 +396,7 @@ class NarwalMapCamera(NarwalEntity, Camera):
                 self._trajectory_cache_key(display),
             )
         else:
-            new_key = (static_ts, map_options_key, view_options_key)
+            new_key = (placement, map_options_key, view_options_key)
 
         if new_key == self._cache_key and self._cached_image:
             if self._render_task is not None and not self._render_task.done():
@@ -463,8 +465,9 @@ class NarwalMapCamera(NarwalEntity, Camera):
             room_label_points,
         )
 
-        # Rebuild base map only when static map data changes
-        static_ts = static_map.created_at or 0
+        # Rebuild the base map only when the static map changes: a floor switch
+        # outside a clean can keep created_at (0 without field 34).
+        placement = map_placement(static_map)
         map_options_key = (
             self._map_option(CONF_SHOW_ROOM_LABELS),
             self._map_option(CONF_SHOW_FURNITURE),
@@ -472,7 +475,7 @@ class NarwalMapCamera(NarwalEntity, Camera):
         )
         if (
             self._base_map_image is None
-            or static_ts != self._base_map_ts
+            or placement != self._base_map_placement
             or map_options_key != self._base_map_options_key
         ):
             room_names: dict[int, str] | None = None
@@ -498,7 +501,7 @@ class NarwalMapCamera(NarwalEntity, Camera):
             )
             if base_img:
                 self._base_map_image = base_img
-                self._base_map_ts = static_ts
+                self._base_map_placement = placement
                 self._base_map_options_key = map_options_key
                 self._room_label_points = await self.hass.async_add_executor_job(
                     room_label_points,
@@ -508,8 +511,9 @@ class NarwalMapCamera(NarwalEntity, Camera):
                     room_names,
                 )
                 _LOGGER.info(
-                    "Base map rendered (ts=%d, %dx%d)",
-                    static_ts,
+                    "Base map rendered (map %d, ts=%d, %dx%d)",
+                    static_map.map_id,
+                    static_map.created_at,
                     static_map.width,
                     static_map.height,
                 )

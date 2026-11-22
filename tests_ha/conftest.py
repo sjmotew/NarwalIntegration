@@ -37,6 +37,7 @@ _CLIENT_IO = (
     "get_device_info",
     "get_status",
     "get_map",
+    "fetch_map",
     "get_consumable_info",
     "subscribe_to_topics",
     "start_listening",
