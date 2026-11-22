@@ -305,6 +305,24 @@
           "name": "Ruta"
         }
       }
+    },
+    "get_topic_response": {
+      "name": "Obtener respuesta de un topic",
+      "description": "Envía un topic sin procesar al robot y devuelve su respuesta en hexadecimal, sin interpretarla. Para cambiar un ajuste, usa vacuum.send_command.",
+      "fields": {
+        "topic": {
+          "name": "Topic",
+          "description": "Topic corto sin la clave de producto ni el ID del dispositivo, con segmentos en minúsculas separados por \"/\", por ejemplo region/get."
+        },
+        "payload_hex": {
+          "name": "Carga útil (hex)",
+          "description": "Cuerpo de la petición protobuf como cadena hexadecimal. La mayoría de las lecturas no lo necesitan."
+        },
+        "timeout": {
+          "name": "Tiempo de espera",
+          "description": "Segundos que se espera la respuesta."
+        }
+      }
     }
   }
 }

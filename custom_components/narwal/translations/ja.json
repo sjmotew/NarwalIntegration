@@ -305,6 +305,24 @@
           "name": "ルート"
         }
       }
+    },
+    "get_topic_response": {
+      "name": "トピックの応答を取得",
+      "description": "ロボットに生のトピックを 1 つ送り、応答を解釈せずに 16 進数で返します。設定を変更するときは vacuum.send_command を使います。",
+      "fields": {
+        "topic": {
+          "name": "トピック",
+          "description": "プロダクトキーとデバイス ID を除いた短いトピック。小文字の区切りを \"/\" でつなぎます。例: region/get"
+        },
+        "payload_hex": {
+          "name": "ペイロード（16 進数）",
+          "description": "Protobuf のリクエスト本体を 16 進数の文字列で指定します。ほとんどの読み取りでは不要です。"
+        },
+        "timeout": {
+          "name": "タイムアウト",
+          "description": "応答を待つ秒数。"
+        }
+      }
     }
   }
 }

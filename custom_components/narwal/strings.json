@@ -305,6 +305,24 @@
           "name": "Route"
         }
       }
+    },
+    "get_topic_response": {
+      "name": "Get topic response",
+      "description": "Send one raw topic to the robot and return its reply as hex, without interpreting it. Use vacuum.send_command to change a setting.",
+      "fields": {
+        "topic": {
+          "name": "Topic",
+          "description": "Short topic without product key and device ID, lowercase segments separated by \"/\", e.g. region/get."
+        },
+        "payload_hex": {
+          "name": "Payload (hex)",
+          "description": "Protobuf request body as a hex string. Most reads take none."
+        },
+        "timeout": {
+          "name": "Timeout",
+          "description": "Seconds to wait for the reply."
+        }
+      }
     }
   }
 }
