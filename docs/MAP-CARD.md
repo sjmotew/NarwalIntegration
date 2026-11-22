@@ -10,10 +10,12 @@ its own map or place markers on the camera image. All positions are map grid coo
 | `charger` | `{x, y}` | Dock position |
 | `path` | `[[[x, y], …], …]` | Trail of the current clean as segments, decimated to at most 400 points with the newest kept dense |
 | `calibration_points` | `[{vacuum: {x, y}, map: {x, y}}, …]` | Three grid points and their pixels in the camera image, after rotation and zoom |
+| `rooms` | `{id: {x0, y0, x1, y1, pos_x, pos_y, name}}` | Room bounding boxes and label positions in grid coordinates |
 
-`calibration_points` follows the format map cards such as
+`calibration_points` and `rooms` follow the format map cards such as
 [lovelace-xiaomi-vacuum-map-card](https://github.com/PiotrMachowski/lovelace-xiaomi-vacuum-map-card)
 read from a camera. These attributes change with every frame and are excluded from the recorder.
+
 
 ## Full trail over the websocket API
 
