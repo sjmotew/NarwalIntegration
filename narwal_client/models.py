@@ -963,6 +963,10 @@ class NarwalState:
     dock_drying_tasks: dict[str, DockTaskTimer] = field(default_factory=dict)
     dock_drying_status_time: float = 0.0
     has_dock_drying_timer_snapshot: bool = False
+    # Sticky: True once this robot has ever sent a drying timer snapshot.
+    # has_dock_drying_timer_snapshot is cleared whenever the timers go stale on
+    # a docked robot, so it cannot answer "does this model send timers at all?".
+    has_sent_dock_drying_timers: bool = False
     has_unmapped_dock_drying_timer: bool = False
     assumed_dock_task: str = ""
     assumed_dock_task_until: float = 0.0
@@ -1291,6 +1295,24 @@ class NarwalState:
             return False
         if self.station_activity in (1, 2, 3):
             return False
+        if (
+            self.station_activity == 4
+            and self.working_status == WorkingStatus.TASK_COMPLETED
+            and not self.has_sent_dock_drying_timers
+        ):
+            # Post-task dock drying on a robot that never sends drying timers.
+            # The CX7 reports field 3 {1: 19, 18: 4} for both "dry and
+            # disinfect dock bag" and "dry and disinfect dust bin" and no timer
+            # fields at all (#171, same pair seen on a second unit in
+            # Discussion #164), so the timer-derived task set stays empty and
+            # this was being classified as unmapped station work — which locked
+            # the clean settings, the room switches and the dock switches for
+            # the whole run. Both tasks this can stand for are start-compatible,
+            # so the state is known even though the task is not. Robots that do
+            # send timers keep the stricter fail-closed path below, and no task
+            # key is claimed here, so stopping from Home Assistant stays
+            # unavailable until the two can be told apart.
+            return False
         if self.station_activity == 4 and self.has_fresh_idle_dock_drying_snapshot:
             return False
         return not (self.station_activity == 4 and self.active_dock_drying_tasks)
@@ -1603,6 +1625,7 @@ class NarwalState:
             )
             self.dock_drying_tasks = timers
             self.has_dock_drying_timer_snapshot = True
+            self.has_sent_dock_drying_timers = True
             self.has_unmapped_dock_drying_timer = _has_unmapped_dock_drying_timer(
                 decoded
             )
