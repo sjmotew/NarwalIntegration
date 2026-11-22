@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import math
 import struct
+import zlib
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -18,13 +19,31 @@ from custom_components.narwal.camera import (  # noqa: E402
     _PATH_ATTRIBUTE_MAX_POINTS,
     NarwalMapCamera,
 )
+from custom_components.narwal.const import CONF_SHOW_ROOM_LABELS  # noqa: E402
 from narwal_client.const import WorkingStatus  # noqa: E402
-from narwal_client.models import MapData, MapDisplayData, NarwalState  # noqa: E402
+from narwal_client.models import MapData, MapDisplayData, NarwalState, RoomInfo  # noqa: E402
 
 
 def _float_stream(*values: float) -> bytes:
     """Encode a packed float32 stream as display_map field 2 uses it."""
     return b"".join(struct.pack("<f", value) for value in values)
+
+
+def _encode_varint(value: int) -> bytes:
+    """Encode a non-negative integer as a protobuf varint."""
+    out = bytearray()
+    while value > 0x7F:
+        out.append((value & 0x7F) | 0x80)
+        value >>= 7
+    out.append(value & 0x7F)
+    return bytes(out)
+
+
+def _compress_room_grid(pixels: list[int]) -> bytes:
+    """Encode a list of pixel values into the zlib-compressed protobuf grid format."""
+    packed = b"".join(_encode_varint(pixel) for pixel in pixels)
+    payload = b"\x0a" + _encode_varint(len(packed)) + packed
+    return zlib.compress(payload)
 
 
 def _camera(state: NarwalState) -> NarwalMapCamera:
@@ -49,6 +68,7 @@ def _camera(state: NarwalState) -> NarwalMapCamera:
     camera._base_map_ts = 0
     camera._base_map_options_key = (True, True, True)
     camera._room_label_points = []
+    camera._cached_rooms = {}
     camera._map_attributes = {}
     return camera
 
@@ -255,6 +275,8 @@ async def test_render_keeps_camera_access_token_stable() -> None:
             return _BaseImage(300, 300)
         if getattr(fn, "__name__", "") == "room_label_points":
             return []
+        if getattr(fn, "__name__", "") == "_build_rooms_attribute":
+            return {}
         if getattr(fn, "__name__", "") == "_render_frame":
             return fn(*args)
         return b"png"
@@ -379,6 +401,7 @@ def test_path_attribute_is_capped_and_keeps_the_newest_points() -> None:
 
 def test_map_card_attributes_are_not_recorded() -> None:
     """Live-only map-card data stays out of the recorder."""
+    assert "rooms" in _MAP_CARD_ATTRIBUTES
     assert NarwalMapCamera._unrecorded_attributes >= _MAP_CARD_ATTRIBUTES
     assert "render_count" not in NarwalMapCamera._unrecorded_attributes
 
@@ -398,6 +421,8 @@ async def test_attribute_failure_keeps_the_rendered_frame() -> None:
             return _BaseImage(300, 240)
         if getattr(fn, "__name__", "") == "room_label_points":
             return []
+        if getattr(fn, "__name__", "") == "_build_rooms_attribute":
+            return {}
         if getattr(fn, "__name__", "") == "_render_frame":
             return fn(*args)
         return b"png"
@@ -444,6 +469,124 @@ def test_robot_outside_the_map_has_no_position() -> None:
     )
 
     assert "vacuum_position" not in attributes
+
+
+def test_build_rooms_attribute_computes_true_extents_and_handles_duplicate_names() -> None:
+    """Room outlines and centroids match the mask by room_id even with duplicate names."""
+    width, height = 6, 5
+    grid = [0] * (width * height)
+    # Room 1 ("Bedroom"): floor at (1, 1) and (2, 1), wall at (0, 1) and (3, 2)
+    grid[1 * width + 0] = (1 << 8) | 0x10
+    grid[1 * width + 1] = (1 << 8) | 0x00
+    grid[1 * width + 2] = (1 << 8) | 0x00
+    grid[2 * width + 3] = (1 << 8) | 0x10
+    # Room 2 ("Bedroom" duplicate name): floor at (4, 3) and (4, 4)
+    grid[3 * width + 4] = (2 << 8) | 0x00
+    grid[4 * width + 4] = (2 << 8) | 0x00
+
+    static_map = MapData(
+        width=width,
+        height=height,
+        compressed_map=_compress_room_grid(grid),
+        rooms=[
+            RoomInfo(room_id=1, name="Bedroom"),
+            RoomInfo(room_id=2, name="Bedroom"),
+            RoomInfo(room_id=99, name="Unpainted Room"),
+        ],
+    )
+
+    rooms = NarwalMapCamera._build_rooms_attribute(static_map)
+
+    assert set(rooms) == {1, 2}
+    assert rooms[1] == {
+        "x0": 0.0,
+        "y0": 1.0,
+        "x1": 3.0,
+        "y1": 2.0,
+        "pos_x": 1.5,
+        "pos_y": 1.0,
+        "name": "Bedroom",
+    }
+    assert rooms[2] == {
+        "x0": 4.0,
+        "y0": 3.0,
+        "x1": 4.0,
+        "y1": 4.0,
+        "pos_x": 4.0,
+        "pos_y": 3.5,
+        "name": "Bedroom",
+    }
+
+
+def test_map_card_attributes_include_cached_rooms_when_present() -> None:
+    """Cached rooms are included in map-card attributes; empty dicts are omitted."""
+    rooms_payload = {
+        1: {
+            "x0": 10.0,
+            "y0": 20.0,
+            "x1": 50.0,
+            "y1": 60.0,
+            "pos_x": 30.0,
+            "pos_y": 40.0,
+            "name": "Kitchen",
+        }
+    }
+
+    with_rooms = NarwalMapCamera._map_card_attributes(
+        _map_with_dock(), None, 0, 1.0, 300, 240, rooms=rooms_payload,
+    )
+    without_rooms = NarwalMapCamera._map_card_attributes(
+        _map_with_dock(), None, 0, 1.0, 300, 240, rooms={},
+    )
+
+    assert with_rooms["rooms"] == rooms_payload
+    assert "rooms" not in without_rooms
+
+
+async def test_render_populates_rooms_even_when_room_labels_hidden() -> None:
+    """Room outlines are exposed in attributes regardless of show_room_labels option."""
+    width, height = 4, 4
+    grid = [0] * (width * height)
+    grid[1 * width + 1] = (3 << 8) | 0x00
+    grid[2 * width + 2] = (3 << 8) | 0x00
+
+    state = NarwalState()
+    state.map_data = MapData(
+        width=width,
+        height=height,
+        resolution=50,
+        created_at=123,
+        compressed_map=_compress_room_grid(grid),
+        rooms=[RoomInfo(room_id=3, name="Living Room")],
+    )
+    camera = _camera(state)
+    camera.coordinator.config_entry.options = {CONF_SHOW_ROOM_LABELS: False}
+    camera._async_render = NarwalMapCamera._async_render.__get__(
+        camera, NarwalMapCamera
+    )
+
+    async def executor_job(fn, *args):
+        if getattr(fn, "__name__", "") == "render_base_map":
+            return _BaseImage(12, 12)
+        return fn(*args)
+
+    camera.hass.async_add_executor_job = AsyncMock(side_effect=executor_job)
+
+    with patch.object(NarwalMapCamera, "_render_overlay_image", return_value=b"png"):
+        await camera._async_render(MapDisplayData(robot_x=1.0, robot_y=1.0), ("key",))
+
+    assert camera._room_label_points == []
+    assert camera.extra_state_attributes["rooms"] == {
+        3: {
+            "x0": 1.0,
+            "y0": 1.0,
+            "x1": 2.0,
+            "y1": 2.0,
+            "pos_x": 1.5,
+            "pos_y": 1.5,
+            "name": "Living Room",
+        }
+    }
 
 
 @pytest.mark.parametrize(
