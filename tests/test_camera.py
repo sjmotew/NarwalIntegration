@@ -46,7 +46,7 @@ def _camera(state: NarwalState) -> NarwalMapCamera:
     camera._render_task = None
     camera._async_render = MagicMock(return_value="render-task")
     camera._base_map_image = None
-    camera._base_map_ts = 0
+    camera._base_map_placement = ()
     camera._base_map_options_key = (True, True, True)
     camera._room_label_points = []
     camera._map_attributes = {}
@@ -155,7 +155,7 @@ def test_handle_update_replaces_pending_render_when_state_returns_to_cache() -> 
     state.map_display_data = MapDisplayData(robot_x=4.0, robot_y=6.0)
     camera = _camera(state)
     cached_key = (
-        123,
+        (0, 123, 0, 0, 100, 100),
         (True, False, False),
         (0, 1.0),
         4.0,
@@ -271,6 +271,70 @@ async def test_render_keeps_camera_access_token_stable() -> None:
     assert len(attributes["calibration_points"]) == 3
     camera.async_update_token.assert_not_called()
     camera.async_write_ha_state.assert_called_once()
+
+
+def _floor(map_id: int, width: int, height: int) -> MapData:
+    """A floor without a creation time (field 34), as some robots send it."""
+    return MapData(
+        map_id=map_id,
+        width=width,
+        height=height,
+        resolution=50,
+        origin_x=2,
+        origin_y=4,
+        compressed_map=b"\x01",
+    )
+
+
+async def test_render_rebuilds_the_base_map_for_another_floor() -> None:
+    """A floor switch without a creation time still draws the new floor."""
+    state = NarwalState()
+    state.map_data = _floor(1, 100, 100)
+    camera = _camera(state)
+    camera._async_render = NarwalMapCamera._async_render.__get__(
+        camera, NarwalMapCamera
+    )
+    base_renders: list[int] = []
+
+    async def executor_job(fn, *args):
+        if getattr(fn, "__name__", "") == "render_base_map":
+            base_renders.append(state.map_data.map_id)
+            return _BaseImage(300, 300)
+        if getattr(fn, "__name__", "") == "room_label_points":
+            return []
+        if getattr(fn, "__name__", "") == "_render_frame":
+            return fn(*args)
+        return b"png"
+
+    camera.hass.async_add_executor_job = AsyncMock(side_effect=executor_job)
+
+    with patch.object(NarwalMapCamera, "_render_overlay_image", return_value=b"png"):
+        await camera._async_render(None, ("first",))
+        await camera._async_render(None, ("same floor",))
+        state.map_data = _floor(2, 100, 100)
+        await camera._async_render(None, ("second",))
+
+    assert base_renders == [1, 2]
+
+
+def test_handle_update_renders_another_floor_with_the_same_creation_time() -> None:
+    """The render key tells floors apart even when both send created_at 0."""
+    state = NarwalState()
+    state.map_data = _floor(1, 100, 100)
+    camera = _camera(state)
+    camera._schedule_render = MagicMock()
+    camera._handle_coordinator_update()
+    first_key = camera._schedule_render.call_args.args[1]
+    camera._cache_key = first_key
+    camera._cached_image = b"png"
+    camera._schedule_render.reset_mock()
+
+    camera._handle_coordinator_update()
+    camera._schedule_render.assert_not_called()
+
+    state.map_data = _floor(2, 100, 100)
+    camera._handle_coordinator_update()
+    camera._schedule_render.assert_called_once()
 
 
 class _BaseImage:

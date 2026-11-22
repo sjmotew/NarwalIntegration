@@ -2241,8 +2241,12 @@ class NarwalClient:
         self.state.update_from_consumable_info(resp.data)
         return resp
 
-    async def get_map(self) -> MapData:
-        """Download the full map data."""
+    async def fetch_map(self) -> MapData:
+        """Download the full map data without storing it.
+
+        For a caller that has more to do before the map may replace the held
+        one; ``get_map`` stores it at once.
+        """
         resp = await self.send_command(TOPIC_CMD_GET_MAP, timeout=15.0)
         if not resp.accepted:
             raise NarwalCommandError(
@@ -2251,6 +2255,11 @@ class NarwalClient:
         map_data = MapData.from_response(resp.data)
         if not map_data.map_id:
             raise NarwalCommandError("get_map response did not contain an active map")
+        return map_data
+
+    async def get_map(self) -> MapData:
+        """Download the full map data and make it the client's map."""
+        map_data = await self.fetch_map()
         self.state.map_data = map_data
         return map_data
 

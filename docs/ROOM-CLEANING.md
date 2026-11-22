@@ -44,6 +44,44 @@ the robot follows the order you picked.
 > invalidates the mapping. The integration detects the change and raises a Home Assistant
 > repair issue so you know to redo it.
 
+## More than one floor
+
+The integration holds one map, the robot's *active* one. It is fetched at startup and by a
+clean start from Home Assistant (unless the rooms asked for are already known), and a floor
+switched in the Narwal app is found by the status poll: while the robot is on no task, the poll
+asks it for its active map every five minutes. When the answer is another map,
+
+- the camera, the room entities and the rooms that `narwal.clean_rooms` and `vacuum.clean_area`
+  resolve against follow it, also on a robot that sends the same creation time for every floor;
+- the trail and the last robot position of the previous floor leave the camera. The stored
+  trail of the last clean is not touched; as before, it is shown again after a Home Assistant
+  start on the floor it was recorded on;
+- the *segments changed* repair is raised if your rooms are mapped to areas, because that
+  mapping exists once and not per floor. Do not confirm it for a floor the robot only visits,
+  or the area mapping of your main floor is replaced.
+
+The robot is not asked while a task runs (cleaning, paused, returning, remapping), since the map
+is fixed for the duration of a task: a floor switched right before a clean that was started in
+the app is picked up when that clean has ended. Such a clean is drawn and saved on the map that
+was held when it began, so its trail can carry the wrong floor. That is why a floor switch only
+ever takes a trail off the camera and never brings one back.
+
+The poll never wakes the robot for this; a docked robot answers `get_map` the way it answers
+the status poll. A model that does not broadcast, such as the Freo Z Ultra, is not asked by the
+poll at all: its status does not say reliably whether a clean is running, so the question
+could reach it in the middle of one. For such a model nothing changes: its map is fetched at
+startup and by clean starts from Home Assistant, as before.
+
+The robot is asked under the lock a clean start takes, held while it is asked (at most 15 s,
+which includes the wait for a command that is already on its way) and for the swap. A
+`vacuum.start` that arrives meanwhile waits for it, as it would for another start.
+So does `narwal.set_pending_profiles`, which is then checked against the map as it is: on the
+same floor it is applied, after a floor switch it is rejected as a whole, like any update whose
+map changed.
+
+Listing the saved maps, switching floors from Home Assistant and an area mapping per floor are
+not there yet ([#43](https://github.com/sjmotew/NarwalIntegration/issues/43)).
+
 ## Per-room profiles and the dashboard
 
 v1.0.8 added per-room cleaning profiles: six selects and a switch **per room**, 168 entities
