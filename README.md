@@ -17,8 +17,7 @@ Talks to the robot directly over WebSocket on port 9002: no cloud account, no in
 |---|---|
 | **Working** | Flow, Flow 2, Freo Z10 Ultra, Freo Z10 Pro / Turbo, Freo X10 Pro, Freo 20, Freo 20 Edge, JX |
 | **Control only** | Freo Z Ultra (CX7): commands work, no live position; needs its cloud Device ID ([setup](docs/SETUP.md#freo-z-ultra-cx7-device-id)) |
-| **Investigating** | Freo Z10 (plain): port 9002 refuses connections ([#92](https://github.com/sjmotew/NarwalIntegration/issues/92)) |
-| **Not compatible** | Freo X Ultra, Freo X Plus, J1 / T10, J4 (different protocol or cloud-only) |
+| **Not compatible** | Freo Z10 (plain), Freo X Ultra, Freo X Plus, J1 / T10, J4 (different protocol or cloud-only) |
 
 Firmware, product keys and who confirmed each model: [docs/MODELS.md](docs/MODELS.md).
 Another model? Run `nmap -p 9002 <vacuum-ip>`; if the port is open, [open an issue](https://github.com/sjmotew/NarwalIntegration/issues/new/choose).
