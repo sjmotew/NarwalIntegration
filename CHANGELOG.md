@@ -11,6 +11,10 @@ change that can alter the behaviour of an existing automation or dashboard.
 
 ## [v1.0.13] — unreleased
 
+- **Fixed:** `common/get_feature_list` raised `ValueError` on a firmware that packs the feature ids into a repeated varint field, so the feature list was blank in every diagnostics download from those robots — the Flow 2 among them. A packed field now decodes to the ids it encodes, and a scalar keeps its value, including 0 ([#180](https://github.com/sjmotew/NarwalIntegration/issues/180)).
+
+- **Added:** websocket command `narwal/trajectory` returns the full trail of the current clean as grid points, for map cards that draw the route themselves; the camera's `path` attribute stays decimated to 400 points. It takes the robot's `entity_id`, and a card that polls sends the `signature` it holds and gets `unchanged: true` without the points while they are the same ([#161](https://github.com/sjmotew/NarwalIntegration/pull/161), @Bezkeroon; see [docs/MAP-CARD.md](docs/MAP-CARD.md#full-trail-over-the-websocket-api)).
+
 - **Added:** `vacuum.send_command` writes a raw topic and `narwal.get_topic_response` reads one and returns the robot's reply, for settings with no entity such as the Freo 20 wake word or the robot timezone ([#156](https://github.com/sjmotew/NarwalIntegration/pull/156), @d1ggs). [Guide](docs/SEND-COMMAND.md).
 
 ## [v1.0.12] — 2026-11-13

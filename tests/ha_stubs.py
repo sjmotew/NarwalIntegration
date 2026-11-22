@@ -35,6 +35,8 @@ def install() -> None:
     vol.Schema = MagicMock()  # type: ignore[attr-defined]
     vol.Required = MagicMock(side_effect=lambda *a, **kw: a[0] if a else "key")  # type: ignore[attr-defined]
     vol.Optional = MagicMock(side_effect=lambda *a, **kw: a[0] if a else "key")  # type: ignore[attr-defined]
+    vol.Exclusive = MagicMock(side_effect=lambda *a, **kw: a[0] if a else "key")  # type: ignore[attr-defined]
+    vol.Any = MagicMock()  # type: ignore[attr-defined]
     vol.In = MagicMock()  # type: ignore[attr-defined]
     vol.Any = MagicMock()  # type: ignore[attr-defined]
     vol.Invalid = type("Invalid", (Exception,), {})  # type: ignore[attr-defined]
@@ -49,6 +51,7 @@ def install() -> None:
         ha_auth_permissions,
     )
     ha_auth_permissions_const.POLICY_CONTROL = "control"  # type: ignore[attr-defined]
+    ha_auth_permissions_const.POLICY_READ = "read"  # type: ignore[attr-defined]
 
     # homeassistant.const
     ha_const = _mod("homeassistant.const", ha)
@@ -98,7 +101,14 @@ def install() -> None:
     ha_exc.HomeAssistantError = type(  # type: ignore[attr-defined]
         "HomeAssistantError", (Exception,), {}
     )
-    ha_exc.Unauthorized = type("Unauthorized", (Exception,), {})  # type: ignore[attr-defined]
+    class _UnauthorizedError(Exception):
+        """Takes HA's keyword arguments (context, entity_id, permission, ...)."""
+
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            super().__init__(*args)
+            self.kwargs = kwargs
+
+    ha_exc.Unauthorized = _UnauthorizedError  # type: ignore[attr-defined]
     ha_exc.UnknownUser = type("UnknownUser", (Exception,), {})  # type: ignore[attr-defined]
 
     # homeassistant.config_entries
@@ -138,6 +148,7 @@ def install() -> None:
     ha_cv.entity_ids = MagicMock()  # type: ignore[attr-defined]
     ha_cv.ensure_list = MagicMock()  # type: ignore[attr-defined]
     ha_cv.string = MagicMock()  # type: ignore[attr-defined]
+    ha_cv.entity_id = str  # type: ignore[attr-defined]
     ha_cv.config_entry_only_config_schema = MagicMock()  # type: ignore[attr-defined]
 
     # NOTE: deliberately does NOT expose EntityCategory. Real HA removed
@@ -319,6 +330,23 @@ def install() -> None:
 
     ha_diag.async_redact_data = _async_redact_data  # type: ignore[attr-defined]
     ha_diag.REDACTED = REDACTED  # type: ignore[attr-defined]
+
+    # homeassistant.components.websocket_api: the decorators leave the handler a
+    # plain coroutine and record the schema on it, as HA's own decorator does.
+    ha_ws = _mod("homeassistant.components.websocket_api", ha_comp)
+
+    def _websocket_command(schema):
+        def decorator(func):
+            func._ws_schema = schema  # type: ignore[attr-defined]
+            return func
+
+        return decorator
+
+    ha_ws.websocket_command = _websocket_command  # type: ignore[attr-defined]
+    ha_ws.async_response = lambda func: func  # type: ignore[attr-defined]
+    ha_ws.async_register_command = MagicMock()  # type: ignore[attr-defined]
+    ha_ws.ActiveConnection = MagicMock  # type: ignore[attr-defined]
+    ha_ws.ERR_NOT_FOUND = "not_found"  # type: ignore[attr-defined]
 
     ha_vac = _mod("homeassistant.components.vacuum", ha_comp)
     ha_vac.DOMAIN = "vacuum"  # type: ignore[attr-defined]

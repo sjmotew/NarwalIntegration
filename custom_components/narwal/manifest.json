@@ -3,7 +3,7 @@
   "name": "Narwal Flow Robot Vacuum",
   "codeowners": ["@sjmotew"],
   "config_flow": true,
-  "dependencies": [],
+  "dependencies": ["websocket_api"],
   "dhcp": [
     { "hostname": "narwal_*" }
   ],

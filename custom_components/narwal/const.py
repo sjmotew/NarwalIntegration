@@ -122,6 +122,11 @@ CONF_MAP_ZOOM = "map_zoom"
 MAP_ROTATION_DEFAULT = 0  # degrees clockwise; renderer accepts 0/90/180/270
 MAP_ZOOM_DEFAULT = 1.0  # renderer clamps to 1.0–2.0
 
+# Retained native trail: at most this many points are kept and drawn, the most
+# recent tail of them always in full (coordinator, camera, websocket API).
+NATIVE_TRAJECTORY_MAX_POINTS = 50_000
+NATIVE_TRAJECTORY_RECENT_TAIL_POINTS = 200
+
 CONF_DOCK_LIGHT_SUPPORTED = "dock_light_supported"
 SERVICE_CLEAN_ROOMS = "clean_rooms"
 SERVICE_SET_PENDING_PROFILES = "set_pending_profiles"

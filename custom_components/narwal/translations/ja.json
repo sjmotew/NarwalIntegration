@@ -1,0 +1,328 @@
+{
+  "config": {
+    "flow_title": "Narwal 掃除機（{host}）",
+    "step": {
+      "user": {
+        "title": "Narwal 掃除機に接続",
+        "description": "Narwal ロボット掃除機の IP アドレスを入力し、モデルを選んでください。",
+        "data": {
+          "host": "IP アドレス",
+          "port": "ポート",
+          "model": "モデル"
+        }
+      },
+      "device_id": {
+        "title": "デバイス ID を入力",
+        "description": "自動検出を利用できません。クラウドで割り当てられた、掃除機の 32 文字のデバイス ID を入力するか、自動検出をもう一度試すときはチェックを入れてください。最初の試行でロボットがスリープしていた場合に役立ちます。ID の調べ方はインテグレーションのドキュメントを参照してください。",
+        "data": {
+          "device_id": "デバイス ID",
+          "retry_auto_detect": "自動検出をもう一度試す"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "掃除機に接続できません。IP アドレスを確認し、掃除機の電源が入っていることを確かめてください。",
+      "unknown": "予期しないエラーが発生しました。",
+      "device_id_required": "デバイス ID を入力するか、「自動検出をもう一度試す」にチェックを入れてください。"
+    },
+    "abort": {
+      "already_configured": "この掃除機はすでに設定されています。"
+    }
+  },
+  "entity": {
+    "vacuum": {
+      "vacuum": {
+        "name": "掃除機"
+      }
+    },
+    "sensor": {
+      "cleaning_area": {
+        "name": "清掃面積"
+      },
+      "cleaning_time": {
+        "name": "清掃時間"
+      },
+      "remaining_time": {
+        "name": "残り時間"
+      },
+      "firmware_version": {
+        "name": "ファームウェアのバージョン"
+      },
+      "dust_bag_health": {
+        "name": "ダストバッグの状態"
+      },
+      "detergent_remaining": {
+        "name": "洗剤の残量"
+      },
+      "last_clean_result": {
+        "name": "前回の清掃結果",
+        "state": {
+          "normal_end": "完了",
+          "user_force_end": "ユーザーが停止",
+          "shutdown_force_end": "終了（電源オフ）",
+          "low_battery_force_end": "終了（バッテリー低下）",
+          "overflow_force_end": "終了（タンクのあふれ）",
+          "pause_too_long_force_end": "終了（一時停止が長すぎた）",
+          "system_error_force_end": "終了（システムエラー）",
+          "user_force_end_on_station": "ステーションで停止",
+          "user_force_end_on_app": "アプリから停止",
+          "recall_end": "ステーションに呼び戻し",
+          "normal_end_replenish_map_fail": "完了（マップの更新に失敗）",
+          "map_unmatched_force_end": "終了（マップの不一致）",
+          "relocation_fail_with_station_force_end": "終了（位置の再特定に失敗）",
+          "relocation_fail_without_station_force_end": "終了（位置の再特定に失敗・ステーションなし）",
+          "pretask_error_force_end": "終了（開始前のエラー）",
+          "schedule_task_force_end": "終了（スケジュール）",
+          "unexecuted": "未実行",
+          "not_find_pet": "ペットが見つかりません"
+        }
+      },
+      "charging_state": {
+        "name": "充電",
+        "state": {
+          "charging": "充電中",
+          "fully_charged": "満充電",
+          "not_charging": "充電していません"
+        }
+      }
+    },
+    "binary_sensor": {
+      "docked": {
+        "name": "ドッキング",
+        "state": {
+          "on": "ドッキング中",
+          "off": "ドッキングしていません"
+        }
+      },
+      "error": {
+        "name": "エラー",
+        "state": {
+          "on": "問題あり",
+          "off": "正常"
+        }
+      },
+      "clean_water_tank": {
+        "name": "給水タンク"
+      },
+      "sewage_tank": {
+        "name": "汚水タンク"
+      },
+      "dust_box": {
+        "name": "ダストボックス"
+      },
+      "dust_bag": {
+        "name": "ダストバッグ"
+      },
+      "station_bag": {
+        "name": "ステーションのダストバッグ"
+      },
+      "maintenance_required": {
+        "name": "メンテナンスが必要"
+      },
+      "replacement_required": {
+        "name": "交換が必要"
+      }
+    },
+    "select": {
+      "work_mode": {
+        "name": "清掃モード",
+        "state": {
+          "vacuum": "吸引",
+          "mop": "水拭き",
+          "vacuum_then_mop": "吸引してから水拭き",
+          "vacuum_and_mop": "吸引と水拭きを同時に"
+        }
+      },
+      "water": {
+        "name": "水拭きの水分量",
+        "state": {
+          "dry": "やや少なめ",
+          "normal": "標準",
+          "wet": "やや多め"
+        }
+      },
+      "mop_strength": {
+        "name": "水拭きの強さ",
+        "state": {
+          "normal": "標準",
+          "high": "強"
+        }
+      },
+      "legacy_mode": {
+        "name": "モード"
+      },
+      "legacy_suction": {
+        "name": "吸引力"
+      },
+      "legacy_water": {
+        "name": "水量"
+      },
+      "legacy_scrub": {
+        "name": "こすり洗い"
+      },
+      "legacy_route": {
+        "name": "ルート"
+      },
+      "legacy_passes": {
+        "name": "回数"
+      },
+      "room_mode": {
+        "name": "{room_name} のモード"
+      },
+      "room_suction": {
+        "name": "{room_name} の吸引力"
+      },
+      "room_water": {
+        "name": "{room_name} の水量"
+      },
+      "room_scrub": {
+        "name": "{room_name} のこすり洗い"
+      },
+      "room_route": {
+        "name": "{room_name} のルート"
+      },
+      "room_passes": {
+        "name": "{room_name} の回数"
+      }
+    },
+    "number": {
+      "passes": {
+        "name": "清掃回数"
+      }
+    },
+    "light": {
+      "dock_light": {
+        "name": "ステーションのライト"
+      }
+    },
+    "switch": {
+      "empty_dustbin": {
+        "name": "ダストボックスのゴミ収集"
+      },
+      "wash_mop": {
+        "name": "モップの洗浄"
+      },
+      "dry_mop": {
+        "name": "モップの乾燥"
+      },
+      "dry_dust_bin": {
+        "name": "ダストボックスの乾燥と除菌"
+      },
+      "dry_dock_bag": {
+        "name": "ステーションのダストバッグの乾燥と除菌"
+      },
+      "show_room_labels": {
+        "name": "部屋のラベルを表示"
+      },
+      "show_furniture": {
+        "name": "家具を表示"
+      },
+      "show_furniture_labels": {
+        "name": "家具のラベルを表示"
+      },
+      "room_selected": {
+        "name": "{room_name} を選択"
+      }
+    },
+    "camera": {
+      "map": {
+        "name": "マップ"
+      },
+      "carpet_map": {
+        "name": "カーペットのマップ"
+      }
+    }
+  },
+  "device": {
+    "dock": {
+      "name": "{name} ステーション"
+    }
+  },
+  "selector": {
+    "clean_mode": {
+      "options": {
+        "vacuum": "吸引",
+        "mop": "水拭き",
+        "vacuum_then_mop": "吸引してから水拭き",
+        "vacuum_and_mop": "吸引と水拭きを同時に"
+      }
+    },
+    "suction": {
+      "options": {
+        "ai": "AI",
+        "quiet": "静音",
+        "standard": "標準",
+        "strong": "強",
+        "super_powerful": "超強力",
+        "ultra_powerful": "最強"
+      }
+    },
+    "water": {
+      "options": {
+        "dry": "少なめ",
+        "normal": "標準",
+        "wet": "多め"
+      }
+    },
+    "mop_strength": {
+      "options": {
+        "normal": "標準",
+        "high": "強"
+      }
+    },
+    "route": {
+      "options": {
+        "standard": "標準",
+        "meticulous": "念入り"
+      }
+    }
+  },
+  "services": {
+    "clean_rooms": {
+      "name": "部屋を清掃",
+      "description": "Narwal のローカルの clean/start_clean コマンドで、部屋の清掃を始めます。",
+      "fields": {
+        "rooms": {
+          "name": "部屋",
+          "description": "清掃する Narwal の部屋 ID を順に指定します。今のマップのすべての部屋を清掃するときは \"all\" を指定します。"
+        },
+        "mode": {
+          "name": "モード"
+        },
+        "suction": {
+          "name": "吸引力"
+        },
+        "water": {
+          "name": "水量"
+        },
+        "mop_strength": {
+          "name": "水拭きの強さ"
+        },
+        "passes": {
+          "name": "回数"
+        },
+        "route": {
+          "name": "ルート"
+        }
+      }
+    },
+    "get_topic_response": {
+      "name": "トピックの応答を取得",
+      "description": "ロボットに生のトピックを 1 つ送り、応答を解釈せずに 16 進数で返します。設定を変更するときは vacuum.send_command を使います。",
+      "fields": {
+        "topic": {
+          "name": "トピック",
+          "description": "プロダクトキーとデバイス ID を除いた短いトピック。小文字の区切りを \"/\" でつなぎます。例: region/get"
+        },
+        "payload_hex": {
+          "name": "ペイロード（16 進数）",
+          "description": "Protobuf のリクエスト本体を 16 進数の文字列で指定します。ほとんどの読み取りでは不要です。"
+        },
+        "timeout": {
+          "name": "タイムアウト",
+          "description": "応答を待つ秒数。"
+        }
+      }
+    }
+  }
+}
