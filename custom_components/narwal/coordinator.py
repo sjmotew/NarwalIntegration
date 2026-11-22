@@ -145,6 +145,9 @@ class ActiveMapError(Exception):
 #: What a robot that does not answer raises: the client's own errors, a bare
 #: timeout, and what ``send`` lets through when the connection drops under it.
 #: Anything else is a bug and is raised as it is, so its traceback is logged.
+#: ``OSError`` is what a dropped socket raises. It is also the one entry that
+#: is not only about the robot: a local file error is an ``OSError`` too and
+#: would be reported as a robot that does not answer.
 ACTIVE_MAP_FETCH_ERRORS: tuple[type[Exception], ...] = (
     NarwalCommandError,
     NarwalConnectionError,
@@ -2581,6 +2584,10 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
             state.map_data = map_data
             self._align_trail_with_static_map()
         except BaseException:
+            # Nothing in the try awaits, so no CancelledError lands here today.
+            # An ``await`` added to the alignment would still be undone here,
+            # but other code would run between the swap and the undo and see a
+            # floor switch half applied: keep this path synchronous.
             state.map_data, state.map_display_data = held
             for name, value in trail_state.items():
                 setattr(self, name, value)

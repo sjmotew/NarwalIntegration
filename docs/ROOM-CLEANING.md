@@ -49,16 +49,14 @@ the robot follows the order you picked.
 The integration holds one map, the robot's *active* one. It is fetched at startup and by a
 clean start from Home Assistant (unless the rooms asked for are already known), and a floor
 switched in the Narwal app is found by the status poll: while the robot is on no task, the poll
-asks it for its active map every five minutes. When the answer is another map,
+asks it for its active map every five to six minutes. When the answer is another map,
 
 - the camera, the room entities and the rooms that `narwal.clean_rooms` and `vacuum.clean_area`
   resolve against follow it, also on a robot that sends the same creation time for every floor;
-- the trail and the last robot position of the previous floor leave the camera. The stored
-  trail of the last clean is not touched; as before, it is shown again after a Home Assistant
-  start on the floor it was recorded on;
-- the *segments changed* repair is raised if your rooms are mapped to areas, because that
-  mapping exists once and not per floor. Do not confirm it for a floor the robot only visits,
-  or the area mapping of your main floor is replaced.
+- the trail and the last robot position of the previous floor leave the camera, which then
+  shows no trail until the next clean, also after switching back. The stored trail of the last
+  clean is not touched; as before, it is shown again after a Home Assistant start on the floor
+  it was recorded on.
 
 The robot is not asked while a task runs (cleaning, paused, returning, remapping), since the map
 is fixed for the duration of a task: a floor switched right before a clean that was started in
