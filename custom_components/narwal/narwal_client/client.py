@@ -86,6 +86,7 @@ from .models import (
     MapData,
     MapDisplayData,
     NarwalState,
+    feature_values,
 )
 from .protocol import (
     PROTOBUF_FIELD5_TAG,
@@ -2190,10 +2191,23 @@ class NarwalClient:
 
         return info
 
-    async def get_feature_list(self) -> dict[int, int]:
-        """Query supported features. Returns {feature_id: value}."""
+    async def get_feature_list(self) -> dict[int, int | list[int]]:
+        """Query supported features. Returns {field: value or packed ids}.
+
+        The answer is not {feature_id: value} on every firmware: a packed
+        repeated varint field arrives as a latin-1 str, so int() on it raised
+        and the feature list was blank in diagnostics (#180). See
+        models.feature_values.
+        """
         resp = await self.send_command(TOPIC_CMD_GET_FEATURE_LIST)
-        return {int(k): int(v) for k, v in resp.data.items()}
+        features: dict[int, int | list[int]] = {}
+        for key, value in resp.data.items():
+            try:
+                field_number = int(key)
+            except (TypeError, ValueError):
+                continue
+            features[field_number] = feature_values(value)
+        return features
 
     async def get_status(self, full_update: bool = True) -> CommandResponse:
         """Query current device base status.
