@@ -966,9 +966,19 @@ def test_unmapped_areas_are_skipped_with_a_warning_using_the_area_name(caplog) -
         _area_names({"garage": "Garage"}),
     ):
         assert _room_ids_from_areas(hass, "vacuum.narwal", ["garage", "kitchen"]) == [7]
-        assert _room_ids_from_areas(hass, "vacuum.narwal", ["garage"]) == []
 
     assert "Area Garage is not mapped to a Narwal room of vacuum.narwal" in caplog.text
+
+
+def test_all_unmapped_areas_fail_naming_the_areas() -> None:
+    hass, registry = _area_hass({"vacuum": {"area_mapping": {"kitchen": ["7"]}}})
+
+    with (
+        patch("custom_components.narwal.er.async_get", return_value=registry),
+        _area_names({"garage": "Garage", "attic": "Attic"}),
+        pytest.raises(HomeAssistantError, match="None of the selected areas are mapped.*Garage, Attic"),
+    ):
+        _room_ids_from_areas(hass, "vacuum.narwal", ["garage", "attic"])
 
 
 def test_area_name_falls_back_to_the_id_when_the_area_is_gone(caplog) -> None:
@@ -978,7 +988,7 @@ def test_area_name_falls_back_to_the_id_when_the_area_is_gone(caplog) -> None:
         patch("custom_components.narwal.er.async_get", return_value=registry),
         _area_names({}),
     ):
-        _room_ids_from_areas(hass, "vacuum.narwal", ["garage"])
+        _room_ids_from_areas(hass, "vacuum.narwal", ["garage", "kitchen"])
 
     assert "Area garage is not mapped" in caplog.text
 

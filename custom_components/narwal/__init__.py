@@ -83,10 +83,10 @@ FIELD_ROUTE = "route"
 
 
 def _require_one_room_source(data: dict) -> dict:
-    """Rooms, Areas and All areas are alternatives; the UI cannot enforce that."""
+    """Rooms, Areas and All rooms are alternatives; the UI cannot enforce that."""
     given = [bool(data.get(key)) for key in (FIELD_ROOMS, FIELD_AREAS, FIELD_ALL_ROOMS)]
     if sum(given) > 1:
-        raise vol.Invalid("Choose only one of Rooms, Areas or All areas")
+        raise vol.Invalid("Choose only one of Rooms, Areas or All rooms")
     return data
 
 CLEAN_ROOMS_SCHEMA = vol.All(
@@ -278,6 +278,12 @@ def _room_ids_from_areas(
                 _area_name(hass, area_id),
                 vacuum_entity_id,
             )
+    if not mapped_area_ids:
+        raise HomeAssistantError(
+            f"None of the selected areas are mapped to a Narwal room of {vacuum_entity_id}: "
+            + ", ".join(_area_name(hass, area_id) for area_id in area_ids)
+            + ". Add them to the area mapping in the vacuum entity's settings"
+        )
     room_ids: list[int] = []
     for area_id in mapped_area_ids:
         for segment in area_mapping[area_id]:

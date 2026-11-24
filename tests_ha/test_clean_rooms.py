@@ -105,7 +105,7 @@ async def test_areas_pick_mapped_rooms_in_selected_order(hass, rooms_robot, area
 )
 async def test_only_one_room_source_is_accepted(hass, rooms_robot, data):
     _coordinator, vacuum, start_rooms = rooms_robot
-    with pytest.raises(vol.Invalid, match="only one of Rooms, Areas or All areas"):
+    with pytest.raises(vol.Invalid, match="only one of Rooms, Areas or All rooms"):
         await _clean(hass, vacuum, **data)
     start_rooms.assert_not_awaited()
 
@@ -183,7 +183,7 @@ def test_services_yaml_has_valid_area_and_toggle_selectors():
     fields = load_yaml_dict(str(path))[SERVICE_CLEAN_ROOMS]["fields"]
     assert "required" not in fields["rooms"]
     assert "default" not in fields["all_rooms"]
-    assert fields["all_rooms"]["selector"] == {"constant": {"value": True, "label": "All areas"}}
+    assert fields["all_rooms"]["selector"] == {"constant": {"value": True, "label": "All rooms"}}
     assert selector.selector(fields["all_rooms"]["selector"])(True) is True
     config = fields["areas"]["selector"]
     assert config["area"]["multiple"] is True
