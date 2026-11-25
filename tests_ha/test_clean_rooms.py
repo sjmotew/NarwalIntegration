@@ -162,7 +162,7 @@ async def test_unmapped_area_is_skipped_with_a_warning(hass, rooms_robot, caplog
 
 async def test_only_unmapped_areas_start_nothing(hass, rooms_robot, caplog):
     _coordinator, vacuum, start_rooms = rooms_robot
-    with pytest.raises(HomeAssistantError, match="At least one room"):
+    with pytest.raises(HomeAssistantError, match="None of the selected areas are mapped.*garage"):
         await _clean(hass, vacuum, areas=["garage"])
     start_rooms.assert_not_awaited()
     assert "Area garage is not mapped" in caplog.text
