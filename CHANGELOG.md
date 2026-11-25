@@ -13,6 +13,8 @@ change that can alter the behaviour of an existing automation or dashboard.
 
 - **Fixed:** `common/get_feature_list` raised `ValueError` on a firmware that packs the feature ids into a repeated varint field, so the feature list was blank in every diagnostics download from those robots — the Flow 2 among them. A packed field now decodes to the ids it encodes, and a scalar keeps its value, including 0 ([#180](https://github.com/sjmotew/NarwalIntegration/issues/180)).
 
+- **Added:** `narwal.clean_rooms` accepts exact room names in `rooms` as well as IDs, an `areas` field (reorderable area picker, using the vacuum entity's area mapping) and an `all_rooms` checkbox labelled "All rooms"; use only one of the three. Unmapped areas are skipped with a warning. `rooms` is now optional as long as one of the three is given.
+
 - **Added:** websocket command `narwal/trajectory` returns the full trail of the current clean as grid points, for map cards that draw the route themselves; the camera's `path` attribute stays decimated to 400 points. It takes the robot's `entity_id`, and a card that polls sends the `signature` it holds and gets `unchanged: true` without the points while they are the same ([#161](https://github.com/sjmotew/NarwalIntegration/pull/161), @Bezkeroon; see [docs/MAP-CARD.md](docs/MAP-CARD.md#full-trail-over-the-websocket-api)).
 
 ## [v1.0.12] — 2026-11-13

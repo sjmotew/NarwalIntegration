@@ -284,7 +284,15 @@
       "fields": {
         "rooms": {
           "name": "Rooms",
-          "description": "Narwal room IDs to clean, in order, or \"all\" for all current map rooms."
+          "description": "Narwal room IDs or exact room names to clean, in order, or \"all\" for all current map rooms. Use only one of Rooms, Areas or All rooms."
+        },
+        "areas": {
+          "name": "Areas",
+          "description": "Areas to clean, in order. Needs the area mapping in the vacuum entity's settings. Use only one of Rooms, Areas or All rooms."
+        },
+        "all_rooms": {
+          "name": "All rooms",
+          "description": "Clean every room on the current map. Use only one of Rooms, Areas or All rooms."
         },
         "mode": {
           "name": "Mode"

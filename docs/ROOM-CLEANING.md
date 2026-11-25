@@ -61,7 +61,16 @@ YAML into any sections-view dashboard. Needs the `state-switch` card from HACS.
 ## `narwal.clean_rooms`
 
 Start a room clean with stable service keys such as `vacuum_and_mop`, `wet`,
-`meticulous`, and `super_powerful`. `rooms` accepts robot room IDs or `"all"`.
+`meticulous`, and `super_powerful`. `rooms` accepts robot room IDs, exact room names
+(as shown on the map and on the room switches) or `"all"`, which is reserved: select a
+room actually named "All" by ID. In the UI, `areas` is a
+reorderable area picker and `all_rooms` (labelled "All rooms") a single checkbox that
+cleans every room. Use only one of `rooms`, `areas` and `all_rooms`; the action rejects
+a call that mixes them, since the editor can't grey the others out. Areas use the mapping
+in the vacuum entity's settings (the one `vacuum.clean_area` uses), and the action fails
+with a pointer to it when none is configured. An area missing from that mapping is
+skipped with a log warning; if none of the areas are mapped the action fails. The mapping
+is per map, so redo it for each floor.
 `passes` is a number from 1 to 3. This service sends a clean command; it does not
 use the saved per-room profiles. Use `vacuum.start` to apply those profiles and
 the saved room selection.

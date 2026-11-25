@@ -15,6 +15,8 @@ tests.ha_stubs.install()
 from homeassistant.exceptions import HomeAssistantError  # noqa: E402
 
 from custom_components.narwal import (  # noqa: E402
+    FIELD_ALL_ROOMS,
+    FIELD_AREAS,
     FIELD_MODE,
     FIELD_MOP_STRENGTH,
     FIELD_PASSES,
@@ -26,6 +28,7 @@ from custom_components.narwal import (  # noqa: E402
     _async_room_ids_for_coordinator,
     _async_validate_clean_rooms_targets,
     _normalise_room_ids,
+    _room_ids_from_areas,
     _suction_for_coordinator,
     _validate_pass_count,
 )
@@ -865,3 +868,189 @@ async def test_clean_rooms_all_appends_new_rooms_in_current_map_order() -> None:
     room_ids = await _async_room_ids_for_coordinator(coordinator, ["all"])
 
     assert room_ids == [6, 4, 9, 7]
+
+
+def _named_rooms_coordinator() -> NarwalCoordinator:
+    coordinator = _coordinator()
+    coordinator.client.state.map_data = MapData(
+        map_id=77,
+        rooms=[
+            RoomInfo(room_id=4, name="Kitchen"),
+            RoomInfo(room_id=7, name="Office"),
+            RoomInfo(room_id=8, name="Hall"),
+            RoomInfo(room_id=9, name="Hall"),
+        ],
+    )
+    return coordinator
+
+
+async def test_room_names_resolve_in_request_order_without_map_refresh() -> None:
+    """Exact names on the cached map resolve like IDs, keeping caller order."""
+    coordinator = _named_rooms_coordinator()
+
+    room_ids = await _async_room_ids_for_coordinator(coordinator, ["Office", 4, "Kitchen"])
+
+    assert room_ids == [7, 4]
+    coordinator.client.get_map.assert_not_awaited()
+
+
+async def test_unknown_room_name_is_rejected() -> None:
+    coordinator = _named_rooms_coordinator()
+
+    with pytest.raises(HomeAssistantError, match="Unknown Narwal room name: Garage"):
+        await _async_room_ids_for_coordinator(coordinator, ["Garage"])
+
+
+async def test_ambiguous_room_name_is_rejected() -> None:
+    coordinator = _named_rooms_coordinator()
+
+    with pytest.raises(HomeAssistantError, match="Ambiguous Narwal room name: Hall"):
+        await _async_room_ids_for_coordinator(coordinator, ["Hall"])
+
+
+async def test_all_cannot_be_combined_with_a_room_name() -> None:
+    coordinator = _named_rooms_coordinator()
+
+    with pytest.raises(HomeAssistantError, match="not both"):
+        await _async_room_ids_for_coordinator(coordinator, ["all", "Kitchen"])
+
+
+def _area_hass(options):
+    """Return a hass and registry whose vacuum entity carries the given options."""
+    registry = MagicMock()
+    registry.async_get.return_value = SimpleNamespace(options=options, area_id=None, device_id=None)
+    return MagicMock(), registry
+
+
+def test_areas_resolve_to_room_ids_in_selected_order() -> None:
+    hass, registry = _area_hass(
+        {"vacuum": {"area_mapping": {"kitchen": ["7"], "lounge": ["4", "8"]}}}
+    )
+
+    with patch("custom_components.narwal.er.async_get", return_value=registry):
+        assert _room_ids_from_areas(hass, "vacuum.narwal", ["lounge", "kitchen"]) == [4, 8, 7]
+
+
+def test_no_areas_never_needs_a_mapping() -> None:
+    hass, registry = _area_hass({})
+
+    with patch("custom_components.narwal.er.async_get", return_value=registry):
+        assert _room_ids_from_areas(hass, "vacuum.narwal", []) == []
+
+
+@pytest.mark.parametrize("options", [{}, {"vacuum": {}}, {"vacuum": {"area_mapping": {}}}])
+def test_areas_without_a_mapping_point_to_the_vacuum_settings(options) -> None:
+    hass, registry = _area_hass(options)
+
+    with (
+        patch("custom_components.narwal.er.async_get", return_value=registry),
+        pytest.raises(HomeAssistantError, match="area mapping.*vacuum entity's settings"),
+    ):
+        _room_ids_from_areas(hass, "vacuum.narwal", ["kitchen"])
+
+
+def _area_names(names: dict[str, str]):
+    """Patch the area registry so only the given area IDs have display names."""
+    registry = MagicMock()
+    registry.async_get_area.side_effect = lambda area_id: (
+        SimpleNamespace(name=names[area_id]) if area_id in names else None
+    )
+    return patch("custom_components.narwal.ar.async_get", return_value=registry)
+
+
+def test_unmapped_areas_are_skipped_with_a_warning_using_the_area_name(caplog) -> None:
+    hass, registry = _area_hass({"vacuum": {"area_mapping": {"kitchen": ["7"]}}})
+
+    with (
+        patch("custom_components.narwal.er.async_get", return_value=registry),
+        _area_names({"garage": "Garage"}),
+    ):
+        assert _room_ids_from_areas(hass, "vacuum.narwal", ["garage", "kitchen"]) == [7]
+
+    assert "Area Garage is not mapped to a Narwal room of vacuum.narwal" in caplog.text
+
+
+def test_all_unmapped_areas_fail_naming_the_areas() -> None:
+    hass, registry = _area_hass({"vacuum": {"area_mapping": {"kitchen": ["7"]}}})
+
+    with (
+        patch("custom_components.narwal.er.async_get", return_value=registry),
+        _area_names({"garage": "Garage", "attic": "Attic"}),
+        pytest.raises(HomeAssistantError, match="None of the selected areas are mapped.*Garage, Attic"),
+    ):
+        _room_ids_from_areas(hass, "vacuum.narwal", ["garage", "attic"])
+
+
+def test_area_name_falls_back_to_the_id_when_the_area_is_gone(caplog) -> None:
+    hass, registry = _area_hass({"vacuum": {"area_mapping": {"kitchen": ["7"]}}})
+
+    with (
+        patch("custom_components.narwal.er.async_get", return_value=registry),
+        _area_names({}),
+    ):
+        _room_ids_from_areas(hass, "vacuum.narwal", ["garage", "kitchen"])
+
+    assert "Area garage is not mapped" in caplog.text
+
+
+def test_non_numeric_segment_is_rejected_with_the_area_name() -> None:
+    hass, registry = _area_hass({"vacuum": {"area_mapping": {"kitchen": ["abc"]}}})
+
+    with (
+        patch("custom_components.narwal.er.async_get", return_value=registry),
+        _area_names({"kitchen": "Kitchen"}),
+        pytest.raises(HomeAssistantError, match="Area Kitchen maps to an invalid Narwal room"),
+    ):
+        _room_ids_from_areas(hass, "vacuum.narwal", ["kitchen"])
+
+
+@pytest.mark.parametrize(
+    "extra, area_rooms, expected",
+    [
+        ({FIELD_AREAS: ["kitchen"]}, [7], [7]),
+        ({FIELD_ALL_ROOMS: True}, [], [4, 7]),
+    ],
+)
+async def test_clean_rooms_service_starts_rooms_from_areas_and_all_toggle(
+    extra, area_rooms, expected
+) -> None:
+    coordinator = _coordinator()
+    handler, registry = _register_clean_rooms_handler(coordinator)
+    call = _clean_rooms_call()
+    del call.data[FIELD_ROOMS]
+    call.data.update(extra)
+
+    with (
+        patch(
+            "custom_components.narwal.service.async_extract_entity_ids",
+            new_callable=AsyncMock,
+            return_value=["vacuum.downstairs_narwal"],
+        ),
+        patch("custom_components.narwal.er.async_get", return_value=registry),
+        patch("custom_components.narwal._room_ids_from_areas", return_value=area_rooms),
+    ):
+        await handler(call)
+
+    assert coordinator.client.start_rooms.await_args.args[0] == expected
+
+
+async def test_all_rooms_overrides_rooms_and_unresolvable_areas() -> None:
+    coordinator = _coordinator()
+    handler, registry = _register_clean_rooms_handler(coordinator)
+    call = _clean_rooms_call()
+    call.data[FIELD_AREAS] = ["unmapped"]
+    call.data[FIELD_ALL_ROOMS] = True
+
+    with (
+        patch(
+            "custom_components.narwal.service.async_extract_entity_ids",
+            new_callable=AsyncMock,
+            return_value=["vacuum.downstairs_narwal"],
+        ),
+        patch("custom_components.narwal.er.async_get", return_value=registry),
+        patch("custom_components.narwal._room_ids_from_areas") as from_areas,
+    ):
+        await handler(call)
+
+    from_areas.assert_not_called()
+    assert coordinator.client.start_rooms.await_args.args[0] == [4, 7]
